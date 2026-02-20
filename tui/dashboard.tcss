@@ -1,0 +1,98 @@
+/* Agent Orchestration Dashboard layout. */
+
+Screen {
+  layout: grid;
+  grid-size: 3 2;
+  grid-columns: 1fr 1fr 1fr;
+  grid-rows: 1fr 1fr;
+  grid-gutter: 1;
+}
+
+#workspaces-panel {
+  column-span: 1;
+  row-span: 1;
+}
+
+#agents-panel {
+  column-span: 1;
+  row-span: 1;
+}
+
+#detail-pane {
+  column-span: 1;
+  row-span: 2;
+}
+
+#targets-panel {
+  column-span: 1;
+  row-span: 1;
+}
+
+#usage-panel {
+  column-span: 1;
+  row-span: 1;
+}
+
+/* Panel styling. */
+.panel {
+  border: solid $accent;
+  padding: 0 1;
+}
+
+.panel-title {
+  text-style: bold;
+  color: $text;
+  padding: 0 1;
+  background: $accent;
+}
+
+/* DataTable styling. */
+DataTable {
+  height: 1fr;
+}
+
+DataTable > .datatable--header {
+  text-style: bold;
+  color: $text;
+  background: $surface;
+}
+
+DataTable > .datatable--cursor {
+  background: $accent 40%;
+  color: $text;
+}
+
+/* Detail pane. */
+#detail-pane {
+  border: solid $accent;
+  padding: 1;
+  overflow-y: auto;
+}
+
+#detail-content {
+  width: 1fr;
+}
+
+/* Usage panel sparkline area. */
+#usage-summary {
+  height: auto;
+  padding: 0 1;
+}
+
+#usage-sparkline {
+  height: 3;
+  padding: 0 1;
+}
+
+/* Status indicators. */
+.status-active {
+  color: $success;
+}
+
+.status-recent {
+  color: $warning;
+}
+
+.status-idle {
+  color: $text 40%;
+}
