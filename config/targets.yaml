@@ -1,0 +1,27 @@
+# Target inventory for build/test machines.
+# Types: vm (libvirt/QEMU), hardware (always-on physical devices)
+#
+# Example entries (uncomment and modify as needed):
+#
+# targets:
+#   win-01:
+#     type: vm
+#     host: 192.168.122.10
+#     user: builder
+#     description: Windows 11 build VM (QEMU/KVM)
+#     shared_folder: /mnt/host
+#
+#   raspi-01:
+#     type: hardware
+#     host: 192.168.1.50
+#     user: pi
+#     port: 22
+#     description: Raspberry Pi 4 test node
+#
+#   linux-vm-01:
+#     type: vm
+#     host: 192.168.122.20
+#     user: builder
+#     description: Debian build VM
+
+targets: {}

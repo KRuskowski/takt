@@ -1,0 +1,59 @@
+# Managed repository registry.
+# push_order: lower numbers are pushed first (upstream deps first).
+# default_branch: auto-detected if omitted.
+# deps: list of repos this repo depends on.
+
+repos:
+  config:
+    path: config
+    default_branch: main
+    push_order: 1
+    deps: []
+    description: Shared configuration
+
+  otc.sdk-gpu:
+    path: otc.sdk-gpu
+    default_branch: master
+    push_order: 2
+    deps: []
+    description: GPU SDK
+
+  otc.sdk-rust:
+    path: otc.sdk-rust
+    default_branch: master
+    push_order: 2
+    deps: []
+    description: Rust SDK
+
+  wgpu-fork:
+    path: wgpu-fork
+    push_order: 3
+    deps:
+      - otc.sdk-rust
+    description: wgpu fork
+
+  OTC.SDK.SosCorrectionLib:
+    path: OTC.SDK.SosCorrectionLib
+    default_branch: main
+    push_order: 3
+    deps:
+      - otc.sdk-gpu
+    description: SOS correction library
+
+  Combatant:
+    path: Combatant
+    default_branch: main
+    push_order: 4
+    deps:
+      - config
+      - OTC.SDK.SosCorrectionLib
+    description: Combatant application
+
+  Conveyor:
+    path: Conveyor
+    default_branch: master
+    push_order: 5
+    deps:
+      - config
+      - OTC.SDK.SosCorrectionLib
+    description: Conveyor application
