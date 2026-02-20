@@ -6,59 +6,27 @@ locking, VM lifecycle, and SSH command execution.
 """
 
 import argparse
-import json
 import shutil
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 # Add project root to path.
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from lib.config import LOCKS_DIR, load_targets_config
 from lib.ssh_utils import SSHError, check_connectivity, run_ssh
-
-
-def _get_lock_path(name):
-  """Return the lock file path for a target."""
-  return LOCKS_DIR / f"{name}.lock"
-
-
-def _read_lock(name):
-  """Read lock info for a target. Returns dict or None."""
-  lock_path = _get_lock_path(name)
-  if not lock_path.exists():
-    return None
-  with open(lock_path) as f:
-    return json.load(f)
-
-
-def _write_lock(name, workspace):
-  """Write a lock file for a target."""
-  lock_path = _get_lock_path(name)
-  LOCKS_DIR.mkdir(exist_ok=True)
-  data = {
-    "workspace": workspace,
-    "claimed_at": datetime.now(timezone.utc).isoformat(),
-  }
-  with open(lock_path, "w") as f:
-    json.dump(data, f, indent=2)
-
-
-def _get_target(name):
-  """Load and return a target config by name."""
-  config = load_targets_config()
-  targets = config.get("targets", {})
-  if not targets or name not in targets:
-    return None
-  return targets[name]
+from lib.target_ops import (
+  get_all_targets,
+  get_target,
+  read_lock,
+  release_lock,
+  write_lock,
+)
 
 
 def cmd_list(args):
   """List all targets with claim status."""
-  config = load_targets_config()
-  targets = config.get("targets", {})
+  targets = get_all_targets()
 
   if not targets:
     print("No targets configured.")
@@ -71,13 +39,13 @@ def cmd_list(args):
   )
   print("-" * 80)
 
-  for name, cfg in sorted(targets.items()):
-    lock = _read_lock(name)
+  for t in targets:
+    lock = t["lock"]
     claimed = lock["workspace"] if lock else "-"
     print(
-      f"{name:<15} {cfg.get('type', '?'):<10} "
-      f"{cfg.get('host', '?'):<20} {claimed:<20} "
-      f"{cfg.get('description', '')}"
+      f"{t['name']:<15} {t['type']:<10} "
+      f"{t['host']:<20} {claimed:<20} "
+      f"{t['description']}"
     )
 
 
@@ -86,12 +54,12 @@ def cmd_claim(args):
   name = args.name
   workspace = args.workspace
 
-  target = _get_target(name)
+  target = get_target(name)
   if target is None:
     print(f"Error: target '{name}' not found.")
     sys.exit(1)
 
-  lock = _read_lock(name)
+  lock = read_lock(name)
   if lock:
     print(
       f"Error: target '{name}' already claimed by "
@@ -99,29 +67,25 @@ def cmd_claim(args):
     )
     sys.exit(1)
 
-  _write_lock(name, workspace)
+  write_lock(name, workspace)
   print(f"Claimed '{name}' for workspace '{workspace}'.")
 
 
 def cmd_release(args):
   """Release a target."""
   name = args.name
-
-  lock_path = _get_lock_path(name)
-  if not lock_path.exists():
+  lock = release_lock(name)
+  if lock is None:
     print(f"Target '{name}' is not claimed.")
     return
-
-  lock = _read_lock(name)
-  lock_path.unlink()
-  ws = lock["workspace"] if lock else "unknown"
+  ws = lock.get("workspace", "unknown")
   print(f"Released '{name}' (was claimed by '{ws}').")
 
 
 def cmd_up(args):
   """Start a VM target."""
   name = args.name
-  target = _get_target(name)
+  target = get_target(name)
 
   if target is None:
     print(f"Error: target '{name}' not found.")
@@ -147,13 +111,16 @@ def cmd_up(args):
   if result.returncode == 0:
     print(f"Started VM '{name}'.")
   else:
-    print(f"Failed to start VM '{name}': {result.stderr.strip()}")
+    print(
+      f"Failed to start VM '{name}': "
+      f"{result.stderr.strip()}"
+    )
 
 
 def cmd_down(args):
   """Stop a VM target."""
   name = args.name
-  target = _get_target(name)
+  target = get_target(name)
 
   if target is None:
     print(f"Error: target '{name}' not found.")
@@ -165,7 +132,8 @@ def cmd_down(args):
 
   if not shutil.which("virsh"):
     print(
-      f"Warning: virsh not installed. Cannot stop VM '{name}'."
+      f"Warning: virsh not installed. "
+      f"Cannot stop VM '{name}'."
     )
     return
 
@@ -177,14 +145,17 @@ def cmd_down(args):
   if result.returncode == 0:
     print(f"Shutting down VM '{name}'.")
   else:
-    print(f"Failed to stop VM '{name}': {result.stderr.strip()}")
+    print(
+      f"Failed to stop VM '{name}': "
+      f"{result.stderr.strip()}"
+    )
 
 
 def cmd_run(args):
   """Run a command on a target via SSH."""
   name = args.name
   command = args.command
-  target = _get_target(name)
+  target = get_target(name)
 
   if target is None:
     print(f"Error: target '{name}' not found.")
@@ -211,13 +182,13 @@ def cmd_run(args):
 def cmd_status(args):
   """Show target details and connectivity."""
   name = args.name
-  target = _get_target(name)
+  target = get_target(name)
 
   if target is None:
     print(f"Error: target '{name}' not found.")
     sys.exit(1)
 
-  lock = _read_lock(name)
+  lock = read_lock(name)
   print(f"Target: {name}")
   print(f"  Type: {target.get('type', '?')}")
   print(f"  Host: {target.get('host', '?')}")
@@ -232,7 +203,7 @@ def cmd_status(args):
 
   host = target.get("host")
   if host:
-    print(f"  Connectivity: ", end="", flush=True)
+    print("  Connectivity: ", end="", flush=True)
     reachable = check_connectivity(
       host, user=target.get("user"), port=target.get("port"),
     )
