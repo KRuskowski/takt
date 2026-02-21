@@ -22,11 +22,13 @@ sys.path.insert(0, str(PROJECT_DIR))
 from lib.config import (
   STAGES_DIR,
   STATE_DIR,
+  WORKSPACES_DIR,
   get_default_branch,
   get_repo_path,
   load_repos_config,
   validate_repo,
 )
+from lib.workspace_ops import list_workspaces
 from lib.git_utils import (
   GitError,
   get_branch_ref,
@@ -437,6 +439,177 @@ def _scan_and_trigger():
       print(f"  Error launching agent for {ws}/{role}: {e}")
 
 
+def write_sync_markers(changes, repos_config):
+  """Write upstream sync markers for workspaces affected by changes.
+
+  For each default-branch change, finds active workspaces that
+  contain the changed repo and writes a marker line to
+  WORKSPACES_DIR/<ws>/<repo>/.upstream-sync.
+
+  Args:
+    changes: List of change dicts (from find_changes) on
+      default branches. Only "new" and "updated" are processed.
+    repos_config: Full repos config dict.
+  """
+  workspaces = list_workspaces()
+  for c in changes:
+    if c["type"] == "deleted":
+      continue
+    repo_name = c["repo"]
+    for ws in workspaces:
+      if repo_name not in ws["repos"]:
+        continue
+      if ws["branch"] == c["branch"]:
+        continue
+      marker = (
+        WORKSPACES_DIR / ws["name"] / repo_name
+        / ".upstream-sync"
+      )
+      ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+      old = c["old_ref"] or ("0" * 40)
+      new = c["new_ref"] or ("0" * 40)
+      line = f"{ts} {old} {new} refs/heads/{c['branch']}\n"
+      with open(marker, "a") as f:
+        f.write(line)
+
+
+def scan_sync_markers():
+  """Walk workspaces for .upstream-sync marker files.
+
+  Returns:
+    Dict mapping workspace name to list of (repo_name, lines)
+    tuples.
+  """
+  markers = defaultdict(list)
+  if not WORKSPACES_DIR.exists():
+    return markers
+  for ws_dir in sorted(WORKSPACES_DIR.iterdir()):
+    if not ws_dir.is_dir():
+      continue
+    for repo_dir in sorted(ws_dir.iterdir()):
+      if not repo_dir.is_dir():
+        continue
+      marker = repo_dir / ".upstream-sync"
+      if not marker.exists():
+        continue
+      lines = marker.read_text().strip().splitlines()
+      if lines:
+        markers[ws_dir.name].append((repo_dir.name, lines))
+  return dict(markers)
+
+
+def build_sync_prompt(ws, repo_markers):
+  """Build a prompt for an upstream sync agent.
+
+  Args:
+    ws: Workspace name (= branch name).
+    repo_markers: List of (repo_name, marker_lines) tuples.
+
+  Returns:
+    Prompt string.
+  """
+  parts = [
+    f"Upstream changes detected for workspace `{ws}`.\n",
+    "Merge the following upstream changes into your branch "
+    "and push.\n",
+  ]
+  for repo, lines in repo_markers:
+    parts.append(f"## {repo}")
+    ws_repo = WORKSPACES_DIR / ws / repo
+    # Extract default branch from the ref line.
+    default_br = None
+    first_old = None
+    last_new = None
+    for line in lines:
+      tokens = line.split(None, 3)
+      if len(tokens) < 4:
+        continue
+      old_ref, new_ref, ref_path = tokens[1], tokens[2], tokens[3]
+      # refs/heads/<branch> -> branch name
+      default_br = ref_path.rsplit("/", 1)[-1]
+      if first_old is None and old_ref != "0" * 40:
+        first_old = old_ref
+      last_new = new_ref
+    if default_br is None:
+      default_br = "main"
+    if last_new is None:
+      continue
+    if first_old and first_old != "0" * 40:
+      try:
+        log = get_log(
+          ws_repo, base=first_old, head=last_new,
+        )
+        if log:
+          parts.append(f"```\n{log}\n```")
+        else:
+          parts.append("(no new commits)")
+      except GitError:
+        parts.append(
+          f"{first_old[:8]}..{last_new[:8]}"
+          " (log unavailable)"
+        )
+    else:
+      parts.append(f"New upstream at {last_new[:8]}")
+    parts.append("")
+  parts.append("Steps:")
+  # Collect unique default branches from markers.
+  default_branches = set()
+  for _, lines in repo_markers:
+    for line in lines:
+      tokens = line.split(None, 3)
+      if len(tokens) >= 4:
+        default_branches.add(
+          tokens[3].rsplit("/", 1)[-1]
+        )
+  br = next(iter(default_branches), "main")
+  parts.append(
+    f"1. For each repo: `git fetch origin {br}`"
+  )
+  parts.append(
+    f"2. For each repo: `git merge origin/{br}`"
+  )
+  parts.append(
+    "3. Resolve conflicts or stop if unresolvable."
+  )
+  parts.append(
+    f"4. Push all repos: `git push origin {ws}`"
+  )
+  return "\n".join(parts)
+
+
+def _scan_and_sync():
+  """Scan for upstream sync markers and launch sync agents."""
+  markers = scan_sync_markers()
+  if not markers:
+    return
+  print(
+    f"\nFound upstream sync markers in"
+    f" {len(markers)} workspace(s):"
+  )
+  for ws, repo_markers in markers.items():
+    repos = [r for r, _ in repo_markers]
+    print(f"  {ws}: {', '.join(repos)}")
+    prompt = build_sync_prompt(ws, repo_markers)
+    title = f"{ws}/sync"
+    if _kitty_tab_exists(title):
+      print(
+        f"  Tab '{title}' already exists,"
+        " markers preserved."
+      )
+      continue
+    # Delete markers only when launching.
+    for repo, _ in repo_markers:
+      marker = (
+        WORKSPACES_DIR / ws / repo / ".upstream-sync"
+      )
+      marker.unlink(missing_ok=True)
+    ws_dir = WORKSPACES_DIR / ws
+    try:
+      launch_in_kitty(ws, "sync", ws_dir, prompt)
+    except RuntimeError as e:
+      print(f"  Error launching sync for {ws}: {e}")
+
+
 def poll_once(repos_config, max_diff_lines=DEFAULT_MAX_DIFF_LINES):
   """Run a single poll cycle.
 
@@ -444,6 +617,7 @@ def poll_once(repos_config, max_diff_lines=DEFAULT_MAX_DIFF_LINES):
     True if changes were found and processed.
   """
   _scan_and_trigger()
+  _scan_and_sync()
   old_refs = load_refs()
   new_refs = snapshot_all_refs(repos_config)
 
@@ -463,9 +637,9 @@ def poll_once(repos_config, max_diff_lines=DEFAULT_MAX_DIFF_LINES):
     repos_affected = [c["repo"] for c in branch_changes]
     print(f"  {branch}: {', '.join(repos_affected)}")
 
+  default_changes = []
   for branch, branch_changes in groups.items():
-    # Filter out default branch changes (those are pulls, not
-    # pipeline work).
+    # Separate default branch changes from pipeline work.
     non_default = []
     repos = repos_config.get("repos", {})
     for c in branch_changes:
@@ -474,7 +648,9 @@ def poll_once(repos_config, max_diff_lines=DEFAULT_MAX_DIFF_LINES):
       default_br = cfg.get(
         "default_branch", get_default_branch(repo_path),
       )
-      if c["branch"] != default_br:
+      if c["branch"] == default_br:
+        default_changes.append(c)
+      else:
         non_default.append(c)
 
     if not non_default:
@@ -490,9 +666,14 @@ def poll_once(repos_config, max_diff_lines=DEFAULT_MAX_DIFF_LINES):
     ).lower()
     if resp == "q":
       save_refs(new_refs)
+      if default_changes:
+        write_sync_markers(default_changes, repos_config)
       return True
     if resp == "y":
       pipe_to_claude(context, branch)
+
+  if default_changes:
+    write_sync_markers(default_changes, repos_config)
 
   save_refs(new_refs)
   return True
