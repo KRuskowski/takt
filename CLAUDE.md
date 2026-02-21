@@ -38,6 +38,10 @@ bin/workspace.py stage-remove feature-auth test
 bin/workspace.py stage-list
 bin/workspace.py stage-list feature-auth
 
+# Refresh stage CLAUDE.md and hooks
+bin/workspace.py stage-refresh feature-auth test
+bin/workspace.py stage-refresh --all
+
 # Show pipeline chain for a workspace
 bin/workspace.py pipeline feature-auth
 ```
@@ -140,3 +144,7 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 - `config/targets.yaml` — target inventory (VMs + hardware)
 - `templates/` — CLAUDE.md templates and role snippets
 - `context/` — architecture and decision docs
+
+# Setup
+
+New workstation setup: `context/workstation-setup.md`
