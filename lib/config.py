@@ -10,6 +10,7 @@ BASE_DIR = Path(os.environ.get(
   "ORCH_BASE_DIR", os.path.expanduser("~/dev")
 ))
 ROOT_DIR = BASE_DIR / "root"
+TESTING_DIR = BASE_DIR / "testing"
 WORKSPACES_DIR = BASE_DIR / "workspaces"
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJECT_DIR / "config"
@@ -22,6 +23,7 @@ LOCKS_DIR = PROJECT_DIR / ".locks"
 STATE_DIR.mkdir(exist_ok=True)
 LOCKS_DIR.mkdir(exist_ok=True)
 WORKSPACES_DIR.mkdir(exist_ok=True)
+TESTING_DIR.mkdir(exist_ok=True)
 
 
 def load_repos_config():
@@ -39,9 +41,24 @@ def load_targets_config():
   return data or {}
 
 
-def get_repo_path(repo_name):
-  """Return the absolute path to a root repo."""
-  return ROOT_DIR / repo_name
+def get_repo_path(repo_name, base_dir=None):
+  """Return the absolute path to a repo.
+
+  Args:
+    repo_name: Repo name or relative path.
+    base_dir: Base directory. Defaults to ROOT_DIR.
+  """
+  return (base_dir or ROOT_DIR) / repo_name
+
+
+def get_testing_repo_path(workspace_name, repo_name):
+  """Return the path to a testing stage repo.
+
+  Args:
+    workspace_name: Workspace that owns this testing stage.
+    repo_name: Repo name within the workspace.
+  """
+  return TESTING_DIR / workspace_name / repo_name
 
 
 def get_default_branch(repo_path):

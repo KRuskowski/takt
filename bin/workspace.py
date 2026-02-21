@@ -15,9 +15,12 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 from lib.git_utils import GitError
 from lib.workspace_ops import (
+  create_testing_stage,
   create_workspace,
+  delete_testing_stage,
   delete_workspace,
   get_workspace_status,
+  list_testing_stages,
   list_workspaces,
 )
 
@@ -98,6 +101,64 @@ def cmd_status(args):
     print(f"{s['repo']:<30} {s['branch']:<25} {s['status']}")
 
 
+def cmd_stage_create(args):
+  """Create a testing stage for a workspace."""
+  try:
+    stage_dir = create_testing_stage(args.name)
+  except FileNotFoundError as e:
+    print(f"Error: {e}")
+    sys.exit(1)
+  except FileExistsError as e:
+    print(f"Error: {e}")
+    sys.exit(1)
+  except GitError as e:
+    print(f"Error: {e}")
+    sys.exit(1)
+
+  print(f"Testing stage created: {stage_dir}")
+  print(f"Workspace origins re-pointed to testing stage.")
+
+
+def cmd_stage_delete(args):
+  """Delete a testing stage."""
+  if not args.force:
+    resp = input(
+      f"Delete testing stage '{args.name}'? "
+      f"Workspace origins will revert to root. [y/N] "
+    )
+    if resp.lower() != "y":
+      print("Cancelled.")
+      return
+
+  try:
+    delete_testing_stage(args.name)
+  except FileNotFoundError as e:
+    print(f"Error: {e}")
+    sys.exit(1)
+
+  print(f"Deleted testing stage '{args.name}'.")
+  print("Workspace origins restored to root repos.")
+
+
+def cmd_stage_list(args):
+  """List all testing stages."""
+  stages = list_testing_stages()
+  if not stages:
+    print("No testing stages found.")
+    return
+
+  print(f"{'Stage':<25} {'Repos':<40} {'Branch'}")
+  print("-" * 80)
+
+  for s in stages:
+    repos_str = (
+      ", ".join(s["repos"]) if s["repos"] else "(empty)"
+    )
+    print(
+      f"{s['name']:<25} {repos_str:<40} {s['branch']}"
+    )
+
+
 def main():
   parser = argparse.ArgumentParser(
     description="Workspace management for multi-repo pipelines.",
@@ -132,6 +193,33 @@ def main():
   )
   p_status.add_argument("name", help="Workspace name.")
 
+  # stage create
+  p_stage_create = sub.add_parser(
+    "stage-create",
+    help="Create a testing stage for a workspace.",
+  )
+  p_stage_create.add_argument(
+    "name", help="Workspace name to create stage for.",
+  )
+
+  # stage delete
+  p_stage_delete = sub.add_parser(
+    "stage-delete",
+    help="Delete a testing stage.",
+  )
+  p_stage_delete.add_argument(
+    "name", help="Testing stage name to delete.",
+  )
+  p_stage_delete.add_argument(
+    "-f", "--force", action="store_true",
+    help="Skip confirmation prompt.",
+  )
+
+  # stage list
+  sub.add_parser(
+    "stage-list", help="List all testing stages.",
+  )
+
   args = parser.parse_args()
   if not args.command:
     parser.print_help()
@@ -142,6 +230,9 @@ def main():
     "list": cmd_list,
     "delete": cmd_delete,
     "status": cmd_status,
+    "stage-create": cmd_stage_create,
+    "stage-delete": cmd_stage_delete,
+    "stage-list": cmd_stage_list,
   }
   commands[args.command](args)
 
