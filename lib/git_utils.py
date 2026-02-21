@@ -41,11 +41,170 @@ def run_git(args, cwd=None, check=True):
 def clone_local(source_path, dest_path):
   """Clone a local repo. Source becomes origin.
 
+  Does NOT initialize submodules — callers should call
+  init_submodules() after checking out the correct branch,
+  since submodule pointers may differ between branches.
+
   Args:
     source_path: Path to the source repo.
     dest_path: Path for the new clone.
   """
   run_git(["clone", str(source_path), str(dest_path)])
+
+
+def _parse_submodules(repo_path):
+  """Parse .gitmodules and return submodule name/path pairs.
+
+  Args:
+    repo_path: Path to the repo.
+
+  Returns:
+    List of (name, relative_path) tuples.
+  """
+  repo_path = Path(repo_path)
+  output = run_git(
+    ["config", "--file", ".gitmodules",
+     "--get-regexp", r"submodule\..*\.path"],
+    cwd=repo_path, check=False,
+  )
+  if not output:
+    return []
+  result = []
+  for line in output.splitlines():
+    # Format: submodule.<name>.path <path>
+    key, path = line.split(None, 1)
+    # Extract name from submodule.<name>.path
+    name = key.removeprefix("submodule.").removesuffix(".path")
+    result.append((name, path))
+  return result
+
+
+def _resolve_submodule_git_dir(worktree_path):
+  """Resolve a submodule worktree path to its git object dir.
+
+  Submodule worktrees contain a .git file pointing to
+  .git/modules/<name>. Returns the resolved git dir if
+  found, otherwise returns the worktree path as-is (for
+  regular repos).
+
+  Args:
+    worktree_path: Path to the submodule worktree.
+
+  Returns:
+    Resolved Path to the git object directory.
+  """
+  git_file = worktree_path / ".git"
+  if git_file.is_file():
+    text = git_file.read_text().strip()
+    if text.startswith("gitdir:"):
+      rel = text.split(":", 1)[1].strip()
+      return (worktree_path / rel).resolve()
+  return worktree_path
+
+
+def _enable_sha_fetch(git_dir):
+  """Enable fetching specific SHAs from a git repo.
+
+  Sets uploadPack.allowReachableSHA1InWant=true so that
+  clients can fetch commits by SHA even when those commits
+  aren't on any branch (e.g. detached HEAD).
+
+  Args:
+    git_dir: Path to the git directory (bare or .git/).
+  """
+  run_git(
+    ["config", "uploadPack.allowReachableSHA1InWant",
+     "true"],
+    cwd=git_dir,
+  )
+
+
+def init_submodules(repo_path, reference=None):
+  """Initialize and update submodules if the repo has any.
+
+  No-op if the repo has no .gitmodules file.
+
+  Args:
+    repo_path: Path to the repo.
+    reference: Optional path to a repo whose submodule
+      worktrees contain the needed objects. Used when
+      submodules have local-only commits (e.g. agent
+      changes) that aren't at the upstream URL.
+  """
+  repo_path = Path(repo_path)
+  if not (repo_path / ".gitmodules").exists():
+    return
+  if reference:
+    reference = Path(reference)
+    for name, rel_path in _parse_submodules(repo_path):
+      sub_worktree = reference / rel_path
+      if sub_worktree.is_dir():
+        # Resolve the actual git object dir — submodule
+        # worktrees use a .git file pointing to
+        # .git/modules/<path>.
+        git_dir = _resolve_submodule_git_dir(sub_worktree)
+        run_git(
+          ["config", f"submodule.{name}.url",
+           str(git_dir)],
+          cwd=repo_path,
+        )
+        # Allow the reference repo to serve detached HEAD
+        # commits by SHA.
+        _enable_sha_fetch(git_dir)
+  # Allow file:// protocol — needed when submodule URLs
+  # point to local paths (reference repos or local origins).
+  run_git(
+    ["-c", "protocol.file.allow=always",
+     "submodule", "update", "--init", "--recursive"],
+    cwd=repo_path,
+  )
+
+
+def rechain_submodule_remotes(repo_path, target_repo):
+  """Update submodule origins to match the pipeline chain.
+
+  For each submodule in repo_path, sets its origin URL to the
+  corresponding submodule in target_repo. Also enables SHA
+  fetching on the target so detached HEAD commits are servable.
+
+  No-op if repo_path has no .gitmodules file.
+
+  Args:
+    repo_path: Path to the repo whose submodules to update.
+    target_repo: Path to the repo whose submodules are the
+      new fetch source.
+  """
+  repo_path = Path(repo_path)
+  target_repo = Path(target_repo)
+  if not (repo_path / ".gitmodules").exists():
+    return
+  for name, rel_path in _parse_submodules(repo_path):
+    sub_path = repo_path / rel_path
+    target_sub = target_repo / rel_path
+    if not sub_path.is_dir() or not target_sub.is_dir():
+      continue
+    target_git_dir = _resolve_submodule_git_dir(target_sub)
+    # Update parent config.
+    run_git(
+      ["config", f"submodule.{name}.url",
+       str(target_git_dir)],
+      cwd=repo_path,
+    )
+    # Update submodule's own origin.
+    try:
+      run_git(
+        ["remote", "set-url", "origin",
+         str(target_git_dir)],
+        cwd=sub_path,
+      )
+    except GitError:
+      pass
+    # Allow target to serve detached HEAD commits.
+    _enable_sha_fetch(target_git_dir)
+    # Allow this submodule to serve them too (for the
+    # next stage in the chain).
+    local_git_dir = _resolve_submodule_git_dir(sub_path)
+    _enable_sha_fetch(local_git_dir)
 
 
 def create_branch(repo_path, branch_name, checkout=True):
@@ -225,6 +384,13 @@ def install_push_hook(repo_path):
     '  echo "$(date -Is) $old $new $ref" \\\n'
     '    >> "$REPO_ROOT/.pipeline-push"\n'
     'done\n'
+    '# Update submodules if present.\n'
+    'if [ -f "$REPO_ROOT/.gitmodules" ]; then\n'
+    '  unset GIT_DIR\n'
+    '  git -C "$REPO_ROOT" '
+    '-c protocol.file.allow=always \\\n'
+    '    submodule update --init --recursive\n'
+    'fi\n'
   )
   hook_path.chmod(0o755)
 
