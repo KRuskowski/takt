@@ -19,7 +19,7 @@ layout with agents prominent on top.
 |   ...                                                       |
 +----------------------------+-------------------------------+
 |   Workspaces               |   Stages                      |
-|   Name  Repos  Branch  St  |   Name  Type  Repos  Branch   |
+|   Name  Repos  Branch  St  |   WS  Role  Repos  Branch     |
 |   ...                      |   ...                         |
 +----------------------------+-------------------------------+
 |   Targets                                                   |
@@ -45,7 +45,7 @@ tui/
   widgets/
     agents.py              AgentsPanel (DataTable, filters stale)
     workspaces.py          WorkspacesPanel (DataTable)
-    stages.py              StagesPanel (testing + utility, DataTable)
+    stages.py              StagesPanel (all pipeline stages, DataTable)
     targets.py             TargetsPanel (DataTable)
 ```
 
@@ -82,12 +82,10 @@ Functions:
 - `get_workspace_status(name)` — per-repo branch + status
 - `create_workspace(name, repos)` — clone + branch + template
 - `delete_workspace(name)` — rmtree
-- `list_testing_stages()` — returns list of dicts
-- `list_utility_stages()` — returns list of dicts
-- `create_testing_stage(name)` — clone + branch + template
-- `create_utility_stage(name)` — clone + branch + template
-- `delete_testing_stage(name)` — rmtree + restore origins
-- `delete_utility_stage(name)` — rmtree + restore origins
+- `create_stage(workspace, role)` — add stage to pipeline
+- `delete_stage(workspace, role)` — remove stage, rechain
+- `list_stages(workspace=None)` — list all or per-workspace
+- `get_pipeline(workspace)` — read pipeline.yaml chain
 
 ### `lib/target_ops.py`
 
@@ -109,7 +107,7 @@ the main thread via `app.call_from_thread()`.
 |------------|----------|------------------------------------|
 | Agents     | 5s       | `session_parser.discover_sessions` |
 | Workspaces | 10s      | `workspace_ops.list_workspaces`    |
-| Stages     | 10s      | `workspace_ops.list_*_stages`      |
+| Stages     | 10s      | `workspace_ops.list_stages`        |
 | Targets    | 10s      | `target_ops.get_all_targets`       |
 
 ## Agent Filtering

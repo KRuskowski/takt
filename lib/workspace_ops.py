@@ -1,23 +1,23 @@
-"""Workspace operations for programmatic use.
+"""Workspace and stage operations for programmatic use.
 
 Extracted from bin/workspace.py so both the CLI and TUI
 dashboard can share the same logic.
 """
 
 import shutil
-from pathlib import Path
 from string import Template
+
+import yaml
 
 from lib.config import (
   CONTEXT_DIR,
+  STAGES_DIR,
   TEMPLATES_DIR,
-  TESTING_DIR,
-  UTILITY_DIR,
   WORKSPACES_DIR,
   get_default_branch,
   get_repo_path,
-  get_testing_repo_path,
   load_repos_config,
+  parse_pipeline_roles,
   validate_repo,
 )
 from lib.git_utils import (
@@ -197,8 +197,18 @@ def delete_workspace(name):
 
 
 def _generate_workspace_claude_md(ws_dir, name, repos,
-                                  repos_config):
-  """Generate a workspace CLAUDE.md from the template."""
+                                  repos_config,
+                                  role_snippet=None):
+  """Generate a workspace CLAUDE.md from the template.
+
+  Args:
+    ws_dir: Workspace or stage directory.
+    name: Workspace name.
+    repos: List of repo names.
+    repos_config: Repos config dict.
+    role_snippet: Optional role text to inject. If None, uses
+      a placeholder.
+  """
   tmpl_path = TEMPLATES_DIR / "workspace_claude.md"
   if not tmpl_path.exists():
     return
@@ -229,9 +239,15 @@ def _generate_workspace_claude_md(ws_dir, name, repos,
 
   in_scope = "\n".join(f"- `{r}/`" for r in repos)
 
+  role_section = (
+    role_snippet
+    if role_snippet
+    else "(specify role when launching agent)"
+  )
+
   content = tmpl.safe_substitute(
     workspace_name=name,
-    role_section="(specify role when launching agent)",
+    role_section=role_section,
     task_section="(specify task description)",
     acceptance_criteria="(specify acceptance criteria)",
     in_scope_repos=in_scope,
@@ -245,22 +261,126 @@ def _generate_workspace_claude_md(ws_dir, name, repos,
   out_path.write_text(content)
 
 
-def _create_stage(workspace_name, stage_base_dir, stage_type,
-                   template_name, repoint_upstream=True):
+# -- Pipeline / stage operations --
+
+def _load_pipeline(workspace_name):
+  """Load pipeline.yaml for a workspace.
+
+  Returns:
+    List of role slugs in chain order, or empty list.
+  """
+  pipeline_path = STAGES_DIR / workspace_name / "pipeline.yaml"
+  if not pipeline_path.exists():
+    return []
+  with open(pipeline_path) as f:
+    data = yaml.safe_load(f) or {}
+  return data.get("stages", [])
+
+
+def _save_pipeline(workspace_name, stages):
+  """Save pipeline.yaml for a workspace.
+
+  Args:
+    workspace_name: Workspace name.
+    stages: List of role slugs in chain order.
+  """
+  ws_stages_dir = STAGES_DIR / workspace_name
+  ws_stages_dir.mkdir(parents=True, exist_ok=True)
+  pipeline_path = ws_stages_dir / "pipeline.yaml"
+  with open(pipeline_path, "w") as f:
+    yaml.safe_dump({"stages": stages}, f, default_flow_style=False)
+
+
+def get_pipeline(workspace_name):
+  """Get the full pipeline chain for a workspace.
+
+  Returns:
+    Dict with keys: workspace, stages (list of role slugs),
+    chain (human-readable chain string).
+
+  Raises:
+    FileNotFoundError: If workspace does not exist.
+  """
+  ws_dir = WORKSPACES_DIR / workspace_name
+  if not ws_dir.exists():
+    raise FileNotFoundError(
+      f"Workspace '{workspace_name}' not found."
+    )
+
+  stages = _load_pipeline(workspace_name)
+  parts = ["workspace"] + stages + ["root"]
+  chain = " -> ".join(parts)
+
+  return {
+    "workspace": workspace_name,
+    "stages": stages,
+    "chain": chain,
+  }
+
+
+def _rechain_remotes(workspace_name):
+  """Rebuild the full remote chain from pipeline.yaml order.
+
+  Chain: workspace -> stage1 -> stage2 -> ... -> root.
+  Each link's repos get origin set to the next link.
+  """
+  stages = _load_pipeline(workspace_name)
+  repos_config = load_repos_config().get("repos", {})
+
+  ws_dir = WORKSPACES_DIR / workspace_name
+  if not ws_dir.exists():
+    return
+
+  ws_repos = sorted(
+    d.name for d in ws_dir.iterdir()
+    if d.is_dir() and (d / ".git").exists()
+  )
+
+  # Build ordered list of directories in the chain.
+  # Each entry is (dir, label) for the source of pushes.
+  chain_dirs = [ws_dir]
+  for role in stages:
+    stage_dir = STAGES_DIR / workspace_name / role
+    if stage_dir.exists():
+      chain_dirs.append(stage_dir)
+
+  # Set origins: each dir points to the next in the chain.
+  # The last stage points to root.
+  for i, src_dir in enumerate(chain_dirs):
+    for repo_name in ws_repos:
+      repo_path = src_dir / repo_name
+      if not repo_path.exists():
+        continue
+
+      if i + 1 < len(chain_dirs):
+        # Point to next stage.
+        target = chain_dirs[i + 1] / repo_name
+      else:
+        # Last in chain: point to root.
+        disk_path = _resolve_repo_path(
+          repo_name, repos_config,
+        )
+        target = get_repo_path(disk_path)
+
+      try:
+        run_git(
+          ["remote", "set-url", "origin", str(target)],
+          cwd=repo_path,
+        )
+      except GitError:
+        pass
+
+
+def create_stage(workspace_name, role):
   """Create a stage for an existing workspace.
 
-  Clones repos from root into stage_base_dir/<workspace>/.
-  Each clone checks out the workspace branch and gets a
-  CLAUDE.md from the named template.
+  Clones repos from root, checks out the workspace branch,
+  injects the role snippet into the CLAUDE.md template, and
+  rebuilds the remote chain.
 
   Args:
     workspace_name: Workspace (= branch) name.
-    stage_base_dir: Base directory for this stage type.
-    stage_type: Human-readable stage name for messages.
-    template_name: Filename in templates/ for CLAUDE.md.
-    repoint_upstream: If True, re-point the upstream stage's
-      origin to this stage (workspace origin for testing,
-      testing origin for utility).
+    role: Role slug (e.g. "test", "review", "deploy_qa").
 
   Returns:
     Path to the created stage directory.
@@ -268,6 +388,7 @@ def _create_stage(workspace_name, stage_base_dir, stage_type,
   Raises:
     FileNotFoundError: If workspace does not exist.
     FileExistsError: If stage already exists.
+    ValueError: If role is not found in pipeline_roles.md.
     GitError: If cloning or branch operations fail.
   """
   ws_dir = WORKSPACES_DIR / workspace_name
@@ -276,10 +397,17 @@ def _create_stage(workspace_name, stage_base_dir, stage_type,
       f"Workspace '{workspace_name}' not found."
     )
 
-  stage_dir = stage_base_dir / workspace_name
+  roles = parse_pipeline_roles()
+  if role not in roles:
+    raise ValueError(
+      f"Unknown role '{role}'. "
+      f"Available: {', '.join(sorted(roles.keys()))}"
+    )
+
+  stage_dir = STAGES_DIR / workspace_name / role
   if stage_dir.exists():
     raise FileExistsError(
-      f"{stage_type} stage '{workspace_name}' already "
+      f"Stage '{role}' for '{workspace_name}' already "
       f"exists at {stage_dir}"
     )
 
@@ -294,17 +422,6 @@ def _create_stage(workspace_name, stage_base_dir, stage_type,
     raise ValueError(
       f"Workspace '{workspace_name}' has no repos."
     )
-
-  # Determine upstream repos to re-point. For testing stages,
-  # upstream is the workspace. For utility stages, upstream is
-  # the testing stage.
-  if repoint_upstream:
-    if stage_base_dir == UTILITY_DIR:
-      upstream_dir = TESTING_DIR / workspace_name
-    else:
-      upstream_dir = ws_dir
-  else:
-    upstream_dir = None
 
   stage_dir.mkdir(parents=True)
 
@@ -326,39 +443,14 @@ def _create_stage(workspace_name, stage_base_dir, stage_type,
 
       # Allow upstream to push here.
       set_receive_update(dest)
-
-      # Re-point upstream origin to this stage repo.
-      if upstream_dir:
-        upstream_repo = upstream_dir / repo_name
-        if upstream_repo.exists():
-          run_git(
-            ["remote", "set-url", "origin", str(dest)],
-            cwd=upstream_repo,
-          )
   except (GitError, Exception):
-    # Revert upstream origins on failure.
-    if upstream_dir:
-      for repo_name in ws_repos:
-        upstream_repo = upstream_dir / repo_name
-        if upstream_repo and upstream_repo.exists():
-          disk_path = _resolve_repo_path(
-            repo_name, repos_config,
-          )
-          root_path = get_repo_path(disk_path)
-          try:
-            run_git(
-              ["remote", "set-url", "origin",
-               str(root_path)],
-              cwd=upstream_repo,
-            )
-          except GitError:
-            pass
     shutil.rmtree(stage_dir, ignore_errors=True)
     raise
 
-  _generate_stage_claude_md(
+  # Generate CLAUDE.md with role snippet injected.
+  _generate_workspace_claude_md(
     stage_dir, workspace_name, ws_repos, repos_config,
-    template_name,
+    role_snippet=roles[role],
   )
 
   # Copy context packets.
@@ -366,182 +458,99 @@ def _create_stage(workspace_name, stage_base_dir, stage_type,
   if CONTEXT_DIR.is_dir():
     shutil.copytree(CONTEXT_DIR, ctx_dest)
 
+  # Update pipeline and rebuild remote chain.
+  pipeline = _load_pipeline(workspace_name)
+  if role not in pipeline:
+    pipeline.append(role)
+    _save_pipeline(workspace_name, pipeline)
+  _rechain_remotes(workspace_name)
+
   return stage_dir
 
 
-def _delete_stage(workspace_name, stage_base_dir, stage_type,
-                  upstream_dir=None):
-  """Delete a stage and restore upstream origins to root.
+def delete_stage(workspace_name, role):
+  """Delete a stage and rebuild the remote chain.
 
   Args:
     workspace_name: Workspace name.
-    stage_base_dir: Base directory for this stage type.
-    stage_type: Human-readable stage name for messages.
-    upstream_dir: Directory whose repos should have their
-      origins restored. None to skip.
+    role: Role slug to remove.
 
   Raises:
     FileNotFoundError: If stage does not exist.
   """
-  stage_dir = stage_base_dir / workspace_name
+  stage_dir = STAGES_DIR / workspace_name / role
   if not stage_dir.exists():
     raise FileNotFoundError(
-      f"{stage_type} stage '{workspace_name}' not found."
+      f"Stage '{role}' for '{workspace_name}' not found."
     )
-
-  repos_config = load_repos_config().get("repos", {})
-
-  if upstream_dir and upstream_dir.exists():
-    upstream_repos = sorted(
-      d.name for d in upstream_dir.iterdir()
-      if d.is_dir() and (d / ".git").exists()
-    )
-    for repo_name in upstream_repos:
-      repo = upstream_dir / repo_name
-      disk_path = _resolve_repo_path(repo_name, repos_config)
-      root_path = get_repo_path(disk_path)
-      try:
-        run_git(
-          ["remote", "set-url", "origin", str(root_path)],
-          cwd=repo,
-        )
-      except GitError:
-        pass
 
   shutil.rmtree(stage_dir)
 
+  # Update pipeline.
+  pipeline = _load_pipeline(workspace_name)
+  if role in pipeline:
+    pipeline.remove(role)
+    _save_pipeline(workspace_name, pipeline)
 
-def _list_stages(stage_base_dir):
-  """List all stages in a base directory.
+  # Rebuild remote chain with this stage removed.
+  _rechain_remotes(workspace_name)
+
+  # Clean up empty workspace stages dir.
+  ws_stages_dir = STAGES_DIR / workspace_name
+  remaining = [
+    d for d in ws_stages_dir.iterdir()
+    if d.is_dir() and d.name != "pipeline.yaml"
+  ]
+  if not remaining:
+    shutil.rmtree(ws_stages_dir)
+
+
+def list_stages(workspace_name=None):
+  """List stages, optionally filtered by workspace.
+
+  Args:
+    workspace_name: If given, list only stages for this
+      workspace. Otherwise list all stages.
 
   Returns:
-    List of dicts with keys: name, path, repos, branch.
+    List of dicts with keys: workspace, role, path, repos,
+    branch.
   """
-  if not stage_base_dir.exists():
+  if not STAGES_DIR.exists():
     return []
 
   results = []
-  for stage_dir in sorted(stage_base_dir.iterdir()):
-    if not stage_dir.is_dir():
+
+  if workspace_name:
+    ws_dirs = [STAGES_DIR / workspace_name]
+  else:
+    ws_dirs = sorted(STAGES_DIR.iterdir())
+
+  for ws_dir in ws_dirs:
+    if not ws_dir.is_dir():
       continue
-    repos = sorted(
-      d.name for d in stage_dir.iterdir()
-      if d.is_dir() and (d / ".git").exists()
-    )
-    branch = "?"
-    if repos:
-      try:
-        branch = get_current_branch(stage_dir / repos[0])
-      except GitError:
-        pass
-    results.append({
-      "name": stage_dir.name,
-      "path": str(stage_dir),
-      "repos": repos,
-      "branch": branch,
-    })
+    for role_dir in sorted(ws_dir.iterdir()):
+      if not role_dir.is_dir():
+        continue
+      # Skip pipeline.yaml (it's a file, not dir).
+      repos = sorted(
+        d.name for d in role_dir.iterdir()
+        if d.is_dir() and (d / ".git").exists()
+      )
+      branch = "?"
+      if repos:
+        try:
+          branch = get_current_branch(
+            role_dir / repos[0],
+          )
+        except GitError:
+          pass
+      results.append({
+        "workspace": ws_dir.name,
+        "role": role_dir.name,
+        "path": str(role_dir),
+        "repos": repos,
+        "branch": branch,
+      })
+
   return results
-
-
-def _generate_stage_claude_md(stage_dir, name, repos,
-                              repos_config, template_name):
-  """Generate a stage CLAUDE.md from the named template."""
-  tmpl_path = TEMPLATES_DIR / template_name
-  if not tmpl_path.exists():
-    return
-
-  tmpl = Template(tmpl_path.read_text())
-
-  rows = []
-  for repo_name in repos:
-    cfg = repos_config.get(repo_name, {})
-    repo_path = stage_dir / repo_name
-    default_br = cfg.get(
-      "default_branch", get_default_branch(repo_path),
-    )
-    push_order = cfg.get("push_order", "?")
-    rows.append(
-      f"| {repo_name} | {default_br} | {push_order} |"
-    )
-  repo_table = "\n".join(rows)
-
-  packets = []
-  if CONTEXT_DIR.is_dir():
-    for f in sorted(CONTEXT_DIR.iterdir()):
-      if f.is_file() and f.suffix == ".md":
-        packets.append(f"- `context/{f.name}`")
-  context_packets = (
-    "\n".join(packets) if packets else "- (none)"
-  )
-
-  in_scope = "\n".join(f"- `{r}/`" for r in repos)
-
-  content = tmpl.safe_substitute(
-    workspace_name=name,
-    in_scope_repos=in_scope,
-    context_packets=context_packets,
-    repo_table=repo_table,
-    status="Not started",
-  )
-
-  out_path = stage_dir / "CLAUDE.md"
-  out_path.write_text(content)
-
-
-# -- Testing stage public API --
-
-def create_testing_stage(workspace_name):
-  """Create a testing stage for a workspace.
-
-  Workspace repos' origins are re-pointed to the testing
-  stage. Chain: workspace -> testing -> root.
-  """
-  return _create_stage(
-    workspace_name, TESTING_DIR, "Testing",
-    "testing_stage_claude.md",
-  )
-
-
-def delete_testing_stage(workspace_name):
-  """Delete a testing stage and restore workspace origins."""
-  ws_dir = WORKSPACES_DIR / workspace_name
-  _delete_stage(
-    workspace_name, TESTING_DIR, "Testing",
-    upstream_dir=ws_dir,
-  )
-
-
-def list_testing_stages():
-  """List all testing stages."""
-  return _list_stages(TESTING_DIR)
-
-
-# -- Utility stage public API --
-
-def create_utility_stage(workspace_name):
-  """Create a utility stage for a workspace.
-
-  Testing stage repos' origins are re-pointed to the utility
-  stage. Chain: workspace -> testing -> utility -> root.
-
-  The utility agent watches for pushes and creates PRs on
-  GitHub.
-  """
-  return _create_stage(
-    workspace_name, UTILITY_DIR, "Utility",
-    "utility_stage_claude.md",
-  )
-
-
-def delete_utility_stage(workspace_name):
-  """Delete a utility stage and restore testing origins."""
-  testing_dir = TESTING_DIR / workspace_name
-  _delete_stage(
-    workspace_name, UTILITY_DIR, "Utility",
-    upstream_dir=testing_dir,
-  )
-
-
-def list_utility_stages():
-  """List all utility stages."""
-  return _list_stages(UTILITY_DIR)

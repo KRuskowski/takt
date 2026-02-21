@@ -1,6 +1,7 @@
 """Shared constants and configuration loaders."""
 
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -10,8 +11,7 @@ BASE_DIR = Path(os.environ.get(
   "ORCH_BASE_DIR", os.path.expanduser("~/dev")
 ))
 ROOT_DIR = BASE_DIR / "root"
-TESTING_DIR = BASE_DIR / "testing"
-UTILITY_DIR = BASE_DIR / "utility"
+STAGES_DIR = BASE_DIR / "stages"
 WORKSPACES_DIR = BASE_DIR / "workspaces"
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJECT_DIR / "config"
@@ -24,8 +24,7 @@ LOCKS_DIR = PROJECT_DIR / ".locks"
 STATE_DIR.mkdir(exist_ok=True)
 LOCKS_DIR.mkdir(exist_ok=True)
 WORKSPACES_DIR.mkdir(exist_ok=True)
-TESTING_DIR.mkdir(exist_ok=True)
-UTILITY_DIR.mkdir(exist_ok=True)
+STAGES_DIR.mkdir(exist_ok=True)
 
 
 def load_repos_config():
@@ -53,14 +52,65 @@ def get_repo_path(repo_name, base_dir=None):
   return (base_dir or ROOT_DIR) / repo_name
 
 
-def get_testing_repo_path(workspace_name, repo_name):
-  """Return the path to a testing stage repo.
+def parse_pipeline_roles():
+  """Parse pipeline_roles.md and return role snippets.
 
-  Args:
-    workspace_name: Workspace that owns this testing stage.
-    repo_name: Repo name within the workspace.
+  Parses H2 headings as role names and everything between
+  headings (excluding --- separators) as the role snippet.
+  Role names are normalized to lowercase slugs
+  (e.g. "Deploy/QA Agent" -> "deploy_qa").
+
+  Returns:
+    Dict mapping role slug to snippet text.
   """
-  return TESTING_DIR / workspace_name / repo_name
+  roles_path = TEMPLATES_DIR / "pipeline_roles.md"
+  if not roles_path.exists():
+    return {}
+
+  text = roles_path.read_text()
+  roles = {}
+  current_name = None
+  current_lines = []
+
+  for line in text.splitlines():
+    if line.startswith("## "):
+      # Save previous role.
+      if current_name:
+        snippet = "\n".join(current_lines).strip()
+        if snippet:
+          roles[current_name] = snippet
+      # Parse new role name.
+      raw_name = line[3:].strip()
+      current_name = _slugify_role(raw_name)
+      current_lines = []
+    elif line.strip() == "---":
+      continue
+    elif current_name is not None:
+      current_lines.append(line)
+
+  # Save last role.
+  if current_name:
+    snippet = "\n".join(current_lines).strip()
+    if snippet:
+      roles[current_name] = snippet
+
+  return roles
+
+
+def _slugify_role(name):
+  """Convert a role heading to a lowercase slug.
+
+  Examples:
+    "Feature Agent" -> "feature"
+    "Deploy/QA Agent" -> "deploy_qa"
+    "Test Agent" -> "test"
+  """
+  # Remove trailing "Agent" suffix.
+  name = re.sub(r'\s+Agent$', '', name, flags=re.IGNORECASE)
+  # Replace non-alphanumeric with underscore.
+  name = re.sub(r'[^a-zA-Z0-9]+', '_', name)
+  # Strip leading/trailing underscores and lowercase.
+  return name.strip('_').lower()
 
 
 def get_default_branch(repo_path):
@@ -78,7 +128,9 @@ def get_default_branch(repo_path):
       ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
       capture_output=True, text=True, cwd=repo_path, check=True,
     )
-    return result.stdout.strip().replace("refs/remotes/origin/", "")
+    return result.stdout.strip().replace(
+      "refs/remotes/origin/", "",
+    )
   except subprocess.CalledProcessError:
     pass
 

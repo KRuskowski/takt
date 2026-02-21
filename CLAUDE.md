@@ -26,6 +26,20 @@ bin/workspace.py status feature-auth
 
 # Delete a workspace (-f to skip confirmation)
 bin/workspace.py delete feature-auth
+
+# Add a pipeline stage (role from pipeline_roles.md)
+bin/workspace.py stage-add feature-auth test
+bin/workspace.py stage-add feature-auth review
+
+# Remove a stage (-f to skip confirmation)
+bin/workspace.py stage-remove feature-auth test
+
+# List all stages (or filter by workspace)
+bin/workspace.py stage-list
+bin/workspace.py stage-list feature-auth
+
+# Show pipeline chain for a workspace
+bin/workspace.py pipeline feature-auth
 ```
 
 ## Pipeline Watcher (`bin/pipeline_watch.py`)
@@ -96,6 +110,9 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 - **Root repos**: `~/dev/root/<repo>` — local mirrors of GitHub.
 - **Workspaces**: `~/dev/workspaces/<name>/` — clones of root
   repos for isolated work. Origin = root repo.
+- **Stages**: `~/dev/stages/<workspace>/<role>/` — pipeline
+  stages. Any role from `templates/pipeline_roles.md` can be
+  a stage. Remote chain: workspace -> stage1 -> stage2 -> root.
 - **Workspace name = branch name** across all repos.
 - **Agents never push to GitHub.** Push to origin (root repo)
   only. Operator uses `push_to_github.py` for GitHub.
