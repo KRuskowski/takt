@@ -12,6 +12,7 @@ from lib.config import (
   CONTEXT_DIR,
   TEMPLATES_DIR,
   TESTING_DIR,
+  UTILITY_DIR,
   WORKSPACES_DIR,
   get_default_branch,
   get_repo_path,
@@ -244,29 +245,29 @@ def _generate_workspace_claude_md(ws_dir, name, repos,
   out_path.write_text(content)
 
 
-def create_testing_stage(workspace_name):
-  """Create a testing stage for an existing workspace.
+def _create_stage(workspace_name, stage_base_dir, stage_type,
+                   template_name, repoint_upstream=True):
+  """Create a stage for an existing workspace.
 
-  Creates non-bare clones of the workspace's repos in
-  ~/dev/testing/<workspace>/. Each clone:
-  - Clones from root repo (origin = root)
-  - Checks out the workspace branch
-  - Accepts pushes via receive.denyCurrentBranch=updateInstead
-  - Gets a CLAUDE.md with the testing agent role
-
-  The workspace repos' origin is re-pointed to the testing
-  stage repos, so the chain becomes:
-    workspace -> testing -> root -> GitHub
+  Clones repos from root into stage_base_dir/<workspace>/.
+  Each clone checks out the workspace branch and gets a
+  CLAUDE.md from the named template.
 
   Args:
-    workspace_name: Name of the workspace to create a stage for.
+    workspace_name: Workspace (= branch) name.
+    stage_base_dir: Base directory for this stage type.
+    stage_type: Human-readable stage name for messages.
+    template_name: Filename in templates/ for CLAUDE.md.
+    repoint_upstream: If True, re-point the upstream stage's
+      origin to this stage (workspace origin for testing,
+      testing origin for utility).
 
   Returns:
-    Path to the testing stage directory.
+    Path to the created stage directory.
 
   Raises:
     FileNotFoundError: If workspace does not exist.
-    FileExistsError: If testing stage already exists.
+    FileExistsError: If stage already exists.
     GitError: If cloning or branch operations fail.
   """
   ws_dir = WORKSPACES_DIR / workspace_name
@@ -275,11 +276,11 @@ def create_testing_stage(workspace_name):
       f"Workspace '{workspace_name}' not found."
     )
 
-  stage_dir = TESTING_DIR / workspace_name
+  stage_dir = stage_base_dir / workspace_name
   if stage_dir.exists():
     raise FileExistsError(
-      f"Testing stage '{workspace_name}' already exists "
-      f"at {stage_dir}"
+      f"{stage_type} stage '{workspace_name}' already "
+      f"exists at {stage_dir}"
     )
 
   repos_config = load_repos_config().get("repos", {})
@@ -294,6 +295,17 @@ def create_testing_stage(workspace_name):
       f"Workspace '{workspace_name}' has no repos."
     )
 
+  # Determine upstream repos to re-point. For testing stages,
+  # upstream is the workspace. For utility stages, upstream is
+  # the testing stage.
+  if repoint_upstream:
+    if stage_base_dir == UTILITY_DIR:
+      upstream_dir = TESTING_DIR / workspace_name
+    else:
+      upstream_dir = ws_dir
+  else:
+    upstream_dir = None
+
   stage_dir.mkdir(parents=True)
 
   try:
@@ -302,7 +314,6 @@ def create_testing_stage(workspace_name):
       source = get_repo_path(disk_path)
       dest = stage_dir / repo_name
 
-      # Clone from root repo.
       clone_local(source, dest)
 
       # Check out workspace branch (create if needed).
@@ -311,38 +322,43 @@ def create_testing_stage(workspace_name):
       try:
         create_branch(dest, ws_branch)
       except GitError:
-        # Branch may already exist from the clone.
         run_git(["checkout", ws_branch], cwd=dest)
 
-      # Allow workspace to push here.
+      # Allow upstream to push here.
       set_receive_update(dest)
 
-      # Re-point workspace repo origin to this testing repo.
-      run_git(
-        ["remote", "set-url", "origin", str(dest)],
-        cwd=ws_repo,
-      )
-  except (GitError, Exception):
-    # Revert workspace origins on failure.
-    for repo_name in ws_repos:
-      ws_repo = ws_dir / repo_name
-      if ws_repo.exists():
-        disk_path = _resolve_repo_path(
-          repo_name, repos_config,
-        )
-        root_path = get_repo_path(disk_path)
-        try:
+      # Re-point upstream origin to this stage repo.
+      if upstream_dir:
+        upstream_repo = upstream_dir / repo_name
+        if upstream_repo.exists():
           run_git(
-            ["remote", "set-url", "origin", str(root_path)],
-            cwd=ws_repo,
+            ["remote", "set-url", "origin", str(dest)],
+            cwd=upstream_repo,
           )
-        except GitError:
-          pass
+  except (GitError, Exception):
+    # Revert upstream origins on failure.
+    if upstream_dir:
+      for repo_name in ws_repos:
+        upstream_repo = upstream_dir / repo_name
+        if upstream_repo and upstream_repo.exists():
+          disk_path = _resolve_repo_path(
+            repo_name, repos_config,
+          )
+          root_path = get_repo_path(disk_path)
+          try:
+            run_git(
+              ["remote", "set-url", "origin",
+               str(root_path)],
+              cwd=upstream_repo,
+            )
+          except GitError:
+            pass
     shutil.rmtree(stage_dir, ignore_errors=True)
     raise
 
-  _generate_testing_claude_md(
+  _generate_stage_claude_md(
     stage_dir, workspace_name, ws_repos, repos_config,
+    template_name,
   )
 
   # Copy context packets.
@@ -353,38 +369,41 @@ def create_testing_stage(workspace_name):
   return stage_dir
 
 
-def delete_testing_stage(workspace_name):
-  """Delete a testing stage and restore workspace origins.
+def _delete_stage(workspace_name, stage_base_dir, stage_type,
+                  upstream_dir=None):
+  """Delete a stage and restore upstream origins to root.
 
   Args:
     workspace_name: Workspace name.
+    stage_base_dir: Base directory for this stage type.
+    stage_type: Human-readable stage name for messages.
+    upstream_dir: Directory whose repos should have their
+      origins restored. None to skip.
 
   Raises:
-    FileNotFoundError: If testing stage does not exist.
+    FileNotFoundError: If stage does not exist.
   """
-  stage_dir = TESTING_DIR / workspace_name
+  stage_dir = stage_base_dir / workspace_name
   if not stage_dir.exists():
     raise FileNotFoundError(
-      f"Testing stage '{workspace_name}' not found."
+      f"{stage_type} stage '{workspace_name}' not found."
     )
 
   repos_config = load_repos_config().get("repos", {})
-  ws_dir = WORKSPACES_DIR / workspace_name
 
-  # Restore workspace origins to root repos.
-  if ws_dir.exists():
-    ws_repos = sorted(
-      d.name for d in ws_dir.iterdir()
+  if upstream_dir and upstream_dir.exists():
+    upstream_repos = sorted(
+      d.name for d in upstream_dir.iterdir()
       if d.is_dir() and (d / ".git").exists()
     )
-    for repo_name in ws_repos:
-      ws_repo = ws_dir / repo_name
+    for repo_name in upstream_repos:
+      repo = upstream_dir / repo_name
       disk_path = _resolve_repo_path(repo_name, repos_config)
       root_path = get_repo_path(disk_path)
       try:
         run_git(
           ["remote", "set-url", "origin", str(root_path)],
-          cwd=ws_repo,
+          cwd=repo,
         )
       except GitError:
         pass
@@ -392,17 +411,17 @@ def delete_testing_stage(workspace_name):
   shutil.rmtree(stage_dir)
 
 
-def list_testing_stages():
-  """List all testing stages with metadata.
+def _list_stages(stage_base_dir):
+  """List all stages in a base directory.
 
   Returns:
     List of dicts with keys: name, path, repos, branch.
   """
-  if not TESTING_DIR.exists():
+  if not stage_base_dir.exists():
     return []
 
   results = []
-  for stage_dir in sorted(TESTING_DIR.iterdir()):
+  for stage_dir in sorted(stage_base_dir.iterdir()):
     if not stage_dir.is_dir():
       continue
     repos = sorted(
@@ -424,10 +443,10 @@ def list_testing_stages():
   return results
 
 
-def _generate_testing_claude_md(stage_dir, name, repos,
-                                repos_config):
-  """Generate a testing stage CLAUDE.md from the template."""
-  tmpl_path = TEMPLATES_DIR / "testing_stage_claude.md"
+def _generate_stage_claude_md(stage_dir, name, repos,
+                              repos_config, template_name):
+  """Generate a stage CLAUDE.md from the named template."""
+  tmpl_path = TEMPLATES_DIR / template_name
   if not tmpl_path.exists():
     return
 
@@ -467,3 +486,62 @@ def _generate_testing_claude_md(stage_dir, name, repos,
 
   out_path = stage_dir / "CLAUDE.md"
   out_path.write_text(content)
+
+
+# -- Testing stage public API --
+
+def create_testing_stage(workspace_name):
+  """Create a testing stage for a workspace.
+
+  Workspace repos' origins are re-pointed to the testing
+  stage. Chain: workspace -> testing -> root.
+  """
+  return _create_stage(
+    workspace_name, TESTING_DIR, "Testing",
+    "testing_stage_claude.md",
+  )
+
+
+def delete_testing_stage(workspace_name):
+  """Delete a testing stage and restore workspace origins."""
+  ws_dir = WORKSPACES_DIR / workspace_name
+  _delete_stage(
+    workspace_name, TESTING_DIR, "Testing",
+    upstream_dir=ws_dir,
+  )
+
+
+def list_testing_stages():
+  """List all testing stages."""
+  return _list_stages(TESTING_DIR)
+
+
+# -- Utility stage public API --
+
+def create_utility_stage(workspace_name):
+  """Create a utility stage for a workspace.
+
+  Testing stage repos' origins are re-pointed to the utility
+  stage. Chain: workspace -> testing -> utility -> root.
+
+  The utility agent watches for pushes and creates PRs on
+  GitHub.
+  """
+  return _create_stage(
+    workspace_name, UTILITY_DIR, "Utility",
+    "utility_stage_claude.md",
+  )
+
+
+def delete_utility_stage(workspace_name):
+  """Delete a utility stage and restore testing origins."""
+  testing_dir = TESTING_DIR / workspace_name
+  _delete_stage(
+    workspace_name, UTILITY_DIR, "Utility",
+    upstream_dir=testing_dir,
+  )
+
+
+def list_utility_stages():
+  """List all utility stages."""
+  return _list_stages(UTILITY_DIR)
