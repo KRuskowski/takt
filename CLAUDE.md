@@ -50,7 +50,10 @@ bin/workspace.py pipeline feature-auth
 
 Polls root repos for branch changes, gathers diffs/logs, pipes
 to Claude CLI for analysis. Triggered agents launch as kitty
-tabs. Details: `context/pipeline-kitty.md`
+tabs. Also detects default-branch movement and writes
+`.upstream-sync` markers in affected workspaces, launching
+sync agents to merge upstream.
+Details: `context/pipeline-kitty.md`
 
 ```bash
 # Launch the pipeline kitty terminal
