@@ -42,6 +42,18 @@ DEFAULT_INTERVAL = 30
 DEFAULT_MAX_DIFF_LINES = 500
 KITTY_SOCKET_PATH = "/tmp/kitty-pipeline"
 
+# Muted background tones for kitty tab color-coding by role.
+ROLE_COLORS = {
+  "feature": "#2d5a27",
+  "test": "#5a4b27",
+  "review": "#27455a",
+  "docs": "#3d275a",
+  "refactor": "#275a5a",
+  "pr": "#5a2727",
+  "deploy_qa": "#5a4027",
+  "sync": "#3a3a5a",
+}
+
 
 def _find_kitty_socket():
   """Find the kitty remote control socket.
@@ -371,6 +383,50 @@ def _kitty_tab_exists(title):
   return False
 
 
+def _prune_finished_tabs():
+  """Close kitty tabs whose agent process has finished.
+
+  Returns:
+    List of tab titles that were pruned.
+  """
+  socket = _find_kitty_socket()
+  if socket is None:
+    return []
+  result = subprocess.run(
+    ["kitten", "@", "--to", socket, "ls"],
+    capture_output=True, text=True,
+  )
+  if result.returncode != 0:
+    return []
+  try:
+    windows = json.loads(result.stdout)
+  except (json.JSONDecodeError, ValueError):
+    return []
+  pruned = []
+  for os_window in windows:
+    for tab in os_window.get("tabs", []):
+      title = tab.get("title", "")
+      if "/" not in title:
+        continue
+      ws, role = title.split("/", 1)
+      if role == "sync":
+        done = WORKSPACES_DIR / ws / ".agent-done"
+      else:
+        done = STAGES_DIR / ws / role / ".agent-done"
+      if not done.exists():
+        continue
+      subprocess.run(
+        [
+          "kitten", "@", "--to", socket,
+          "close-tab", "-m", f"title:{title}",
+        ],
+        capture_output=True, text=True,
+      )
+      done.unlink(missing_ok=True)
+      pruned.append(title)
+  return pruned
+
+
 def launch_in_kitty(ws, role, stage_dir, prompt):
   """Launch a claude agent in a kitty tab.
 
@@ -396,10 +452,17 @@ def launch_in_kitty(ws, role, stage_dir, prompt):
       "no kitty socket found at"
       f" {KITTY_SOCKET_PATH}"
     )
+  # Remove stale done marker from a previous run.
+  done_marker = stage_dir / ".agent-done"
+  done_marker.unlink(missing_ok=True)
   # Use bash -i so shell aliases (e.g. claude) are loaded.
   # Single quotes inside prompt are escaped for the shell.
+  # Append touch so a marker is written when claude exits.
   escaped = prompt.replace("'", "'\\''")
-  shell_cmd = f"unset CLAUDECODE; claude --model sonnet '{escaped}'"
+  shell_cmd = (
+    f"unset CLAUDECODE; claude --model sonnet '{escaped}';"
+    f" touch '{done_marker}'"
+  )
   result = subprocess.run(
     [
       "kitten", "@", "--to", socket,
@@ -416,6 +479,27 @@ def launch_in_kitty(ws, role, stage_dir, prompt):
       f"kitty launch failed: {result.stderr.strip()}"
     )
   print(f"  Launched agent in kitty tab '{title}'.")
+  # Color-code the tab by role (fire-and-forget).
+  color = ROLE_COLORS.get(role)
+  if color:
+    subprocess.run(
+      [
+        "kitten", "@", "--to", socket,
+        "set-tab-color",
+        "-m", f"title:{title}",
+        f"active_bg={color}",
+      ],
+      capture_output=True, text=True,
+    )
+  # Auto-focus the newly launched tab.
+  subprocess.run(
+    [
+      "kitten", "@", "--to", socket,
+      "focus-tab",
+      "-m", f"title:{title}",
+    ],
+    capture_output=True, text=True,
+  )
 
 
 def _scan_and_trigger():
@@ -616,6 +700,8 @@ def poll_once(repos_config, max_diff_lines=DEFAULT_MAX_DIFF_LINES):
   Returns:
     True if changes were found and processed.
   """
+  for title in _prune_finished_tabs():
+    print(f"  Pruned finished tab '{title}'.")
   _scan_and_trigger()
   _scan_and_sync()
   old_refs = load_refs()
