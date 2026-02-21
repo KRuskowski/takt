@@ -64,25 +64,40 @@ bin/pipeline_watch.py --reset
 ## Target Management (`bin/target.py`)
 
 Manage build/test targets (VMs and hardware) with exclusive
-locking.
+locking. Templates (deb-01, win-01) are read-only — use
+`bin/clone_vm.py` to create clones.
 
 ```bash
-# List targets
+# List targets (shows [template] tag)
 bin/target.py list
 
 # Claim/release for a workspace
-bin/target.py claim win-01 feature-auth
-bin/target.py release win-01
+bin/target.py claim deb-02 feature-auth
+bin/target.py release deb-02
 
 # VM lifecycle (stubs if virsh not installed)
-bin/target.py up win-01
-bin/target.py down win-01
+bin/target.py up deb-02
+bin/target.py down deb-02
 
 # Run command via SSH
-bin/target.py run win-01 "cmake --build ."
+bin/target.py run deb-02 "cmake --build ."
 
 # Show target details + connectivity
-bin/target.py status win-01
+bin/target.py status deb-02
+```
+
+## VM Cloning (`bin/clone_vm.py`)
+
+Create/delete qcow2-backed clones from templates. Requires
+sudo. Details: `context/vm-templates.md`
+
+```bash
+# Create a clone
+sudo python3 bin/clone_vm.py create deb-01 deb-02 \
+  --ip 10.101.0.100
+
+# Delete a clone
+sudo python3 bin/clone_vm.py delete deb-02
 ```
 
 ## Dashboard (`bin/dashboard.py`)
