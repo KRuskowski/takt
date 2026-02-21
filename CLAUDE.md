@@ -3,6 +3,8 @@
 - sign you commits
 - use google style guide, 80 character limit, 2 space indends
 - if you write scripts use python
+- keep CLAUDE.md concise — put details in `context/` files
+  and reference them by filepath from here
 
 # Agent Orchestration Tools
 
@@ -71,29 +73,8 @@ bin/target.py status win-01
 
 ## Dashboard (`bin/dashboard.py`)
 
-TUI dashboard for monitoring workspaces, agents, targets,
-and usage. Built with Textual.
-
-```bash
-# Launch the dashboard
-bin/dashboard.py
-```
-
-**Keybindings:**
-- `n` — create new workspace
-- `c` — claim selected target
-- `x` — release selected target
-- `r` — refresh all panels
-- `q` — quit
-
-**Layout:** 3-column grid — left (workspaces + targets),
-center (agents + usage), right (detail pane). Select any row
-to populate the detail pane.
-
-**Lib modules used by the dashboard:**
-- `lib/session_parser.py` — JSONL parsing + cost calculation
-- `lib/workspace_ops.py` — workspace CRUD operations
-- `lib/target_ops.py` — target lock operations
+Textual TUI for monitoring workspaces, agents, targets, and
+usage. Details: `context/dashboard.md`
 
 ## Push to GitHub (`bin/push_to_github.py`)
 

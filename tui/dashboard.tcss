@@ -1,87 +1,60 @@
-/* Agent Orchestration Dashboard layout. */
+/* Agent Orchestration Dashboard — 2-col, 2-row grid. */
+/* Top row: agents (full width).                       */
+/* Bottom row: workspaces + targets side by side.      */
 
 Screen {
   layout: grid;
-  grid-size: 3 2;
-  grid-columns: 1fr 1fr 1fr;
+  grid-size: 2 2;
+  grid-columns: 1fr 1fr;
   grid-rows: 1fr 1fr;
   grid-gutter: 1;
+  background: #101010;
+}
+
+#agents-panel {
+  column-span: 2;
+  row-span: 1;
+  background: #101010;
+  border: solid #2a2a2a;
 }
 
 #workspaces-panel {
   column-span: 1;
   row-span: 1;
-}
-
-#agents-panel {
-  column-span: 1;
-  row-span: 1;
-}
-
-#detail-pane {
-  column-span: 1;
-  row-span: 2;
+  background: #101010;
+  border: solid #2a2a2a;
 }
 
 #targets-panel {
   column-span: 1;
   row-span: 1;
+  background: #101010;
+  border: solid #2a2a2a;
 }
 
-#usage-panel {
-  column-span: 1;
-  row-span: 1;
-}
-
-/* Panel styling. */
-.panel {
-  border: solid $accent;
-  padding: 0 1;
-}
-
+/* Panel title bar. */
 .panel-title {
   text-style: bold;
-  color: $text;
+  color: #cccccc;
   padding: 0 1;
-  background: $accent;
+  background: #2a2a2a;
 }
 
 /* DataTable styling. */
 DataTable {
   height: 1fr;
+  background: #101010;
 }
 
 DataTable > .datatable--header {
   text-style: bold;
-  color: $text;
-  background: $surface;
+  color: #999999;
+  background: #1a1a1a;
 }
 
 DataTable > .datatable--cursor {
-  background: $accent 40%;
-  color: $text;
-}
-
-/* Detail pane. */
-#detail-pane {
-  border: solid $accent;
-  padding: 1;
-  overflow-y: auto;
-}
-
-#detail-content {
-  width: 1fr;
-}
-
-/* Usage panel sparkline area. */
-#usage-summary {
-  height: auto;
-  padding: 0 1;
-}
-
-#usage-sparkline {
-  height: 3;
-  padding: 0 1;
+  background: #2a2a2a;
+  color: #cccccc;
 }
 
 /* Status indicators. */
@@ -94,5 +67,14 @@ DataTable > .datatable--cursor {
 }
 
 .status-idle {
-  color: $text 40%;
+  color: #666666;
+}
+
+/* Header/Footer. */
+Header {
+  background: #1a1a1a;
+}
+
+Footer {
+  background: #1a1a1a;
 }
