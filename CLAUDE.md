@@ -49,9 +49,13 @@ bin/workspace.py pipeline feature-auth
 ## Pipeline Watcher (`bin/pipeline_watch.py`)
 
 Polls root repos for branch changes, gathers diffs/logs, pipes
-to Claude CLI for analysis.
+to Claude CLI for analysis. Triggered agents launch as kitty
+tabs. Details: `context/pipeline-kitty.md`
 
 ```bash
+# Launch the pipeline kitty terminal
+kittenpipeline
+
 # Start watching (polls every 30s)
 bin/pipeline_watch.py
 

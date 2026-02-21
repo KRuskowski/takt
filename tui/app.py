@@ -5,6 +5,7 @@ from textual.binding import Binding
 from textual.widgets import Footer, Header
 
 from tui.widgets.agents import AgentsPanel
+from tui.widgets.pipeline import PipelinePanel
 from tui.widgets.stages import StagesPanel
 from tui.widgets.targets import TargetsPanel
 from tui.widgets.workspaces import WorkspacesPanel
@@ -22,6 +23,7 @@ class DashboardApp(App):
     Binding("n", "new_workspace", "New WS"),
     Binding("c", "claim_target", "Claim"),
     Binding("x", "release_target", "Release"),
+    Binding("w", "toggle_watcher", "Watch"),
   ]
 
   def compose(self) -> ComposeResult:
@@ -29,6 +31,7 @@ class DashboardApp(App):
     yield AgentsPanel(id="agents-panel")
     yield WorkspacesPanel(id="workspaces-panel")
     yield StagesPanel(id="stages-panel")
+    yield PipelinePanel(id="pipeline-panel")
     yield TargetsPanel(id="targets-panel")
     yield Footer()
 
@@ -39,6 +42,7 @@ class DashboardApp(App):
     self.set_interval(10, self._poll_stages)
     self.set_interval(5, self._poll_agents)
     self.set_interval(10, self._poll_targets)
+    self.set_interval(10, self._poll_pipeline)
 
   def _refresh_all(self) -> None:
     """Refresh all panels."""
@@ -46,6 +50,7 @@ class DashboardApp(App):
     self._poll_stages()
     self._poll_agents()
     self._poll_targets()
+    self._poll_pipeline()
 
   def _poll_workspaces(self) -> None:
     panel = self.query_one("#workspaces-panel", WorkspacesPanel)
@@ -63,9 +68,18 @@ class DashboardApp(App):
     panel = self.query_one("#targets-panel", TargetsPanel)
     panel.refresh_data()
 
+  def _poll_pipeline(self) -> None:
+    panel = self.query_one("#pipeline-panel", PipelinePanel)
+    panel.refresh_data()
+
   def action_refresh(self) -> None:
     """Manual refresh all panels."""
     self._refresh_all()
+
+  def action_toggle_watcher(self) -> None:
+    """Toggle pipeline watcher on/off."""
+    panel = self.query_one("#pipeline-panel", PipelinePanel)
+    panel.toggle_watching()
 
   def action_new_workspace(self) -> None:
     """Open create workspace modal."""

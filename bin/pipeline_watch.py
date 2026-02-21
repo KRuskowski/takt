@@ -7,6 +7,7 @@ analysis.
 """
 
 import argparse
+import glob
 import json
 import subprocess
 import sys
@@ -19,6 +20,7 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 from lib.config import (
+  STAGES_DIR,
   STATE_DIR,
   get_default_branch,
   get_repo_path,
@@ -36,6 +38,27 @@ from lib.git_utils import (
 REFS_FILE = STATE_DIR / "branch_refs.json"
 DEFAULT_INTERVAL = 30
 DEFAULT_MAX_DIFF_LINES = 500
+KITTY_SOCKET_PATH = "/tmp/kitty-pipeline"
+
+
+def _find_kitty_socket():
+  """Find the kitty remote control socket.
+
+  Checks for the exact path first (CLI --listen-on), then
+  falls back to a glob for the -{pid} variant (kitty.conf
+  listen_on).
+
+  Returns:
+    Socket address string (e.g. "unix:/tmp/kitty-pipeline")
+    or None if no socket is found.
+  """
+  exact = Path(KITTY_SOCKET_PATH)
+  if exact.exists():
+    return f"unix:{exact}"
+  matches = sorted(glob.glob(f"{KITTY_SOCKET_PATH}-*"))
+  if matches:
+    return f"unix:{matches[-1]}"
+  return None
 
 
 def load_refs():
@@ -237,12 +260,190 @@ def pipe_to_claude(context, branch):
     print(context)
 
 
+def scan_markers():
+  """Walk stages directory for .pipeline-push marker files.
+
+  Returns:
+    Dict mapping (ws, role) to list of (repo_name, lines) tuples.
+  """
+  markers = defaultdict(list)
+  if not STAGES_DIR.exists():
+    return markers
+  for ws_dir in sorted(STAGES_DIR.iterdir()):
+    if not ws_dir.is_dir():
+      continue
+    for role_dir in sorted(ws_dir.iterdir()):
+      if not role_dir.is_dir():
+        continue
+      for repo_dir in sorted(role_dir.iterdir()):
+        if not repo_dir.is_dir():
+          continue
+        marker = repo_dir / ".pipeline-push"
+        if not marker.exists():
+          continue
+        lines = marker.read_text().strip().splitlines()
+        if lines:
+          markers[(ws_dir.name, role_dir.name)].append(
+            (repo_dir.name, lines)
+          )
+  return dict(markers)
+
+
+def build_trigger_prompt(ws, role, repo_markers):
+  """Build a prompt describing incoming changes for a stage.
+
+  Args:
+    ws: Workspace name (= branch name).
+    role: Stage role.
+    repo_markers: List of (repo_name, marker_lines) tuples.
+
+  Returns:
+    Prompt string.
+  """
+  parts = [f"Incoming changes on branch `{ws}`:\n"]
+  for repo, lines in repo_markers:
+    parts.append(f"## {repo}")
+    stage_repo = STAGES_DIR / ws / role / repo
+    # Use first non-zero old ref and last new ref to cover
+    # all pushes in one log range.
+    first_old = None
+    last_new = None
+    for line in lines:
+      tokens = line.split(None, 3)
+      if len(tokens) < 4:
+        continue
+      old_ref, new_ref = tokens[1], tokens[2]
+      if first_old is None and old_ref != "0" * 40:
+        first_old = old_ref
+      last_new = new_ref
+    if last_new is None:
+      continue
+    if first_old is None:
+      parts.append(f"New branch created at {last_new[:8]}")
+    else:
+      try:
+        log = get_log(
+          stage_repo, base=first_old, head=last_new,
+        )
+        if log:
+          parts.append(f"```\n{log}\n```")
+        else:
+          parts.append("(no new commits)")
+      except GitError:
+        parts.append(
+          f"{first_old[:8]}..{last_new[:8]}"
+          " (log unavailable)"
+        )
+    parts.append("")
+  parts.append("Process these changes according to your role.")
+  parts.append("When done, push to origin.")
+  return "\n".join(parts)
+
+
+def _kitty_tab_exists(title):
+  """Check if a kitty tab with the given title exists.
+
+  Args:
+    title: Tab title to search for.
+
+  Returns:
+    True if a tab with that title exists in any OS window.
+  """
+  socket = _find_kitty_socket()
+  if socket is None:
+    return False
+  result = subprocess.run(
+    ["kitten", "@", "--to", socket, "ls"],
+    capture_output=True, text=True,
+  )
+  if result.returncode != 0:
+    return False
+  try:
+    windows = json.loads(result.stdout)
+  except (json.JSONDecodeError, ValueError):
+    return False
+  for os_window in windows:
+    for tab in os_window.get("tabs", []):
+      if tab.get("title") == title:
+        return True
+  return False
+
+
+def launch_in_kitty(ws, role, stage_dir, prompt):
+  """Launch a claude agent in a kitty tab.
+
+  Skips if a tab with the same title already exists.
+
+  Args:
+    ws: Workspace name.
+    role: Stage role.
+    stage_dir: Path to the stage directory.
+    prompt: Trigger prompt for the agent.
+
+  Raises:
+    RuntimeError: If the kitty launch command fails or no
+      socket is found.
+  """
+  title = f"{ws}/{role}"
+  if _kitty_tab_exists(title):
+    print(f"  Tab '{title}' already exists, skipping.")
+    return
+  socket = _find_kitty_socket()
+  if socket is None:
+    raise RuntimeError(
+      "no kitty socket found at"
+      f" {KITTY_SOCKET_PATH}"
+    )
+  # Use bash -i so shell aliases (e.g. claude) are loaded.
+  # Single quotes inside prompt are escaped for the shell.
+  escaped = prompt.replace("'", "'\\''")
+  shell_cmd = f"unset CLAUDECODE; claude '{escaped}'"
+  result = subprocess.run(
+    [
+      "kitten", "@", "--to", socket,
+      "launch", "--type", "tab",
+      "--tab-title", title,
+      "--cwd", str(stage_dir),
+      "--hold",
+      "zsh", "-ic", shell_cmd,
+    ],
+    capture_output=True, text=True,
+  )
+  if result.returncode != 0:
+    raise RuntimeError(
+      f"kitty launch failed: {result.stderr.strip()}"
+    )
+  print(f"  Launched agent in kitty tab '{title}'.")
+
+
+def _scan_and_trigger():
+  """Scan for pipeline push markers and trigger stage agents."""
+  markers = scan_markers()
+  if not markers:
+    return
+  print(f"\nFound pipeline markers in {len(markers)} stage(s):")
+  for (ws, role), repo_markers in markers.items():
+    repos = [r for r, _ in repo_markers]
+    print(f"  {ws}/{role}: {', '.join(repos)}")
+    stage_dir = STAGES_DIR / ws / role
+    prompt = build_trigger_prompt(ws, role, repo_markers)
+    # Delete markers before launching to avoid re-triggering.
+    for repo, _ in repo_markers:
+      marker = STAGES_DIR / ws / role / repo / ".pipeline-push"
+      marker.unlink(missing_ok=True)
+    try:
+      launch_in_kitty(ws, role, stage_dir, prompt)
+    except RuntimeError as e:
+      print(f"  Error launching agent for {ws}/{role}: {e}")
+
+
 def poll_once(repos_config, max_diff_lines=DEFAULT_MAX_DIFF_LINES):
   """Run a single poll cycle.
 
   Returns:
     True if changes were found and processed.
   """
+  _scan_and_trigger()
   old_refs = load_refs()
   new_refs = snapshot_all_refs(repos_config)
 
