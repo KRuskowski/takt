@@ -164,6 +164,9 @@ def cmd_run(args):
   host = target.get("host")
   user = target.get("user")
   port = target.get("port")
+  key = target.get("ssh_key")
+  if key:
+    key = str(Path(key).expanduser())
 
   if not host:
     print(f"Error: no host configured for target '{name}'.")
@@ -171,7 +174,7 @@ def cmd_run(args):
 
   print(f"Running on {name} ({host}): {command}")
   try:
-    output = run_ssh(host, command, user=user, port=port)
+    output = run_ssh(host, command, user=user, port=port, key=key)
     if output:
       print(output)
   except SSHError as e:
@@ -203,9 +206,13 @@ def cmd_status(args):
 
   host = target.get("host")
   if host:
+    key = target.get("ssh_key")
+    if key:
+      key = str(Path(key).expanduser())
     print("  Connectivity: ", end="", flush=True)
     reachable = check_connectivity(
-      host, user=target.get("user"), port=target.get("port"),
+      host, user=target.get("user"),
+      port=target.get("port"), key=key,
     )
     print("OK" if reachable else "UNREACHABLE")
 
@@ -214,7 +221,7 @@ def main():
   parser = argparse.ArgumentParser(
     description="Manage build/test targets.",
   )
-  sub = parser.add_subparsers(dest="command")
+  sub = parser.add_subparsers(dest="subcmd")
 
   # list
   sub.add_parser("list", help="List all targets.")
@@ -250,7 +257,7 @@ def main():
   p_status.add_argument("name", help="Target name.")
 
   args = parser.parse_args()
-  if not args.command:
+  if not args.subcmd:
     parser.print_help()
     sys.exit(1)
 
@@ -263,7 +270,7 @@ def main():
     "run": cmd_run,
     "status": cmd_status,
   }
-  commands[args.command](args)
+  commands[args.subcmd](args)
 
 
 if __name__ == "__main__":
