@@ -18,6 +18,7 @@ from lib.ssh_utils import SSHError, check_connectivity, run_ssh
 from lib.target_ops import (
   get_all_targets,
   get_target,
+  is_template,
   read_lock,
   release_lock,
   write_lock,
@@ -42,10 +43,11 @@ def cmd_list(args):
   for t in targets:
     lock = t["lock"]
     claimed = lock["workspace"] if lock else "-"
+    tag = " [template]" if t.get("template") else ""
     print(
       f"{t['name']:<15} {t['type']:<10} "
       f"{t['host']:<20} {claimed:<20} "
-      f"{t['description']}"
+      f"{t['description']}{tag}"
     )
 
 
@@ -57,6 +59,13 @@ def cmd_claim(args):
   target = get_target(name)
   if target is None:
     print(f"Error: target '{name}' not found.")
+    sys.exit(1)
+
+  if target.get("template"):
+    print(
+      f"Error: '{name}' is a template. "
+      f"Use bin/clone_vm.py to create a clone."
+    )
     sys.exit(1)
 
   lock = read_lock(name)
