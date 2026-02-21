@@ -9,6 +9,7 @@ import yaml
 BASE_DIR = Path(os.environ.get(
   "ORCH_BASE_DIR", os.path.expanduser("~/dev")
 ))
+ROOT_DIR = BASE_DIR / "root"
 WORKSPACES_DIR = BASE_DIR / "workspaces"
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJECT_DIR / "config"
@@ -40,7 +41,7 @@ def load_targets_config():
 
 def get_repo_path(repo_name):
   """Return the absolute path to a root repo."""
-  return BASE_DIR / repo_name
+  return ROOT_DIR / repo_name
 
 
 def get_default_branch(repo_path):
@@ -82,6 +83,16 @@ def get_default_branch(repo_path):
 
 
 def validate_repo(repo_name):
-  """Check that a repo exists and is a git repo. Returns True/False."""
+  """Check that a repo exists and is a git repo.
+
+  Handles both bare repos (directory IS the git dir) and normal
+  repos (directory contains a .git subdir).
+
+  Returns:
+    True if the repo exists and is a valid git repo.
+  """
   repo_path = get_repo_path(repo_name)
-  return (repo_path / ".git").is_dir()
+  if (repo_path / ".git").is_dir():
+    return True
+  # Bare repo: HEAD file at top level.
+  return (repo_path / "HEAD").is_file()

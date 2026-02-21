@@ -107,12 +107,21 @@ def get_workspace_status(name):
   return results
 
 
+def _resolve_repo_path(repo_name, repos_config):
+  """Resolve a repo key to its filesystem path via repos.yaml.
+
+  Falls back to repo_name if not found in config.
+  """
+  cfg = repos_config.get(repo_name, {})
+  return cfg.get("path", repo_name)
+
+
 def create_workspace(name, repos):
   """Create a new workspace with local clones.
 
   Args:
     name: Workspace (= branch) name.
-    repos: List of repo names to include.
+    repos: List of repo names (keys from repos.yaml).
 
   Returns:
     Path to the created workspace.
@@ -129,18 +138,23 @@ def create_workspace(name, repos):
       f"Workspace '{name}' already exists at {ws_dir}"
     )
 
-  invalid = [r for r in repos if not validate_repo(r)]
+  repos_config = load_repos_config().get("repos", {})
+
+  invalid = [
+    r for r in repos
+    if not validate_repo(_resolve_repo_path(r, repos_config))
+  ]
   if invalid:
     raise ValueError(
       f"Invalid git repos: {', '.join(invalid)}"
     )
 
-  repos_config = load_repos_config().get("repos", {})
   ws_dir.mkdir(parents=True)
 
   try:
     for repo_name in repos:
-      source = get_repo_path(repo_name)
+      disk_path = _resolve_repo_path(repo_name, repos_config)
+      source = get_repo_path(disk_path)
       dest = ws_dir / repo_name
       clone_local(source, dest)
       create_branch(dest, name)

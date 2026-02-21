@@ -3,7 +3,7 @@
 ## Starting Point
 
 A workflow for running multiple Claude CLI agents in parallel across multi-repo projects.
-Root repositories live in `~/dev`, workspaces are created in `~/dev/workspaces` as local
+Root repositories live in `~/dev/root`, workspaces are created in `~/dev/workspaces` as local
 clones, each workspace gets its own agent. Agents read instructions from Claude.md files.
 
 ## What We Designed
@@ -36,7 +36,7 @@ which repos have been pushed.
 
 The full chain:
 ```
-GitHub (origin) → ~/dev/repo (root) → ~/dev/workspaces/feature-x/repo (workspace)
+GitHub (origin) → ~/dev/root/repo (root) → ~/dev/workspaces/feature-x/repo (workspace)
 ```
 Agents never push to GitHub directly. You are the gatekeeper.
 

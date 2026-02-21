@@ -93,7 +93,7 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 
 # Key Concepts
 
-- **Root repos**: `~/dev/<repo>` — local mirrors of GitHub.
+- **Root repos**: `~/dev/root/<repo>` — local mirrors of GitHub.
 - **Workspaces**: `~/dev/workspaces/<name>/` — clones of root
   repos for isolated work. Origin = root repo.
 - **Workspace name = branch name** across all repos.

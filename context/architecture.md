@@ -11,13 +11,13 @@ Claude CLI agents in parallel across multi-repo projects.
 GitHub (upstream)
   |
   v
-~/dev/<repo>          Root repos (local mirrors of GitHub)
+~/dev/root/<repo>     Root repos (local mirrors of GitHub)
   |
   v
 ~/dev/workspaces/     Workspace clones (one per task/feature)
   └── feature-x/
-      ├── repo-a/     Clone of ~/dev/repo-a, branch: feature-x
-      ├── repo-b/     Clone of ~/dev/repo-b, branch: feature-x
+      ├── repo-a/     Clone of ~/dev/root/repo-a, branch: feature-x
+      ├── repo-b/     Clone of ~/dev/root/repo-b, branch: feature-x
       └── CLAUDE.md   Workspace-level instructions
 ```
 
