@@ -65,19 +65,6 @@ DataTable > .datatable--cursor {
   color: #cccccc;
 }
 
-/* Status indicators. */
-.status-active {
-  color: $success;
-}
-
-.status-recent {
-  color: $warning;
-}
-
-.status-idle {
-  color: #666666;
-}
-
 /* Header/Footer. */
 Header {
   background: #1a1a1a;

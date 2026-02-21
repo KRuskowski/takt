@@ -3,6 +3,7 @@
 import os
 import time
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DataTable, Static
@@ -14,10 +15,34 @@ _ROOT = os.path.join(_DEV, "root")
 _WORKSPACES = os.path.join(_DEV, "workspaces")
 
 
+def _age_style(status, age_min):
+  """Return a Rich style string based on age bucket.
+
+  Args:
+    status: One of 'active', 'recent', 'stale', 'idle'.
+    age_min: Age in minutes (unused for active/idle).
+
+  Returns:
+    Rich style string for coloring row text.
+  """
+  if status == "active":
+    return "#66bb6a"
+  if status == "recent":
+    return "#fdd835"
+  if status == "stale":
+    return "#666666"
+  return ""
+
+
 def _status_label(session):
-  """Return a status label and age in minutes."""
+  """Return a human-friendly status label and age in minutes.
+
+  Returns:
+    Tuple of (status_bucket, age_minutes, display_label).
+    status_bucket is one of 'active', 'recent', 'stale', 'idle'.
+  """
   if session.is_active:
-    return "active", 0
+    return "active", 0, "active"
   if session.last_active:
     from datetime import datetime
     try:
@@ -25,11 +50,14 @@ def _status_label(session):
         session.last_active.replace("Z", "+00:00")
       )
       age_min = (time.time() - ts.timestamp()) / 60
+      label = f"{int(age_min)}m ago"
+      if age_min < 10:
+        return "recent", age_min, label
       if age_min < 30:
-        return "recent", age_min
+        return "stale", age_min, label
     except (ValueError, TypeError):
       pass
-  return "idle", float("inf")
+  return "idle", float("inf"), "idle"
 
 
 def _short_project(cwd):
@@ -113,27 +141,31 @@ class AgentsPanel(Vertical):
     active_count = 0
     hidden_count = 0
     for s in sessions:
-      status, _ = _status_label(s)
+      status, age_min, label = _status_label(s)
       if status == "idle":
         hidden_count += 1
         continue
       if status == "active":
         active_count += 1
 
+      style = _age_style(status, age_min)
       model = (
         s.model.split("-")[1] if "-" in s.model else s.model
       )
       model = model[:6]
       total_tok = s.total_input_tokens + s.total_output_tokens
       project = _short_project(s.cwd)
-      table.add_row(
+      cells = [
         s.slug[:20] if s.slug else s.session_id[:8],
         project[:25],
         s.git_branch[:15] if s.git_branch else "-",
         model,
-        status,
+        label,
         _format_context(s),
         _format_tokens(total_tok),
+      ]
+      table.add_row(
+        *(Text(c, style=style) for c in cells),
         key=s.session_id,
       )
 
