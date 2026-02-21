@@ -15,7 +15,9 @@ class SSHError(Exception):
     )
 
 
-def run_ssh(host, command, user=None, port=None, timeout=30):
+def run_ssh(
+  host, command, user=None, port=None, key=None, timeout=30,
+):
   """Run a command on a remote host via SSH.
 
   Args:
@@ -23,6 +25,7 @@ def run_ssh(host, command, user=None, port=None, timeout=30):
     command: Command string to execute remotely.
     user: SSH user (optional).
     port: SSH port (optional).
+    key: Path to SSH private key (optional).
     timeout: Connection timeout in seconds.
 
   Returns:
@@ -36,6 +39,8 @@ def run_ssh(host, command, user=None, port=None, timeout=30):
   ]
   if port:
     ssh_args += ["-p", str(port)]
+  if key:
+    ssh_args += ["-i", str(key)]
   target = f"{user}@{host}" if user else host
   ssh_args.append(target)
   ssh_args.append(command)
@@ -48,20 +53,26 @@ def run_ssh(host, command, user=None, port=None, timeout=30):
   return result.stdout.strip()
 
 
-def check_connectivity(host, user=None, port=None, timeout=5):
+def check_connectivity(
+  host, user=None, port=None, key=None, timeout=5,
+):
   """Check if a host is reachable via SSH.
 
   Args:
     host: Hostname or IP address.
     user: SSH user (optional).
     port: SSH port (optional).
+    key: Path to SSH private key (optional).
     timeout: Connection timeout in seconds.
 
   Returns:
     True if reachable, False otherwise.
   """
   try:
-    run_ssh(host, "echo ok", user=user, port=port, timeout=timeout)
+    run_ssh(
+      host, "echo ok",
+      user=user, port=port, key=key, timeout=timeout,
+    )
     return True
   except SSHError:
     return False
