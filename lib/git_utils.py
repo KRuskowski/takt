@@ -217,10 +217,13 @@ def install_push_hook(repo_path):
   hook_path.write_text(
     '#!/bin/bash\n'
     '# Signal that upstream pushed new commits.\n'
+    '# Use GIT_DIR/.. because --show-toplevel resolves\n'
+    '# wrong when GIT_DIR is set (as in hook context).\n'
+    'REPO_ROOT="$(cd "$(git rev-parse --git-dir)/.." '
+    '&& pwd)"\n'
     'while read old new ref; do\n'
     '  echo "$(date -Is) $old $new $ref" \\\n'
-    '    >> "$(git rev-parse --show-toplevel)/'
-    '.pipeline-push"\n'
+    '    >> "$REPO_ROOT/.pipeline-push"\n'
     'done\n'
   )
   hook_path.chmod(0o755)
