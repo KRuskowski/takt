@@ -488,6 +488,7 @@ def launch_in_kitty(ws, role, stage_dir, prompt):
         "set-tab-color",
         "-m", f"title:{title}",
         f"active_bg={color}",
+        f"inactive_bg={color}",
       ],
       capture_output=True, text=True,
     )

@@ -102,6 +102,26 @@ Guidelines:
 - Read the testing stage session state for test results.
 - If tests failed or have blockers, note them in the PR body.
 - Do NOT modify code. Your job is pushing and PR creation.
+- Before creating a PR, check for an existing open PR on the
+  branch: `gh pr list --head <branch> --state open`
+  - **Open PR exists** — skip creation. The push already
+    updated it with the latest commits.
+  - **No open PR** — create a new one.
+  - Never edit, reopen, or comment on merged/closed PRs.
+- If `gh pr create` fails due to a merge conflict with the
+  base branch, do NOT attempt to resolve it. Instead:
+  1. Write an upstream-sync marker for each conflicting repo
+     to trigger the workspace sync agent:
+     ```
+     TIMESTAMP=$(date +%Y-%m-%dT%H:%M:%S%z)
+     ZEROS=$(printf '0%.0s' {1..40})
+     echo "$TIMESTAMP $ZEROS $ZEROS refs/heads/<default_branch>" \
+       >> ~/dev/workspaces/<branch>/<repo>/.upstream-sync
+     ```
+  2. Record the conflict in session state as a blocker.
+  3. Stop. The sync agent will merge upstream into the
+     workspace and the changes will re-propagate through
+     the pipeline.
 - Update session state before ending your session.
 - Workflow:
   1. Push to origin (root repo): `git push origin <branch>`
