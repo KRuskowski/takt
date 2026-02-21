@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .state/
 .locks/
+config/repos.yaml
+config/targets.yaml
