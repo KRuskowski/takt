@@ -18,6 +18,7 @@ from lib.ssh_utils import SSHError, check_connectivity, run_ssh
 from lib.target_ops import (
   get_all_targets,
   get_target,
+  get_vm_state,
   is_template,
   read_lock,
   release_lock,
@@ -36,7 +37,7 @@ def cmd_list(args):
 
   print(
     f"{'Name':<15} {'Type':<10} {'Host':<20} "
-    f"{'Claimed By':<20} {'Description'}"
+    f"{'State':<12} {'Claimed By':<20} {'Description'}"
   )
   print("-" * 80)
 
@@ -44,9 +45,13 @@ def cmd_list(args):
     lock = t["lock"]
     claimed = lock["workspace"] if lock else "-"
     tag = " [template]" if t.get("template") else ""
+    if t["type"] == "vm":
+      state = get_vm_state(t["name"]) or "?"
+    else:
+      state = "on"
     print(
       f"{t['name']:<15} {t['type']:<10} "
-      f"{t['host']:<20} {claimed:<20} "
+      f"{t['host']:<20} {state:<12} {claimed:<20} "
       f"{t['description']}{tag}"
     )
 
@@ -219,6 +224,9 @@ def cmd_status(args):
   print(f"  Type: {target.get('type', '?')}")
   if target.get("template"):
     print("  Template: yes")
+  if target.get("type") == "vm":
+    state = get_vm_state(name) or "?"
+    print(f"  State: {state}")
   print(f"  Host: {target.get('host', '?')}")
   print(f"  User: {target.get('user', '?')}")
   print(f"  Description: {target.get('description', '')}")

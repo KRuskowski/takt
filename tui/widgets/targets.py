@@ -22,13 +22,21 @@ class TargetsPanel(Vertical):
   def on_mount(self) -> None:
     table = self.query_one("#targets-table", DataTable)
     table.cursor_type = "row"
-    table.add_columns("Name", "Type", "Host", "Claimed By")
+    table.add_columns(
+      "Name", "Type", "Host", "State", "Claimed By",
+    )
 
   @work(thread=True)
   def refresh_data(self) -> None:
     """Load target data in a worker thread."""
-    from lib.target_ops import get_all_targets
-    targets = get_all_targets()
+    from lib.target_ops import get_all_targets, get_vm_state
+    targets = [t for t in get_all_targets()
+               if not t.get("template")]
+    for t in targets:
+      if t["type"] == "vm":
+        t["state"] = get_vm_state(t["name"]) or "?"
+      else:
+        t["state"] = "on"
     self.app.call_from_thread(self._update_table, targets)
 
   def _update_table(self, targets) -> None:
@@ -42,6 +50,7 @@ class TargetsPanel(Vertical):
         t["name"],
         t["type"],
         t["host"],
+        t["state"],
         claimed,
         key=t["name"],
       )

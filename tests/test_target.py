@@ -86,6 +86,7 @@ class TestTemplateGuardRun(unittest.TestCase):
 class TestTemplateListDisplay(unittest.TestCase):
   """Template status is shown in list output."""
 
+  @mock.patch("bin.target.get_vm_state", return_value="shut off")
   @mock.patch("bin.target.get_all_targets", return_value=[
     {
       "name": "deb-01",
@@ -108,7 +109,7 @@ class TestTemplateListDisplay(unittest.TestCase):
       "lock": None,
     },
   ])
-  def test_list_shows_template_tag(self, _):
+  def test_list_shows_template_tag(self, _, __):
     """List output includes [template] tag."""
     from bin.target import cmd_list
     captured = StringIO()
@@ -121,14 +122,37 @@ class TestTemplateListDisplay(unittest.TestCase):
       if "deb-02" in line:
         self.assertNotIn("[template]", line)
 
+  @mock.patch("bin.target.get_vm_state", return_value="running")
+  @mock.patch("bin.target.get_all_targets", return_value=[
+    {
+      "name": "deb-02",
+      "type": "vm",
+      "host": "10.101.0.100",
+      "user": "worker",
+      "port": None,
+      "description": "Clone of deb-01",
+      "template": False,
+      "lock": None,
+    },
+  ])
+  def test_list_shows_vm_state(self, _, __):
+    """List output includes VM state."""
+    from bin.target import cmd_list
+    captured = StringIO()
+    with mock.patch("sys.stdout", captured):
+      cmd_list(mock.Mock())
+    output = captured.getvalue()
+    self.assertIn("running", output)
+
 
 class TestTemplateStatusDisplay(unittest.TestCase):
   """Template status is shown in status output."""
 
   @mock.patch("bin.target.check_connectivity", return_value=False)
+  @mock.patch("bin.target.get_vm_state", return_value="shut off")
   @mock.patch("bin.target.read_lock", return_value=None)
   @mock.patch("bin.target.get_target", return_value=TEMPLATE_TARGET)
-  def test_status_shows_template(self, _, __, ___):
+  def test_status_shows_template(self, _, __, ___, ____):
     """Status output includes 'Template: yes'."""
     from bin.target import cmd_status
     args = mock.Mock()
@@ -140,10 +164,11 @@ class TestTemplateStatusDisplay(unittest.TestCase):
     self.assertIn("Template: yes", output)
 
   @mock.patch("bin.target.check_connectivity", return_value=True)
+  @mock.patch("bin.target.get_vm_state", return_value="running")
   @mock.patch("bin.target.read_lock", return_value=None)
   @mock.patch("bin.target.get_target", return_value=NORMAL_TARGET)
-  def test_status_no_template_for_clone(self, _, __, ___):
-    """Status output for clone does not show Template line."""
+  def test_status_shows_vm_state(self, _, __, ___, ____):
+    """Status output includes VM state."""
     from bin.target import cmd_status
     args = mock.Mock()
     args.name = "deb-02"
@@ -151,6 +176,7 @@ class TestTemplateStatusDisplay(unittest.TestCase):
     with mock.patch("sys.stdout", captured):
       cmd_status(args)
     output = captured.getvalue()
+    self.assertIn("State: running", output)
     self.assertNotIn("Template:", output)
 
 
