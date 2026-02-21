@@ -11,6 +11,7 @@ BASE_DIR = Path(os.environ.get(
 ))
 ROOT_DIR = BASE_DIR / "root"
 TESTING_DIR = BASE_DIR / "testing"
+UTILITY_DIR = BASE_DIR / "utility"
 WORKSPACES_DIR = BASE_DIR / "workspaces"
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJECT_DIR / "config"
@@ -24,6 +25,7 @@ STATE_DIR.mkdir(exist_ok=True)
 LOCKS_DIR.mkdir(exist_ok=True)
 WORKSPACES_DIR.mkdir(exist_ok=True)
 TESTING_DIR.mkdir(exist_ok=True)
+UTILITY_DIR.mkdir(exist_ok=True)
 
 
 def load_repos_config():

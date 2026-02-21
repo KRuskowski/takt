@@ -16,11 +16,14 @@ sys.path.insert(0, str(PROJECT_DIR))
 from lib.git_utils import GitError
 from lib.workspace_ops import (
   create_testing_stage,
+  create_utility_stage,
   create_workspace,
   delete_testing_stage,
+  delete_utility_stage,
   delete_workspace,
   get_workspace_status,
   list_testing_stages,
+  list_utility_stages,
   list_workspaces,
 )
 
@@ -101,50 +104,53 @@ def cmd_status(args):
     print(f"{s['repo']:<30} {s['branch']:<25} {s['status']}")
 
 
-def cmd_stage_create(args):
-  """Create a testing stage for a workspace."""
+def _cmd_create_stage(args, create_fn, stage_type,
+                      upstream_label):
+  """Generic stage creation handler."""
   try:
-    stage_dir = create_testing_stage(args.name)
-  except FileNotFoundError as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-  except FileExistsError as e:
+    stage_dir = create_fn(args.name)
+  except (FileNotFoundError, FileExistsError, ValueError) as e:
     print(f"Error: {e}")
     sys.exit(1)
   except GitError as e:
     print(f"Error: {e}")
     sys.exit(1)
 
-  print(f"Testing stage created: {stage_dir}")
-  print(f"Workspace origins re-pointed to testing stage.")
+  print(f"{stage_type} stage created: {stage_dir}")
+  print(
+    f"{upstream_label} origins re-pointed to "
+    f"{stage_type.lower()} stage."
+  )
 
 
-def cmd_stage_delete(args):
-  """Delete a testing stage."""
+def _cmd_delete_stage(args, delete_fn, stage_type,
+                      upstream_label):
+  """Generic stage deletion handler."""
   if not args.force:
     resp = input(
-      f"Delete testing stage '{args.name}'? "
-      f"Workspace origins will revert to root. [y/N] "
+      f"Delete {stage_type.lower()} stage '{args.name}'? "
+      f"{upstream_label} origins will revert to root. "
+      f"[y/N] "
     )
     if resp.lower() != "y":
       print("Cancelled.")
       return
 
   try:
-    delete_testing_stage(args.name)
+    delete_fn(args.name)
   except FileNotFoundError as e:
     print(f"Error: {e}")
     sys.exit(1)
 
-  print(f"Deleted testing stage '{args.name}'.")
-  print("Workspace origins restored to root repos.")
+  print(f"Deleted {stage_type.lower()} stage '{args.name}'.")
+  print(f"{upstream_label} origins restored.")
 
 
-def cmd_stage_list(args):
-  """List all testing stages."""
-  stages = list_testing_stages()
+def _cmd_list_stages(args, list_fn, stage_type):
+  """Generic stage list handler."""
+  stages = list_fn()
   if not stages:
-    print("No testing stages found.")
+    print(f"No {stage_type.lower()} stages found.")
     return
 
   print(f"{'Stage':<25} {'Repos':<40} {'Branch'}")
@@ -157,6 +163,44 @@ def cmd_stage_list(args):
     print(
       f"{s['name']:<25} {repos_str:<40} {s['branch']}"
     )
+
+
+def cmd_stage_create(args):
+  """Create a testing stage for a workspace."""
+  _cmd_create_stage(
+    args, create_testing_stage, "Testing", "Workspace",
+  )
+
+
+def cmd_stage_delete(args):
+  """Delete a testing stage."""
+  _cmd_delete_stage(
+    args, delete_testing_stage, "Testing", "Workspace",
+  )
+
+
+def cmd_stage_list(args):
+  """List all testing stages."""
+  _cmd_list_stages(args, list_testing_stages, "Testing")
+
+
+def cmd_utility_create(args):
+  """Create a utility stage for a workspace."""
+  _cmd_create_stage(
+    args, create_utility_stage, "Utility", "Testing",
+  )
+
+
+def cmd_utility_delete(args):
+  """Delete a utility stage."""
+  _cmd_delete_stage(
+    args, delete_utility_stage, "Utility", "Testing",
+  )
+
+
+def cmd_utility_list(args):
+  """List all utility stages."""
+  _cmd_list_stages(args, list_utility_stages, "Utility")
 
 
 def main():
@@ -220,6 +264,33 @@ def main():
     "stage-list", help="List all testing stages.",
   )
 
+  # utility create
+  p_util_create = sub.add_parser(
+    "utility-create",
+    help="Create a utility stage for a workspace.",
+  )
+  p_util_create.add_argument(
+    "name", help="Workspace name to create utility for.",
+  )
+
+  # utility delete
+  p_util_delete = sub.add_parser(
+    "utility-delete",
+    help="Delete a utility stage.",
+  )
+  p_util_delete.add_argument(
+    "name", help="Utility stage name to delete.",
+  )
+  p_util_delete.add_argument(
+    "-f", "--force", action="store_true",
+    help="Skip confirmation prompt.",
+  )
+
+  # utility list
+  sub.add_parser(
+    "utility-list", help="List all utility stages.",
+  )
+
   args = parser.parse_args()
   if not args.command:
     parser.print_help()
@@ -233,6 +304,9 @@ def main():
     "stage-create": cmd_stage_create,
     "stage-delete": cmd_stage_delete,
     "stage-list": cmd_stage_list,
+    "utility-create": cmd_utility_create,
+    "utility-delete": cmd_utility_delete,
+    "utility-list": cmd_utility_list,
   }
   commands[args.command](args)
 
