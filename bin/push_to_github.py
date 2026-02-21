@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Push branches from root repos to GitHub.
 
-Pushes from ~/dev/<repo> (root repos) to their GitHub remote,
+Pushes from ~/dev/root/<repo> (root repos) to their GitHub remote,
 respecting dependency push order from repos.yaml.
 """
 

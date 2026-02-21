@@ -22,7 +22,7 @@ across repos, tools, and git history.
 **Context**: Agents need to push code, but we need a human
 gatekeeper before changes reach GitHub.
 
-**Decision**: Agents push to origin (root repo at ~/dev/<repo>).
+**Decision**: Agents push to origin (root repo at ~/dev/root/<repo>).
 The operator reviews and pushes to GitHub manually via
 `push_to_github.py`.
 

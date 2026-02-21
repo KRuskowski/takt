@@ -10,6 +10,7 @@ from textual import work
 
 _HOME = os.path.expanduser("~")
 _DEV = os.path.join(_HOME, "dev")
+_ROOT = os.path.join(_DEV, "root")
 _WORKSPACES = os.path.join(_DEV, "workspaces")
 
 
@@ -48,9 +49,9 @@ def _short_project(cwd):
     if len(parts) >= 2:
       return f"ws:{parts[0]}/{parts[1]}"
     return f"ws:{parts[0]}"
-  # Root repo: ~/dev/<repo>/...
-  if cwd.startswith(_DEV + "/"):
-    rest = cwd[len(_DEV) + 1:]
+  # Root repo: ~/dev/root/<repo>/...
+  if cwd.startswith(_ROOT + "/"):
+    rest = cwd[len(_ROOT) + 1:]
     return rest.split("/", 1)[0]
   # Anything else: show relative to home.
   if cwd.startswith(_HOME + "/"):

@@ -57,3 +57,17 @@ repos:
       - config
       - OTC.SDK.SosCorrectionLib
     description: Conveyor application
+
+  mpl-wgpu:
+    path: mpl-wgpu.git
+    default_branch: master
+    push_order: 1
+    deps: []
+    description: wgpu matplotlib backend
+
+  gloomy:
+    path: gloomy.git
+    default_branch: master
+    push_order: 1
+    deps: []
+    description: GPU-accelerated immediate-mode UI library
