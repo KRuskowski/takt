@@ -9,3 +9,11 @@ targets:
     user: worker
     ssh_key: ~/.ssh/id_ed25519_targets
     description: Debian 12 build VM (QEMU/KVM)
+
+  win-01:
+    type: vm
+    host: 10.101.0.21
+    user: worker
+    ssh_key: ~/.ssh/id_ed25519_targets
+    os: windows
+    description: Windows 11 Pro build VM (QEMU/KVM)
