@@ -102,16 +102,22 @@ def _run_remote(user, host, key, command, timeout=None):
 def _check_remote(user, host, key, command):
   """Run a remote command and return True if it succeeds.
 
+  The command should produce a truthy/falsy PowerShell output.
+  This wrapper converts PowerShell's always-zero exit code
+  into a proper boolean by wrapping the command in an
+  if/else with explicit exit codes.
+
   Args:
     user: Remote username.
     host: Remote hostname or IP.
     key: Path to SSH private key.
-    command: PowerShell command string to execute.
+    command: PowerShell expression that returns a boolean.
 
   Returns:
-    True if the command exits 0, False otherwise.
+    True if the command output is truthy, False otherwise.
   """
-  cmd = _ssh_cmd(user, host, key) + [command]
+  wrapped = f"if ({command}) {{ exit 0 }} else {{ exit 1 }}"
+  cmd = _ssh_cmd(user, host, key) + [wrapped]
   result = subprocess.run(cmd, capture_output=True, text=True)
   return result.returncode == 0
 
@@ -290,8 +296,13 @@ def configure_samba_share(user, host, key):
           create mask = 0644
           directory mask = 0755
       """)
-      with open(SMB_CONF, "a") as f:
-        f.write(share_config)
+      try:
+        with open(SMB_CONF, "a") as f:
+          f.write(share_config)
+      except PermissionError:
+        print("[skip] No permission to write smb.conf"
+              " (run with sudo for Samba setup)")
+        return
 
       # Restart smbd to pick up changes.
       _run_local(
@@ -363,12 +374,21 @@ def configure_vs_path(user, host, key):
     return
 
   print("[..] Configuring VS environment for SSH sessions...")
+  # Allow PowerShell profile scripts to run on SSH login.
+  _run_remote(
+    user, host, key,
+    "powershell -NoProfile -Command"
+    " \"Set-ExecutionPolicy -ExecutionPolicy RemoteSigned"
+    " -Scope LocalMachine -Force\"",
+  )
+
   # The profile script runs vcvars64.bat in a cmd subprocess,
   # captures the env vars, and imports them into PowerShell.
+  # Use base64 encoding to avoid shell escaping issues.
+  import base64
   profile_script = textwrap.dedent(f"""\
     {marker}
-    $vcvars = "C:\\Program Files (x86)\\Microsoft Visual Studio\\\
-2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat"
+    $vcvars = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat"
     if (Test-Path $vcvars) {{
       $out = cmd /c "`"$vcvars`" >nul 2>&1 && set"
       foreach ($line in $out) {{
@@ -378,7 +398,10 @@ def configure_vs_path(user, host, key):
         }}
       }}
     }}
-  """).replace("\n", "`n")
+  """)
+  encoded = base64.b64encode(
+    profile_script.encode("utf-8")
+  ).decode("ascii")
 
   _run_remote(
     user, host, key,
@@ -386,7 +409,9 @@ def configure_vs_path(user, host, key):
     " $d = Split-Path $p;"
     " if (!(Test-Path $d)) { New-Item -Path $d"
     " -ItemType Directory -Force };"
-    f" Add-Content -Path $p -Value '{profile_script}'",
+    f" $b = [System.Convert]::FromBase64String('{encoded}');"
+    " $s = [System.Text.Encoding]::UTF8.GetString($b);"
+    " Add-Content -Path $p -Value $s",
   )
   print("[ok] VS environment configured for SSH sessions")
 

@@ -358,13 +358,21 @@ def _generate_autounattend_xml():
               <Value>{VM_PASSWORD}</Value>
               <PlainText>true</PlainText>
             </Password>
-            <LogonCount>1</LogonCount>
+            <LogonCount>3</LogonCount>
           </AutoLogon>
 
           <FirstLogonCommands>
-            <!-- 1. Set static IP -->
+            <!-- 1. Disable Windows Firewall (internal build VM) -->
             <SynchronousCommand wcm:action="add">
               <Order>1</Order>
+              <CommandLine>netsh advfirewall set allprofiles \
+state off</CommandLine>
+              <Description>Disable firewall</Description>
+            </SynchronousCommand>
+
+            <!-- 2. Set static IP -->
+            <SynchronousCommand wcm:action="add">
+              <Order>2</Order>
               <CommandLine>powershell -NoProfile -Command "\
 $idx = (Get-NetAdapter | Select -First 1).ifIndex; \
 New-NetIPAddress -InterfaceIndex $idx \
@@ -375,9 +383,9 @@ Set-DnsClientServerAddress -InterfaceIndex $idx \
               <Description>Set static IP</Description>
             </SynchronousCommand>
 
-            <!-- 2. Install and start OpenSSH Server -->
+            <!-- 3. Install and start OpenSSH Server -->
             <SynchronousCommand wcm:action="add">
-              <Order>2</Order>
+              <Order>3</Order>
               <CommandLine>powershell -NoProfile -Command "\
 Add-WindowsCapability -Online \
 -Name OpenSSH.Server~~~~0.0.1.0; \
@@ -386,9 +394,9 @@ Set-Service -Name sshd -StartupType Automatic"</CommandLine>
               <Description>Install OpenSSH Server</Description>
             </SynchronousCommand>
 
-            <!-- 3. Write SSH pubkey for admin user -->
+            <!-- 4. Write SSH pubkey for admin user -->
             <SynchronousCommand wcm:action="add">
-              <Order>3</Order>
+              <Order>4</Order>
               <CommandLine>powershell -NoProfile -Command "\
 $akf = 'C:\\ProgramData\\ssh\\administrators_authorized_keys'; \
 Set-Content -Path $akf -Value '{pub_key}'; \
@@ -397,9 +405,9 @@ icacls $akf /inheritance:r /grant 'SYSTEM:(R)' \
               <Description>Configure SSH pubkey</Description>
             </SynchronousCommand>
 
-            <!-- 4. Set PowerShell as default SSH shell -->
+            <!-- 5. Set PowerShell as default SSH shell -->
             <SynchronousCommand wcm:action="add">
-              <Order>4</Order>
+              <Order>5</Order>
               <CommandLine>powershell -NoProfile -Command "\
 New-ItemProperty -Path \
 'HKLM:\\SOFTWARE\\OpenSSH' \
@@ -409,18 +417,18 @@ v1.0\\powershell.exe' -PropertyType String -Force"</CommandLine>
               <Description>Set default SSH shell</Description>
             </SynchronousCommand>
 
-            <!-- 5. Disable Defender realtime scan -->
+            <!-- 6. Disable Defender realtime scan -->
             <SynchronousCommand wcm:action="add">
-              <Order>5</Order>
+              <Order>6</Order>
               <CommandLine>powershell -NoProfile -Command "\
 Set-MpPreference \
 -DisableRealtimeMonitoring $true"</CommandLine>
               <Description>Disable Defender realtime</Description>
             </SynchronousCommand>
 
-            <!-- 6. Disable sleep/hibernate -->
+            <!-- 7. Disable sleep/hibernate -->
             <SynchronousCommand wcm:action="add">
-              <Order>6</Order>
+              <Order>7</Order>
               <CommandLine>powershell -NoProfile -Command "\
 powercfg /change standby-timeout-ac 0; \
 powercfg /change hibernate-timeout-ac 0; \
@@ -428,9 +436,9 @@ powercfg /hibernate off"</CommandLine>
               <Description>Disable sleep</Description>
             </SynchronousCommand>
 
-            <!-- 7. Write completion marker -->
+            <!-- 8. Write completion marker -->
             <SynchronousCommand wcm:action="add">
-              <Order>7</Order>
+              <Order>8</Order>
               <CommandLine>powershell -NoProfile -Command "\
 New-Item -Path 'C:\\setup-complete.marker' \
 -ItemType File -Force"</CommandLine>

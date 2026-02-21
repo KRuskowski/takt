@@ -210,20 +210,27 @@ class TestCreateVm(unittest.TestCase):
     """Does not re-create existing VM."""
     setup_win_vm.create_vm()
 
+  @mock.patch("setup_win_vm.time.sleep")
   @mock.patch("setup_win_vm.run")
   @mock.patch.object(Path, "exists", return_value=True)
   @mock.patch("setup_win_vm.vm_exists", return_value=False)
   def test_calls_virt_install(
     self, mock_vm_exists, mock_path_exists, mock_run,
+    mock_sleep,
   ):
     """Calls virt-install with expected arguments."""
     mock_run.return_value = mock.Mock(returncode=0)
     setup_win_vm.create_vm()
-    args = mock_run.call_args[0][0]
+    # First call is virt-install, second is virsh send-key.
+    args = mock_run.call_args_list[0][0][0]
     self.assertEqual(args[0], "virt-install")
     self.assertIn("--name", args)
     self.assertIn("win-01", args)
     self.assertIn("--tpm", args)
+    # Verify send-key was called for CD boot.
+    key_args = mock_run.call_args_list[1][0][0]
+    self.assertEqual(key_args[0], "virsh")
+    self.assertIn("send-key", key_args)
 
   @mock.patch.object(Path, "exists", return_value=False)
   @mock.patch("setup_win_vm.vm_exists", return_value=False)

@@ -41,10 +41,10 @@ three passes:
 - **windowsPE**: GPT partitioning (EFI + MSR + Windows),
   loads VirtIO drivers from CD-ROM, selects Pro edition
 - **specialize**: Sets hostname to `win-01`
-- **oobeSystem**: Creates `worker` admin account, sets
-  static IP, installs OpenSSH Server, writes SSH pubkey,
-  sets PowerShell as default shell, disables Defender
-  realtime and sleep/hibernate
+- **oobeSystem**: Creates `worker` admin account, disables
+  Windows Firewall, sets static IP, installs OpenSSH Server,
+  writes SSH pubkey, sets PowerShell as default shell,
+  disables Defender realtime and sleep/hibernate
 
 The autounattend ISO uses volume label `OEMDRV` which
 Windows auto-searches during setup.
@@ -114,6 +114,24 @@ For persistent passthrough (survives reboot), add a
 ```bash
 virsh edit win-01
 ```
+
+## UEFI Boot Notes
+
+The setup script handles these UEFI-specific quirks:
+
+- **Boot order**: Uses `boot.order=1` on the CD-ROM and
+  `boot.order=2` on the disk (UEFI ignores `<boot dev>`
+  in `<os>`)
+- **CD boot keypress**: UEFI shows "Press any key to boot
+  from CD" — the script sends `virsh send-key KEY_ENTER`
+  after a 3s delay
+- **VirtIO drivers**: Only `viostor\w11\amd64` and
+  `NetKVM\w11\amd64` paths (the `amd64\w11` top-level
+  path contains duplicate viostor that causes 0x80070103)
+- **AutoLogon count**: Set to 3 (profile setup consumes
+  initial auto-logons before FirstLogonCommands run)
+- **Parent dir permissions**: `libvirt-qemu` needs `o+x`
+  on parent dirs to access images in `/home/karl/`
 
 ## Recovery
 

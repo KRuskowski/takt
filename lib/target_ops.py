@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lib.config import LOCKS_DIR, load_targets_config
+from lib.config import LOCKS_DIR, load_targets_config, save_targets_config
 
 
 def get_lock_path(name):
@@ -90,6 +90,21 @@ def get_target(name):
   return targets[name]
 
 
+def is_template(name):
+  """Check if a target is a template.
+
+  Args:
+    name: Target name.
+
+  Returns:
+    True if the target exists and has template: true.
+  """
+  target = get_target(name)
+  if target is None:
+    return False
+  return target.get("template", False)
+
+
 def get_all_targets():
   """Load all target configs with lock status.
 
@@ -112,6 +127,7 @@ def get_all_targets():
       "user": cfg.get("user", ""),
       "port": cfg.get("port"),
       "description": cfg.get("description", ""),
+      "template": cfg.get("template", False),
       "lock": lock,
     })
   return results
