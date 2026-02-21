@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lib.config import LOCKS_DIR, load_targets_config, save_targets_config
+from lib.config import LOCKS_DIR, load_targets_config
 
 
 def get_lock_path(name):

@@ -100,6 +100,13 @@ def cmd_up(args):
     print(f"Error: target '{name}' not found.")
     sys.exit(1)
 
+  if target.get("template"):
+    print(
+      f"Error: '{name}' is a template. "
+      f"Use bin/clone_vm.py to create a clone."
+    )
+    sys.exit(1)
+
   if target.get("type") == "hardware":
     print(f"Target '{name}' is hardware — always on.")
     return
@@ -170,6 +177,13 @@ def cmd_run(args):
     print(f"Error: target '{name}' not found.")
     sys.exit(1)
 
+  if target.get("template"):
+    print(
+      f"Error: '{name}' is a template. "
+      f"Use bin/clone_vm.py to create a clone."
+    )
+    sys.exit(1)
+
   host = target.get("host")
   user = target.get("user")
   port = target.get("port")
@@ -203,6 +217,8 @@ def cmd_status(args):
   lock = read_lock(name)
   print(f"Target: {name}")
   print(f"  Type: {target.get('type', '?')}")
+  if target.get("template"):
+    print("  Template: yes")
   print(f"  Host: {target.get('host', '?')}")
   print(f"  User: {target.get('user', '?')}")
   print(f"  Description: {target.get('description', '')}")
