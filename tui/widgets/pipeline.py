@@ -11,6 +11,7 @@ from textual.widgets import DataTable, Static
 from textual import work
 
 from bin.pipeline_watch import (
+  _prune_finished_tabs,
   build_trigger_prompt,
   launch_in_kitty,
   scan_markers,
@@ -63,6 +64,20 @@ class PipelinePanel(Vertical):
     """Poll for markers and trigger agents."""
     if not self._watching:
       return
+    try:
+      pruned = _prune_finished_tabs()
+      for title in pruned:
+        ws, role = title.split("/", 1)
+        self._events.appendleft({
+          "time": datetime.now().strftime("%H:%M:%S"),
+          "stage": title,
+          "repos": "",
+          "event": "pruned",
+        })
+      if pruned:
+        self.app.call_from_thread(self._update_table)
+    except Exception:
+      pass
     try:
       markers = scan_markers()
     except Exception:

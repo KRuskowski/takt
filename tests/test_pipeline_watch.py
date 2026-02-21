@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 from bin.pipeline_watch import (
   _kitty_tab_exists,
+  _prune_finished_tabs,
   _scan_and_sync,
   _scan_and_trigger,
   build_sync_prompt,
@@ -339,20 +340,33 @@ class TestKittyHelpers(unittest.TestCase):
 class TestLaunchInKitty(unittest.TestCase):
   """Tests for launch_in_kitty()."""
 
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+
+  def tearDown(self):
+    shutil.rmtree(self.tmpdir)
+
   @mock.patch("bin.pipeline_watch._find_kitty_socket",
               return_value=FAKE_SOCKET)
   @mock.patch("bin.pipeline_watch.subprocess.run")
   def test_launches_tab(self, mock_run, _mock_sock):
     """Launches claude in a new kitty tab."""
-    # _kitty_tab_exists (no match), launch.
+    # _kitty_tab_exists (no match), launch, set-tab-color,
+    # focus-tab.
     ls_data = [{"tabs": [{"title": "shell"}]}]
+    ok = mock.Mock(returncode=0, stdout="", stderr="")
     mock_run.side_effect = [
       mock.Mock(returncode=0, stdout=json.dumps(ls_data)),
-      mock.Mock(returncode=0, stdout="", stderr=""),
+      ok, ok, ok,
     ]
-    launch_in_kitty(
-      "ws", "test", Path("/tmp/stage"), "do stuff",
-    )
+    stage = Path(self.tmpdir) / "stage"
+    stage.mkdir()
+    # Place a stale done marker to verify it gets cleaned.
+    stale = stage / ".agent-done"
+    stale.touch()
+    launch_in_kitty("ws", "test", stage, "do stuff")
+    # Stale marker should be removed before launch.
+    self.assertFalse(stale.exists())
     launch_call = mock_run.call_args_list[1][0][0]
     self.assertEqual(launch_call[:4], [
       "kitten", "@", "--to", FAKE_SOCKET,
@@ -360,13 +374,22 @@ class TestLaunchInKitty(unittest.TestCase):
     self.assertIn("--tab-title", launch_call)
     idx = launch_call.index("--tab-title")
     self.assertEqual(launch_call[idx + 1], "ws/test")
-    # Verify bash -ic with unset + claude.
+    # Verify zsh -ic with unset + claude + touch.
     self.assertEqual(launch_call[-3], "zsh")
     self.assertEqual(launch_call[-2], "-ic")
     shell_cmd = launch_call[-1]
     self.assertIn("unset CLAUDECODE", shell_cmd)
     self.assertIn("claude", shell_cmd)
     self.assertIn("do stuff", shell_cmd)
+    self.assertIn("touch", shell_cmd)
+    self.assertIn(".agent-done", shell_cmd)
+    # Verify set-tab-color call (role "test" has a color).
+    color_call = mock_run.call_args_list[2][0][0]
+    self.assertIn("set-tab-color", color_call)
+    self.assertIn("active_bg=#5a4b27", color_call)
+    # Verify focus-tab call.
+    focus_call = mock_run.call_args_list[3][0][0]
+    self.assertIn("focus-tab", focus_call)
 
   @mock.patch("bin.pipeline_watch._find_kitty_socket",
               return_value=FAKE_SOCKET)
@@ -870,6 +893,119 @@ class TestScanAndSync(unittest.TestCase):
     _scan_and_sync()
     self.assertTrue(marker.exists())
     mock_launch.assert_not_called()
+
+
+class TestPruneFinishedTabs(unittest.TestCase):
+  """Tests for _prune_finished_tabs()."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.stages_dir = Path(self.tmpdir) / "stages"
+    self.stages_dir.mkdir()
+    self.ws_dir = Path(self.tmpdir) / "workspaces"
+    self.ws_dir.mkdir()
+    self.patch_stages = mock.patch(
+      "bin.pipeline_watch.STAGES_DIR", self.stages_dir,
+    )
+    self.patch_ws = mock.patch(
+      "bin.pipeline_watch.WORKSPACES_DIR", self.ws_dir,
+    )
+    self.patch_stages.start()
+    self.patch_ws.start()
+
+  def tearDown(self):
+    self.patch_stages.stop()
+    self.patch_ws.stop()
+    shutil.rmtree(self.tmpdir)
+
+  @mock.patch("bin.pipeline_watch._find_kitty_socket",
+              return_value=FAKE_SOCKET)
+  @mock.patch("bin.pipeline_watch.subprocess.run")
+  def test_prunes_tab_with_done_marker(
+    self, mock_run, _mock_sock,
+  ):
+    """Closes tab and deletes marker when .agent-done exists."""
+    stage = self.stages_dir / "ws" / "test"
+    stage.mkdir(parents=True)
+    (stage / ".agent-done").touch()
+    ls_data = [{"tabs": [{"title": "ws/test"}]}]
+    ok = mock.Mock(returncode=0, stdout="", stderr="")
+    mock_run.side_effect = [
+      mock.Mock(returncode=0, stdout=json.dumps(ls_data)),
+      ok,
+    ]
+    pruned = _prune_finished_tabs()
+    self.assertEqual(pruned, ["ws/test"])
+    # close-tab should have been called.
+    close_call = mock_run.call_args_list[1][0][0]
+    self.assertIn("close-tab", close_call)
+    self.assertIn("title:ws/test", close_call)
+    # Marker should be deleted.
+    self.assertFalse((stage / ".agent-done").exists())
+
+  @mock.patch("bin.pipeline_watch._find_kitty_socket",
+              return_value=FAKE_SOCKET)
+  @mock.patch("bin.pipeline_watch.subprocess.run")
+  def test_skips_tab_without_marker(
+    self, mock_run, _mock_sock,
+  ):
+    """No close-tab when .agent-done is absent."""
+    stage = self.stages_dir / "ws" / "test"
+    stage.mkdir(parents=True)
+    ls_data = [{"tabs": [{"title": "ws/test"}]}]
+    mock_run.return_value = mock.Mock(
+      returncode=0, stdout=json.dumps(ls_data),
+    )
+    pruned = _prune_finished_tabs()
+    self.assertEqual(pruned, [])
+    # Only the ls call, no close-tab.
+    self.assertEqual(mock_run.call_count, 1)
+
+  @mock.patch("bin.pipeline_watch._find_kitty_socket",
+              return_value=FAKE_SOCKET)
+  @mock.patch("bin.pipeline_watch.subprocess.run")
+  def test_skips_non_pipeline_tabs(
+    self, mock_run, _mock_sock,
+  ):
+    """Tabs without '/' in title are ignored."""
+    ls_data = [{"tabs": [{"title": "shell"}]}]
+    mock_run.return_value = mock.Mock(
+      returncode=0, stdout=json.dumps(ls_data),
+    )
+    pruned = _prune_finished_tabs()
+    self.assertEqual(pruned, [])
+    # Only the ls call.
+    self.assertEqual(mock_run.call_count, 1)
+
+  @mock.patch("bin.pipeline_watch._find_kitty_socket",
+              return_value=None)
+  def test_noop_without_socket(self, _mock_sock):
+    """Returns empty list when no socket found."""
+    pruned = _prune_finished_tabs()
+    self.assertEqual(pruned, [])
+
+  @mock.patch("bin.pipeline_watch._find_kitty_socket",
+              return_value=FAKE_SOCKET)
+  @mock.patch("bin.pipeline_watch.subprocess.run")
+  def test_sync_role_checks_workspace_dir(
+    self, mock_run, _mock_sock,
+  ):
+    """Sync tab checks WORKSPACES_DIR for .agent-done."""
+    ws = self.ws_dir / "ws"
+    ws.mkdir(parents=True)
+    (ws / ".agent-done").touch()
+    ls_data = [{"tabs": [{"title": "ws/sync"}]}]
+    ok = mock.Mock(returncode=0, stdout="", stderr="")
+    mock_run.side_effect = [
+      mock.Mock(returncode=0, stdout=json.dumps(ls_data)),
+      ok,
+    ]
+    pruned = _prune_finished_tabs()
+    self.assertEqual(pruned, ["ws/sync"])
+    close_call = mock_run.call_args_list[1][0][0]
+    self.assertIn("close-tab", close_call)
+    self.assertIn("title:ws/sync", close_call)
+    self.assertFalse((ws / ".agent-done").exists())
 
 
 if __name__ == "__main__":
