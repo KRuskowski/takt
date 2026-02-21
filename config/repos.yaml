@@ -71,3 +71,11 @@ repos:
     push_order: 1
     deps: []
     description: GPU-accelerated immediate-mode UI library
+
+  ao-dashboard:
+    path: ao-dashboard.git
+    default_branch: master
+    push_order: 2
+    deps:
+      - gloomy
+    description: Agent orchestration dashboard (gloomy)
