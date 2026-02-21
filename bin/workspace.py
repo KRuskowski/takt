@@ -23,6 +23,7 @@ from lib.workspace_ops import (
   get_workspace_status,
   list_stages,
   list_workspaces,
+  refresh_stage,
 )
 
 
@@ -186,6 +187,35 @@ def cmd_pipeline(args):
     print("Stages: (none)")
 
 
+def cmd_stage_refresh(args):
+  """Re-generate CLAUDE.md and install hooks for existing stages."""
+  if not args.all and (not args.name or not args.role):
+    print("Error: provide <name> <role> or --all.")
+    sys.exit(1)
+  if args.all:
+    stages = list_stages()
+    if not stages:
+      print("No stages found.")
+      return
+    for s in stages:
+      try:
+        refresh_stage(s["workspace"], s["role"])
+        print(
+          f"Refreshed: {s['workspace']}/{s['role']}"
+        )
+      except (FileNotFoundError, ValueError) as e:
+        print(f"Skipped {s['workspace']}/{s['role']}: {e}")
+    return
+
+  try:
+    stage_dir = refresh_stage(args.name, args.role)
+  except (FileNotFoundError, ValueError) as e:
+    print(f"Error: {e}")
+    sys.exit(1)
+
+  print(f"Refreshed stage '{args.role}': {stage_dir}")
+
+
 def main():
   parser = argparse.ArgumentParser(
     description=(
@@ -263,6 +293,24 @@ def main():
     help="Optional workspace name to filter by.",
   )
 
+  # stage-refresh
+  p_stage_refresh = sub.add_parser(
+    "stage-refresh",
+    help="Re-generate CLAUDE.md and install hooks for stages.",
+  )
+  p_stage_refresh.add_argument(
+    "name", nargs="?", default=None,
+    help="Workspace name.",
+  )
+  p_stage_refresh.add_argument(
+    "role", nargs="?", default=None,
+    help="Role slug to refresh.",
+  )
+  p_stage_refresh.add_argument(
+    "--all", action="store_true",
+    help="Refresh all stages across all workspaces.",
+  )
+
   # pipeline
   p_pipeline = sub.add_parser(
     "pipeline",
@@ -285,6 +333,7 @@ def main():
     "stage-add": cmd_stage_add,
     "stage-remove": cmd_stage_remove,
     "stage-list": cmd_stage_list,
+    "stage-refresh": cmd_stage_refresh,
     "pipeline": cmd_pipeline,
   }
   commands[args.command](args)

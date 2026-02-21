@@ -200,6 +200,31 @@ def set_receive_update(repo_path):
   )
 
 
+def install_push_hook(repo_path):
+  """Install a post-receive hook that writes a .pipeline-push marker.
+
+  The marker file signals to agents that upstream pushed new
+  commits. Each push appends a timestamped line.
+
+  Args:
+    repo_path: Path to the repo.
+  """
+  repo_path = Path(repo_path)
+  hooks_dir = repo_path / ".git" / "hooks"
+  hooks_dir.mkdir(parents=True, exist_ok=True)
+  hook_path = hooks_dir / "post-receive"
+  hook_path.write_text(
+    '#!/bin/bash\n'
+    '# Signal that upstream pushed new commits.\n'
+    'while read old new ref; do\n'
+    '  echo "$(date -Is) $old $new $ref" \\\n'
+    '    >> "$(git rev-parse --show-toplevel)/'
+    '.pipeline-push"\n'
+    'done\n'
+  )
+  hook_path.chmod(0o755)
+
+
 def get_status(repo_path, short=True):
   """Return git status output.
 

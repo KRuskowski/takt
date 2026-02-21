@@ -26,12 +26,9 @@ $context_packets
 $repo_table
 
 ## Git Rules
-- Branch name: `$workspace_name` (same across all repos)
-- Push to origin only (origin = root repo at ~/dev/root/<repo>)
-- NEVER push to GitHub. The operator handles GitHub pushes.
-- Sign all commits.
-- Push order follows dependency chain (upstream first).
+$git_rules
 
+$pipeline_section
 ---
 
 ## Session State

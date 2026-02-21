@@ -26,6 +26,7 @@ from lib.git_utils import (
   create_branch,
   get_current_branch,
   get_status,
+  install_push_hook,
   run_git,
   set_receive_update,
 )
@@ -196,9 +197,90 @@ def delete_workspace(name):
   shutil.rmtree(ws_dir)
 
 
+def _build_git_rules(name, stage_role=None,
+                     pipeline_chain=None,
+                     origin_description=None):
+  """Build the git rules text for a CLAUDE.md.
+
+  Args:
+    name: Workspace (= branch) name.
+    stage_role: Role slug if this is a stage, None for workspace.
+    pipeline_chain: List of role slugs in pipeline order.
+    origin_description: Human description of what origin points to.
+
+  Returns:
+    Git rules string.
+  """
+  if stage_role:
+    chain = ["workspace"]
+    for role in (pipeline_chain or []):
+      if role == stage_role:
+        chain.append(f"[{role}]")
+      else:
+        chain.append(role)
+    chain.append("root")
+    chain_str = " -> ".join(chain)
+    origin_desc = (
+      origin_description
+      or "the next stage in the pipeline"
+    )
+    return (
+      f"- Branch: `{name}` (same across all repos)\n"
+      f"- You are the **{stage_role}** stage.\n"
+      f"- Pipeline: {chain_str}\n"
+      f"- Your origin points to {origin_desc}.\n"
+      f"- Push to origin when your work is done:\n"
+      f"  `git push origin {name}`\n"
+      f"- NEVER push to GitHub. The operator handles "
+      f"GitHub pushes.\n"
+      f"- Sign all commits."
+    )
+  # Workspace (non-stage).
+  origin_desc = (
+    origin_description
+    or "root repo at ~/dev/root/<repo>"
+  )
+  return (
+    f"- Branch name: `{name}` (same across all repos)\n"
+    f"- Push to origin only (origin = {origin_desc})\n"
+    f"- NEVER push to GitHub. The operator handles "
+    f"GitHub pushes.\n"
+    f"- Sign all commits.\n"
+    f"- Push order follows dependency chain "
+    f"(upstream first)."
+  )
+
+
+def _build_pipeline_section(repos):
+  """Build the incoming changes section for stage CLAUDE.md.
+
+  Args:
+    repos: List of repo names in the stage.
+
+  Returns:
+    Pipeline section string (empty for workspaces).
+  """
+  repo_examples = "\n".join(
+    f"  cat {r}/.pipeline-push" for r in repos[:2]
+  )
+  return (
+    "## Incoming Changes\n"
+    "When upstream pushes to your repos, the working tree\n"
+    "updates automatically. Check for new commits:\n"
+    f"{repo_examples}\n"
+    "  git -C <repo> log --oneline -5\n"
+    "\n"
+    "After processing incoming changes, delete the marker:\n"
+    "  rm <repo>/.pipeline-push\n"
+  )
+
+
 def _generate_workspace_claude_md(ws_dir, name, repos,
                                   repos_config,
-                                  role_snippet=None):
+                                  role_snippet=None,
+                                  stage_role=None,
+                                  pipeline_chain=None,
+                                  origin_description=None):
   """Generate a workspace CLAUDE.md from the template.
 
   Args:
@@ -208,6 +290,9 @@ def _generate_workspace_claude_md(ws_dir, name, repos,
     repos_config: Repos config dict.
     role_snippet: Optional role text to inject. If None, uses
       a placeholder.
+    stage_role: Role slug if this is a stage, None for workspace.
+    pipeline_chain: List of role slugs in pipeline order.
+    origin_description: What origin points to (human text).
   """
   tmpl_path = TEMPLATES_DIR / "workspace_claude.md"
   if not tmpl_path.exists():
@@ -245,6 +330,16 @@ def _generate_workspace_claude_md(ws_dir, name, repos,
     else "(specify role when launching agent)"
   )
 
+  git_rules = _build_git_rules(
+    name, stage_role=stage_role,
+    pipeline_chain=pipeline_chain,
+    origin_description=origin_description,
+  )
+
+  pipeline_section = ""
+  if stage_role:
+    pipeline_section = _build_pipeline_section(repos)
+
   content = tmpl.safe_substitute(
     workspace_name=name,
     role_section=role_section,
@@ -254,6 +349,8 @@ def _generate_workspace_claude_md(ws_dir, name, repos,
     reference_repos="- (none specified)",
     context_packets=context_packets,
     repo_table=repo_table,
+    git_rules=git_rules,
+    pipeline_section=pipeline_section,
     status="Not started",
   )
 
@@ -443,14 +540,36 @@ def create_stage(workspace_name, role):
 
       # Allow upstream to push here.
       set_receive_update(dest)
+      install_push_hook(dest)
   except (GitError, Exception):
     shutil.rmtree(stage_dir, ignore_errors=True)
     raise
 
-  # Generate CLAUDE.md with role snippet injected.
+  # Update pipeline before generating CLAUDE.md so we can
+  # read the full chain.
+  pipeline = _load_pipeline(workspace_name)
+  if role not in pipeline:
+    pipeline.append(role)
+    _save_pipeline(workspace_name, pipeline)
+
+  # Determine what origin points to for this stage.
+  role_idx = pipeline.index(role)
+  if role_idx + 1 < len(pipeline):
+    next_role = pipeline[role_idx + 1]
+    origin_desc = (
+      f"the next stage (**{next_role}**) at "
+      f"~/dev/stages/{workspace_name}/{next_role}/<repo>"
+    )
+  else:
+    origin_desc = "the root repo at ~/dev/root/<repo>"
+
+  # Generate CLAUDE.md with role snippet and stage info.
   _generate_workspace_claude_md(
     stage_dir, workspace_name, ws_repos, repos_config,
     role_snippet=roles[role],
+    stage_role=role,
+    pipeline_chain=pipeline,
+    origin_description=origin_desc,
   )
 
   # Copy context packets.
@@ -458,11 +577,7 @@ def create_stage(workspace_name, role):
   if CONTEXT_DIR.is_dir():
     shutil.copytree(CONTEXT_DIR, ctx_dest)
 
-  # Update pipeline and rebuild remote chain.
-  pipeline = _load_pipeline(workspace_name)
-  if role not in pipeline:
-    pipeline.append(role)
-    _save_pipeline(workspace_name, pipeline)
+  # Rebuild remote chain.
   _rechain_remotes(workspace_name)
 
   return stage_dir
@@ -503,6 +618,62 @@ def delete_stage(workspace_name, role):
   ]
   if not remaining:
     shutil.rmtree(ws_stages_dir)
+
+
+def refresh_stage(workspace_name, role):
+  """Re-generate CLAUDE.md and install hooks for an existing stage.
+
+  Args:
+    workspace_name: Workspace name.
+    role: Role slug.
+
+  Raises:
+    FileNotFoundError: If stage does not exist.
+    ValueError: If role is not found in pipeline_roles.md.
+  """
+  stage_dir = STAGES_DIR / workspace_name / role
+  if not stage_dir.exists():
+    raise FileNotFoundError(
+      f"Stage '{role}' for '{workspace_name}' not found."
+    )
+
+  roles = parse_pipeline_roles()
+  if role not in roles:
+    raise ValueError(
+      f"Unknown role '{role}'. "
+      f"Available: {', '.join(sorted(roles.keys()))}"
+    )
+
+  repos_config = load_repos_config().get("repos", {})
+  ws_repos = sorted(
+    d.name for d in stage_dir.iterdir()
+    if d.is_dir() and (d / ".git").exists()
+  )
+
+  pipeline = _load_pipeline(workspace_name)
+  role_idx = pipeline.index(role) if role in pipeline else -1
+  if role_idx >= 0 and role_idx + 1 < len(pipeline):
+    next_role = pipeline[role_idx + 1]
+    origin_desc = (
+      f"the next stage (**{next_role}**) at "
+      f"~/dev/stages/{workspace_name}/{next_role}/<repo>"
+    )
+  else:
+    origin_desc = "the root repo at ~/dev/root/<repo>"
+
+  _generate_workspace_claude_md(
+    stage_dir, workspace_name, ws_repos, repos_config,
+    role_snippet=roles[role],
+    stage_role=role,
+    pipeline_chain=pipeline,
+    origin_description=origin_desc,
+  )
+
+  # Install push hooks on all repos.
+  for repo_name in ws_repos:
+    install_push_hook(stage_dir / repo_name)
+
+  return stage_dir
 
 
 def list_stages(workspace_name=None):
