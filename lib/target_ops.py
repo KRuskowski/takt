@@ -5,6 +5,8 @@ can share the same logic.
 """
 
 import json
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -103,6 +105,30 @@ def is_template(name):
   if target is None:
     return False
   return target.get("template", False)
+
+
+def get_vm_state(name):
+  """Get the libvirt domain state for a VM target.
+
+  Args:
+    name: Domain/target name.
+
+  Returns:
+    State string (e.g. 'running', 'shut off') or None if
+    virsh is not installed or the domain doesn't exist.
+  """
+  if not shutil.which("virsh"):
+    return None
+  try:
+    result = subprocess.run(
+      ["virsh", "domstate", name],
+      capture_output=True, text=True, timeout=5,
+    )
+    if result.returncode != 0:
+      return None
+    return result.stdout.strip()
+  except (subprocess.TimeoutExpired, OSError):
+    return None
 
 
 def get_all_targets():
