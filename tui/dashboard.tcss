@@ -1,12 +1,13 @@
-/* Agent Orchestration Dashboard — 2-col, 2-row grid. */
+/* Agent Orchestration Dashboard — 2-col, 3-row grid. */
 /* Top row: agents (full width).                       */
-/* Bottom row: workspaces + targets side by side.      */
+/* Middle row: workspaces + stages side by side.       */
+/* Bottom row: targets (full width).                   */
 
 Screen {
   layout: grid;
-  grid-size: 2 2;
+  grid-size: 2 3;
   grid-columns: 1fr 1fr;
-  grid-rows: 1fr 1fr;
+  grid-rows: 1fr 1fr 1fr;
   grid-gutter: 1;
   background: #101010;
 }
@@ -25,8 +26,15 @@ Screen {
   border: solid #2a2a2a;
 }
 
-#targets-panel {
+#stages-panel {
   column-span: 1;
+  row-span: 1;
+  background: #101010;
+  border: solid #2a2a2a;
+}
+
+#targets-panel {
+  column-span: 2;
   row-span: 1;
   background: #101010;
   border: solid #2a2a2a;

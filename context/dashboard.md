@@ -18,16 +18,21 @@ layout with agents prominent on top.
 |   my-task    feat-auth    opus   active  142K/200K  1.2M    |
 |   ...                                                       |
 +----------------------------+-------------------------------+
-|   Workspaces               |   Targets                     |
-|   Name  Repos  Branch  St  |   Name  Type  Host  Claimed   |
+|   Workspaces               |   Stages                      |
+|   Name  Repos  Branch  St  |   Name  Type  Repos  Branch   |
 |   ...                      |   ...                         |
 +----------------------------+-------------------------------+
+|   Targets                                                   |
+|   Name  Type  Host  Claimed By                              |
+|   ...                                                       |
++------------------------------------------------------------+
 | Footer: [n]ew ws  [c]laim  [x]release  [r]efresh  [q]uit   |
 +------------------------------------------------------------+
 ```
 
 Top row: agents panel spanning full width (most prominent).
-Bottom row: workspaces (left) + targets (right).
+Middle row: workspaces (left) + stages (right).
+Bottom row: targets (full width).
 
 ## File Structure
 
@@ -40,6 +45,7 @@ tui/
   widgets/
     agents.py              AgentsPanel (DataTable, filters stale)
     workspaces.py          WorkspacesPanel (DataTable)
+    stages.py              StagesPanel (testing + utility, DataTable)
     targets.py             TargetsPanel (DataTable)
 ```
 
@@ -76,6 +82,12 @@ Functions:
 - `get_workspace_status(name)` — per-repo branch + status
 - `create_workspace(name, repos)` — clone + branch + template
 - `delete_workspace(name)` — rmtree
+- `list_testing_stages()` — returns list of dicts
+- `list_utility_stages()` — returns list of dicts
+- `create_testing_stage(name)` — clone + branch + template
+- `create_utility_stage(name)` — clone + branch + template
+- `delete_testing_stage(name)` — rmtree + restore origins
+- `delete_utility_stage(name)` — rmtree + restore origins
 
 ### `lib/target_ops.py`
 
@@ -97,6 +109,7 @@ the main thread via `app.call_from_thread()`.
 |------------|----------|------------------------------------|
 | Agents     | 5s       | `session_parser.discover_sessions` |
 | Workspaces | 10s      | `workspace_ops.list_workspaces`    |
+| Stages     | 10s      | `workspace_ops.list_*_stages`      |
 | Targets    | 10s      | `target_ops.get_all_targets`       |
 
 ## Agent Filtering
