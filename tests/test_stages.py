@@ -18,12 +18,12 @@ class TestParsePipelineRoles(unittest.TestCase):
   """Tests for parse_pipeline_roles()."""
 
   def test_parses_all_roles(self):
-    """All 6 roles are extracted from pipeline_roles.md."""
+    """All 7 roles are extracted from pipeline_roles.md."""
     from lib.config import parse_pipeline_roles
     roles = parse_pipeline_roles()
     expected = {
       "feature", "test", "review", "docs",
-      "refactor", "deploy_qa",
+      "refactor", "pr", "deploy_qa",
     }
     self.assertEqual(set(roles.keys()), expected)
 
@@ -352,6 +352,91 @@ class TestStageOperations(unittest.TestCase):
     stage_dir = create_stage("test-ws", "test")
     content = (stage_dir / "CLAUDE.md").read_text()
     self.assertIn("test agent", content.lower())
+
+  def test_stage_claude_md_has_stage_git_rules(self):
+    """Stage CLAUDE.md has stage-aware git rules."""
+    from lib.workspace_ops import create_stage, refresh_stage
+    self._create_workspace()
+    create_stage("test-ws", "test")
+    create_stage("test-ws", "review")
+    # Refresh test stage so its CLAUDE.md reflects the
+    # full pipeline (review was added after test).
+    refresh_stage("test-ws", "test")
+    test_dir = (
+      self.base_dir / "stages" / "test-ws" / "test"
+    )
+    content = (test_dir / "CLAUDE.md").read_text()
+    # Should mention it's the test stage.
+    self.assertIn("**test** stage", content)
+    # Should show pipeline chain with test highlighted.
+    self.assertIn("[test]", content)
+    # Should mention origin points to review.
+    self.assertIn("review", content)
+
+  def test_stage_claude_md_last_stage_points_to_root(self):
+    """Last stage's origin description mentions root repo."""
+    from lib.workspace_ops import create_stage
+    self._create_workspace()
+    stage_dir = create_stage("test-ws", "review")
+    content = (stage_dir / "CLAUDE.md").read_text()
+    self.assertIn("root repo", content)
+
+  def test_stage_claude_md_has_pipeline_section(self):
+    """Stage CLAUDE.md includes incoming changes section."""
+    from lib.workspace_ops import create_stage
+    self._create_workspace()
+    stage_dir = create_stage("test-ws", "test")
+    content = (stage_dir / "CLAUDE.md").read_text()
+    self.assertIn("Incoming Changes", content)
+    self.assertIn(".pipeline-push", content)
+
+  def test_workspace_claude_md_no_pipeline_section(self):
+    """Workspace CLAUDE.md does NOT have pipeline section."""
+    self._create_workspace()
+    ws_dir = self.base_dir / "workspaces" / "test-ws"
+    content = (ws_dir / "CLAUDE.md").read_text()
+    self.assertNotIn("Incoming Changes", content)
+
+  def test_push_hook_installed(self):
+    """post-receive hook is installed in stage repos."""
+    from lib.workspace_ops import create_stage
+    self._create_workspace()
+    stage_dir = create_stage("test-ws", "test")
+    hook = (
+      stage_dir / self.repo_name / ".git"
+      / "hooks" / "post-receive"
+    )
+    self.assertTrue(hook.exists())
+    self.assertTrue(os.access(hook, os.X_OK))
+    content = hook.read_text()
+    self.assertIn(".pipeline-push", content)
+
+  def test_refresh_stage(self):
+    """refresh_stage re-generates CLAUDE.md and installs hooks."""
+    from lib.workspace_ops import create_stage, refresh_stage
+    self._create_workspace()
+    stage_dir = create_stage("test-ws", "test")
+
+    # Delete CLAUDE.md and hook, then refresh.
+    (stage_dir / "CLAUDE.md").unlink()
+    hook = (
+      stage_dir / self.repo_name / ".git"
+      / "hooks" / "post-receive"
+    )
+    hook.unlink()
+
+    refresh_stage("test-ws", "test")
+    self.assertTrue((stage_dir / "CLAUDE.md").exists())
+    self.assertTrue(hook.exists())
+    content = (stage_dir / "CLAUDE.md").read_text()
+    self.assertIn("**test** stage", content)
+
+  def test_refresh_nonexistent_stage(self):
+    """refresh_stage raises FileNotFoundError for missing stage."""
+    from lib.workspace_ops import refresh_stage
+    self._create_workspace()
+    with self.assertRaises(FileNotFoundError):
+      refresh_stage("test-ws", "test")
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@ Guidelines:
 - Run the full test suite — report failures clearly.
 - Do NOT fix feature code. Document failures in session state.
 - Focus on edge cases and error paths, not just happy paths.
+- After writing tests, commit and push to origin:
+  `git push origin <branch>`
 
 ---
 
@@ -63,6 +65,8 @@ Guidelines:
 - Add or update code comments where logic changed.
 - Keep docs concise and accurate.
 - Do NOT change functional code.
+- After updating docs, commit and push to origin:
+  `git push origin <branch>`
 
 ---
 
@@ -77,6 +81,8 @@ Guidelines:
 - Keep refactoring scope focused — don't boil the ocean.
 - Document what you changed and why in session state.
 - If tests fail after refactoring, revert and document the issue.
+- After refactoring, commit and push to origin:
+  `git push origin <branch>`
 
 ---
 
