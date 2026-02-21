@@ -6,7 +6,7 @@ from textual.widgets import Footer, Header
 
 from tui.widgets.agents import AgentsPanel
 from tui.widgets.pipeline import PipelinePanel
-from tui.widgets.stages import StagesPanel
+from tui.widgets.pipeline_grid import PipelineGridPanel
 from tui.widgets.targets import TargetsPanel
 from tui.widgets.workspaces import WorkspacesPanel
 
@@ -30,7 +30,7 @@ class DashboardApp(App):
     yield Header(show_clock=True)
     yield AgentsPanel(id="agents-panel")
     yield WorkspacesPanel(id="workspaces-panel")
-    yield StagesPanel(id="stages-panel")
+    yield PipelineGridPanel(id="stages-panel")
     yield PipelinePanel(id="pipeline-panel")
     yield TargetsPanel(id="targets-panel")
     yield Footer()
@@ -39,7 +39,7 @@ class DashboardApp(App):
     """Initial data load and start polling."""
     self._refresh_all()
     self.set_interval(10, self._poll_workspaces)
-    self.set_interval(10, self._poll_stages)
+    self.set_interval(10, self._poll_pipeline_grid)
     self.set_interval(5, self._poll_agents)
     self.set_interval(10, self._poll_targets)
     self.set_interval(10, self._poll_pipeline)
@@ -47,7 +47,7 @@ class DashboardApp(App):
   def _refresh_all(self) -> None:
     """Refresh all panels."""
     self._poll_workspaces()
-    self._poll_stages()
+    self._poll_pipeline_grid()
     self._poll_agents()
     self._poll_targets()
     self._poll_pipeline()
@@ -60,8 +60,10 @@ class DashboardApp(App):
     panel = self.query_one("#agents-panel", AgentsPanel)
     panel.refresh_data()
 
-  def _poll_stages(self) -> None:
-    panel = self.query_one("#stages-panel", StagesPanel)
+  def _poll_pipeline_grid(self) -> None:
+    panel = self.query_one(
+      "#stages-panel", PipelineGridPanel
+    )
     panel.refresh_data()
 
   def _poll_targets(self) -> None:
