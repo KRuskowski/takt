@@ -594,9 +594,13 @@ def build_sync_prompt(ws, repo_markers):
     Prompt string.
   """
   parts = [
+    "IMPORTANT: Ignore the CLAUDE.md in this directory — it is"
+    " for the workspace agent, not you. You are a **sync"
+    " agent**. Follow only the instructions in this prompt.\n",
     f"Upstream changes detected for workspace `{ws}`.\n",
-    "Merge the following upstream changes into your branch "
-    "and push.\n",
+    "Merge the following upstream changes into your branch"
+    " and push. Do NOT modify code beyond resolving merge"
+    " conflicts. Do not update session state in CLAUDE.md.\n",
   ]
   for repo, lines in repo_markers:
     parts.append(f"## {repo}")
@@ -636,7 +640,6 @@ def build_sync_prompt(ws, repo_markers):
     else:
       parts.append(f"New upstream at {last_new[:8]}")
     parts.append("")
-  parts.append("Steps:")
   # Collect unique default branches from markers.
   default_branches = set()
   for _, lines in repo_markers:
@@ -648,16 +651,27 @@ def build_sync_prompt(ws, repo_markers):
         )
   br = next(iter(default_branches), "main")
   parts.append(
-    f"1. For each repo: `git fetch origin {br}`"
+    "Important: origin points to the first pipeline stage,"
+    " not the root repo. Fetch upstream from the root repo"
+    " path directly.\n"
   )
-  parts.append(
-    f"2. For each repo: `git merge origin/{br}`"
-  )
+  parts.append("Steps:")
+  repo_names = [r for r, _ in repo_markers]
+  for repo in repo_names:
+    root = f"~/dev/root/{repo}"
+    parts.append(
+      f"1. `git -C {repo} fetch {root} {br}`"
+    )
+    parts.append(
+      f"2. `git -C {repo} merge FETCH_HEAD`"
+    )
   parts.append(
     "3. Resolve conflicts or stop if unresolvable."
   )
   parts.append(
-    f"4. Push all repos: `git push origin {ws}`"
+    f"4. Push all repos: `git push origin {ws}`\n"
+    "   This propagates through the pipeline stages"
+    " to root."
   )
   return "\n".join(parts)
 
