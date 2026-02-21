@@ -9,29 +9,12 @@ from textual.containers import Vertical
 from textual.widgets import DataTable, Static
 from textual import work
 
+from tui.widgets.style_utils import age_style, agent_bucket
+
 _HOME = os.path.expanduser("~")
 _DEV = os.path.join(_HOME, "dev")
 _ROOT = os.path.join(_DEV, "root")
 _WORKSPACES = os.path.join(_DEV, "workspaces")
-
-
-def _age_style(status, age_min):
-  """Return a Rich style string based on age bucket.
-
-  Args:
-    status: One of 'active', 'recent', 'stale', 'idle'.
-    age_min: Age in minutes (unused for active/idle).
-
-  Returns:
-    Rich style string for coloring row text.
-  """
-  if status == "active":
-    return "#66bb6a"
-  if status == "recent":
-    return "#fdd835"
-  if status == "stale":
-    return "#666666"
-  return ""
 
 
 def _status_label(session):
@@ -41,8 +24,7 @@ def _status_label(session):
     Tuple of (status_bucket, age_minutes, display_label).
     status_bucket is one of 'active', 'recent', 'stale', 'idle'.
   """
-  if session.is_active:
-    return "active", 0, "active"
+  age_min = float("inf")
   if session.last_active:
     from datetime import datetime
     try:
@@ -50,14 +32,14 @@ def _status_label(session):
         session.last_active.replace("Z", "+00:00")
       )
       age_min = (time.time() - ts.timestamp()) / 60
-      label = f"{int(age_min)}m ago"
-      if age_min < 10:
-        return "recent", age_min, label
-      if age_min < 30:
-        return "stale", age_min, label
     except (ValueError, TypeError):
       pass
-  return "idle", float("inf"), "idle"
+  bucket = agent_bucket(session.is_active, age_min)
+  if bucket == "active":
+    return "active", 0, "active"
+  if bucket == "idle":
+    return "idle", age_min, "idle"
+  return bucket, age_min, f"{int(age_min)}m ago"
 
 
 def _short_project(cwd):
@@ -116,7 +98,10 @@ class AgentsPanel(Vertical):
 
   def compose(self) -> ComposeResult:
     yield Static("Agents", classes="panel-title")
-    yield DataTable(id="agents-table")
+    yield DataTable(
+      id="agents-table",
+      cursor_foreground_priority="renderable",
+    )
 
   def on_mount(self) -> None:
     table = self.query_one("#agents-table", DataTable)
@@ -148,7 +133,7 @@ class AgentsPanel(Vertical):
       if status == "active":
         active_count += 1
 
-      style = _age_style(status, age_min)
+      style = age_style(status)
       model = (
         s.model.split("-")[1] if "-" in s.model else s.model
       )

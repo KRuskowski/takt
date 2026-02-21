@@ -1,5 +1,6 @@
 """Git operations via subprocess."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -223,6 +224,23 @@ def install_push_hook(repo_path):
     'done\n'
   )
   hook_path.chmod(0o755)
+
+
+def get_index_mtime(repo_path):
+  """Return the mtime of .git/index as an epoch float.
+
+  Args:
+    repo_path: Path to the repo.
+
+  Returns:
+    Modification time as epoch float, or 0.0 if the file
+    does not exist.
+  """
+  index = os.path.join(str(repo_path), ".git", "index")
+  try:
+    return os.path.getmtime(index)
+  except OSError:
+    return 0.0
 
 
 def get_status(repo_path, short=True):

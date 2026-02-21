@@ -1,9 +1,14 @@
 """Stages panel widget for all pipeline stages."""
 
+import time
+
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import DataTable, Static
 from textual.containers import Vertical
 from textual import work
+
+from tui.widgets.style_utils import age_label, age_style, ws_bucket
 
 
 class StagesPanel(Vertical):
@@ -17,13 +22,16 @@ class StagesPanel(Vertical):
 
   def compose(self) -> ComposeResult:
     yield Static("Stages", classes="panel-title")
-    yield DataTable(id="stages-table")
+    yield DataTable(
+      id="stages-table",
+      cursor_foreground_priority="renderable",
+    )
 
   def on_mount(self) -> None:
     table = self.query_one("#stages-table", DataTable)
     table.cursor_type = "row"
     table.add_columns(
-      "Workspace", "Role", "Repos", "Branch",
+      "Workspace", "Role", "Repos", "Branch", "Status",
     )
 
   @work(thread=True)
@@ -41,10 +49,21 @@ class StagesPanel(Vertical):
       repos_str = ", ".join(s["repos"][:3])
       if len(s["repos"]) > 3:
         repos_str += f" +{len(s['repos']) - 3}"
+
+      last = s.get("last_active", 0.0)
+      if last > 0:
+        age_min = (time.time() - last) / 60
+      else:
+        age_min = float("inf")
+      bucket = ws_bucket(age_min)
+      style = age_style(bucket)
+      label = age_label(age_min) if last > 0 else "unknown"
+
       table.add_row(
-        s["workspace"],
-        s["role"],
-        repos_str,
-        s["branch"],
+        Text(s["workspace"], style=style),
+        Text(s["role"], style=style),
+        Text(repos_str, style=style),
+        Text(s["branch"], style=style),
+        Text(label, style=style),
         key=f"{s['workspace']}:{s['role']}",
       )

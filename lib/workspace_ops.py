@@ -25,6 +25,7 @@ from lib.git_utils import (
   clone_local,
   create_branch,
   get_current_branch,
+  get_index_mtime,
   get_status,
   install_push_hook,
   run_git,
@@ -32,11 +33,37 @@ from lib.git_utils import (
 )
 
 
+def _compute_last_active(base_dir, repos):
+  """Compute the most recent activity timestamp for a directory.
+
+  Checks .git/index mtime for each repo and the CLAUDE.md mtime
+  in the base directory. Returns the newest timestamp.
+
+  Args:
+    base_dir: Path to the workspace or stage directory.
+    repos: List of repo directory names within base_dir.
+
+  Returns:
+    Epoch float of the most recent activity, or 0.0.
+  """
+  mtimes = []
+  for repo_name in repos:
+    mtimes.append(get_index_mtime(base_dir / repo_name))
+  claude_md = base_dir / "CLAUDE.md"
+  if claude_md.exists():
+    try:
+      mtimes.append(claude_md.stat().st_mtime)
+    except OSError:
+      pass
+  return max(mtimes) if mtimes else 0.0
+
+
 def list_workspaces():
   """List all workspaces with metadata.
 
   Returns:
-    List of dicts with keys: name, path, repos, branch.
+    List of dicts with keys: name, path, repos, branch,
+    last_active.
   """
   if not WORKSPACES_DIR.exists():
     return []
@@ -60,6 +87,7 @@ def list_workspaces():
       "path": str(ws_dir),
       "repos": repos,
       "branch": branch,
+      "last_active": _compute_last_active(ws_dir, repos),
     })
   return results
 
@@ -722,6 +750,7 @@ def list_stages(workspace_name=None):
         "path": str(role_dir),
         "repos": repos,
         "branch": branch,
+        "last_active": _compute_last_active(role_dir, repos),
       })
 
   return results
