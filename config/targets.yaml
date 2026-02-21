@@ -6,6 +6,6 @@ targets:
   deb-01:
     type: vm
     host: 10.101.0.20
-    user: builder
+    user: worker
     ssh_key: ~/.ssh/id_ed25519_targets
     description: Debian 12 build VM (QEMU/KVM)

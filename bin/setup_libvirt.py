@@ -33,7 +33,7 @@ VM_VCPUS = 4
 VM_RAM_MB = 4096
 VM_DISK_GB = 40
 VM_IP = "10.101.0.20"
-VM_USER = "builder"
+VM_USER = "worker"
 
 CLOUD_IMAGE_URL = (
   "https://cloud.debian.org/images/cloud/bookworm/latest/"
