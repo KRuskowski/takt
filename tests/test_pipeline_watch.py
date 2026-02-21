@@ -16,10 +16,14 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 from bin.pipeline_watch import (
   _kitty_tab_exists,
+  _scan_and_sync,
   _scan_and_trigger,
+  build_sync_prompt,
   build_trigger_prompt,
   launch_in_kitty,
   scan_markers,
+  scan_sync_markers,
+  write_sync_markers,
 )
 
 FAKE_SOCKET = "unix:/tmp/kitty-pipeline-99999"
@@ -452,6 +456,420 @@ class TestScanAndTrigger(unittest.TestCase):
     self.assertEqual(
       call_args[0][2], self.stages_dir / "ws" / "test",
     )
+
+
+class TestScanSyncMarkers(unittest.TestCase):
+  """Tests for scan_sync_markers()."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.ws_dir = Path(self.tmpdir) / "workspaces"
+    self.ws_dir.mkdir()
+    self.patch = mock.patch(
+      "bin.pipeline_watch.WORKSPACES_DIR", self.ws_dir,
+    )
+    self.patch.start()
+
+  def tearDown(self):
+    self.patch.stop()
+    shutil.rmtree(self.tmpdir)
+
+  def test_empty_dir(self):
+    """Returns empty dict when no workspaces exist."""
+    result = scan_sync_markers()
+    self.assertEqual(result, {})
+
+  def test_no_markers(self):
+    """Returns empty dict when repos exist but no markers."""
+    repo = self.ws_dir / "ws" / "myrepo"
+    repo.mkdir(parents=True)
+    result = scan_sync_markers()
+    self.assertEqual(result, {})
+
+  def test_single_marker(self):
+    """Finds a single upstream sync marker."""
+    repo = self.ws_dir / "ws" / "myrepo"
+    repo.mkdir(parents=True)
+    (repo / ".upstream-sync").write_text(
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master\n"
+    )
+    result = scan_sync_markers()
+    self.assertIn("ws", result)
+    self.assertEqual(len(result["ws"]), 1)
+    repo_name, lines = result["ws"][0]
+    self.assertEqual(repo_name, "myrepo")
+    self.assertEqual(len(lines), 1)
+
+  def test_multiple_repos(self):
+    """Groups markers from multiple repos in same workspace."""
+    for name in ("repo-a", "repo-b"):
+      repo = self.ws_dir / "ws" / name
+      repo.mkdir(parents=True)
+      (repo / ".upstream-sync").write_text(
+        "2026-02-20T10:00:00+00:00 aaa bbb"
+        " refs/heads/master\n"
+      )
+    result = scan_sync_markers()
+    self.assertEqual(len(result["ws"]), 2)
+
+  def test_multiple_workspaces(self):
+    """Finds markers across different workspaces."""
+    for ws in ("ws-a", "ws-b"):
+      repo = self.ws_dir / ws / "myrepo"
+      repo.mkdir(parents=True)
+      (repo / ".upstream-sync").write_text(
+        "2026-02-20T10:00:00+00:00 aaa bbb"
+        " refs/heads/master\n"
+      )
+    result = scan_sync_markers()
+    self.assertIn("ws-a", result)
+    self.assertIn("ws-b", result)
+
+  def test_empty_marker_skipped(self):
+    """Empty marker files are ignored."""
+    repo = self.ws_dir / "ws" / "myrepo"
+    repo.mkdir(parents=True)
+    (repo / ".upstream-sync").write_text("")
+    result = scan_sync_markers()
+    self.assertEqual(result, {})
+
+  def test_nonexistent_dir(self):
+    """Returns empty dict when WORKSPACES_DIR doesn't exist."""
+    shutil.rmtree(self.ws_dir)
+    result = scan_sync_markers()
+    self.assertEqual(result, {})
+
+
+class TestBuildSyncPrompt(unittest.TestCase):
+  """Tests for build_sync_prompt()."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.ws_dir = Path(self.tmpdir) / "workspaces"
+    self.ws_dir.mkdir()
+    self.patch = mock.patch(
+      "bin.pipeline_watch.WORKSPACES_DIR", self.ws_dir,
+    )
+    self.patch.start()
+
+  def tearDown(self):
+    self.patch.stop()
+    shutil.rmtree(self.tmpdir)
+
+  @mock.patch(
+    "bin.pipeline_watch.get_log", return_value="log",
+  )
+  def test_contains_workspace_name(self, _mock_log):
+    """Prompt mentions the workspace name."""
+    lines = [
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master",
+    ]
+    prompt = build_sync_prompt("my-ws", [("myrepo", lines)])
+    self.assertIn("my-ws", prompt)
+
+  @mock.patch(
+    "bin.pipeline_watch.get_log", return_value="log",
+  )
+  def test_contains_repo_name(self, _mock_log):
+    """Prompt mentions the repo name."""
+    lines = [
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master",
+    ]
+    prompt = build_sync_prompt("ws", [("myrepo", lines)])
+    self.assertIn("## myrepo", prompt)
+
+  @mock.patch(
+    "bin.pipeline_watch.get_log", return_value="log",
+  )
+  def test_contains_merge_and_push_instructions(
+    self, _mock_log,
+  ):
+    """Prompt includes merge and push steps."""
+    lines = [
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master",
+    ]
+    prompt = build_sync_prompt("ws", [("myrepo", lines)])
+    self.assertIn("git fetch origin master", prompt)
+    self.assertIn("git merge origin/master", prompt)
+    self.assertIn("git push origin ws", prompt)
+
+  @mock.patch(
+    "bin.pipeline_watch.get_log", return_value="log",
+  )
+  def test_parses_default_branch_from_ref(self, _mock_log):
+    """Extracts branch name from refs/heads/<branch>."""
+    lines = [
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/develop",
+    ]
+    prompt = build_sync_prompt("ws", [("myrepo", lines)])
+    self.assertIn("git fetch origin develop", prompt)
+    self.assertIn("git merge origin/develop", prompt)
+
+  @mock.patch(
+    "bin.pipeline_watch.get_log",
+    return_value="abc123 fix thing",
+  )
+  def test_includes_commit_log(self, _mock_log):
+    """Prompt includes commit log for updated refs."""
+    lines = [
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master",
+    ]
+    prompt = build_sync_prompt("ws", [("myrepo", lines)])
+    self.assertIn("abc123 fix thing", prompt)
+
+  @mock.patch(
+    "bin.pipeline_watch.get_log", return_value="log",
+  )
+  def test_handles_multiple_repos(self, _mock_log):
+    """Prompt covers all repos."""
+    lines_a = [
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master",
+    ]
+    lines_b = [
+      "2026-02-20T10:00:00+00:00 ccc ddd"
+      " refs/heads/master",
+    ]
+    prompt = build_sync_prompt(
+      "ws",
+      [("repo-a", lines_a), ("repo-b", lines_b)],
+    )
+    self.assertIn("## repo-a", prompt)
+    self.assertIn("## repo-b", prompt)
+
+
+class TestWriteSyncMarkers(unittest.TestCase):
+  """Tests for write_sync_markers()."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.ws_dir = Path(self.tmpdir) / "workspaces"
+    self.ws_dir.mkdir()
+    self.patch_ws = mock.patch(
+      "bin.pipeline_watch.WORKSPACES_DIR", self.ws_dir,
+    )
+    self.patch_ws.start()
+    # Pre-create a workspace dir with a repo dir.
+    self.repo_dir = self.ws_dir / "feat" / "myrepo"
+    self.repo_dir.mkdir(parents=True)
+
+  def tearDown(self):
+    self.patch_ws.stop()
+    shutil.rmtree(self.tmpdir)
+
+  def _mock_workspaces(self, workspaces):
+    """Return a patch for list_workspaces."""
+    return mock.patch(
+      "bin.pipeline_watch.list_workspaces",
+      return_value=workspaces,
+    )
+
+  def test_writes_marker_for_matching_workspace(self):
+    """Writes marker when workspace contains the repo."""
+    ws_list = [{
+      "name": "feat", "repos": ["myrepo"],
+      "branch": "feat", "path": str(self.ws_dir / "feat"),
+      "last_active": 0.0,
+    }]
+    changes = [{
+      "repo": "myrepo", "branch": "master",
+      "old_ref": "aaa", "new_ref": "bbb",
+      "type": "updated",
+    }]
+    with self._mock_workspaces(ws_list):
+      write_sync_markers(changes, {"repos": {}})
+    marker = self.repo_dir / ".upstream-sync"
+    self.assertTrue(marker.exists())
+    content = marker.read_text()
+    self.assertIn("aaa", content)
+    self.assertIn("bbb", content)
+    self.assertIn("refs/heads/master", content)
+
+  def test_skips_workspace_without_repo(self):
+    """No marker if workspace doesn't contain the repo."""
+    ws_list = [{
+      "name": "feat", "repos": ["other-repo"],
+      "branch": "feat", "path": str(self.ws_dir / "feat"),
+      "last_active": 0.0,
+    }]
+    changes = [{
+      "repo": "myrepo", "branch": "master",
+      "old_ref": "aaa", "new_ref": "bbb",
+      "type": "updated",
+    }]
+    with self._mock_workspaces(ws_list):
+      write_sync_markers(changes, {"repos": {}})
+    marker = self.repo_dir / ".upstream-sync"
+    self.assertFalse(marker.exists())
+
+  def test_skips_workspace_on_default_branch(self):
+    """No marker if workspace branch matches the change."""
+    ws_list = [{
+      "name": "master", "repos": ["myrepo"],
+      "branch": "master",
+      "path": str(self.ws_dir / "master"),
+      "last_active": 0.0,
+    }]
+    (self.ws_dir / "master" / "myrepo").mkdir(parents=True)
+    changes = [{
+      "repo": "myrepo", "branch": "master",
+      "old_ref": "aaa", "new_ref": "bbb",
+      "type": "updated",
+    }]
+    with self._mock_workspaces(ws_list):
+      write_sync_markers(changes, {"repos": {}})
+    marker = (
+      self.ws_dir / "master" / "myrepo" / ".upstream-sync"
+    )
+    self.assertFalse(marker.exists())
+
+  def test_skips_deleted_changes(self):
+    """No marker for deleted branch changes."""
+    ws_list = [{
+      "name": "feat", "repos": ["myrepo"],
+      "branch": "feat", "path": str(self.ws_dir / "feat"),
+      "last_active": 0.0,
+    }]
+    changes = [{
+      "repo": "myrepo", "branch": "master",
+      "old_ref": "aaa", "new_ref": None,
+      "type": "deleted",
+    }]
+    with self._mock_workspaces(ws_list):
+      write_sync_markers(changes, {"repos": {}})
+    marker = self.repo_dir / ".upstream-sync"
+    self.assertFalse(marker.exists())
+
+  def test_appends_to_existing_marker(self):
+    """Appends new line to existing marker file."""
+    ws_list = [{
+      "name": "feat", "repos": ["myrepo"],
+      "branch": "feat", "path": str(self.ws_dir / "feat"),
+      "last_active": 0.0,
+    }]
+    marker = self.repo_dir / ".upstream-sync"
+    marker.write_text(
+      "2026-02-20T09:00:00+00:00 xxx yyy"
+      " refs/heads/master\n"
+    )
+    changes = [{
+      "repo": "myrepo", "branch": "master",
+      "old_ref": "aaa", "new_ref": "bbb",
+      "type": "updated",
+    }]
+    with self._mock_workspaces(ws_list):
+      write_sync_markers(changes, {"repos": {}})
+    lines = marker.read_text().strip().splitlines()
+    self.assertEqual(len(lines), 2)
+
+  def test_multiple_workspaces_same_repo(self):
+    """Both workspaces get markers for the same repo."""
+    (self.ws_dir / "feat-b" / "myrepo").mkdir(parents=True)
+    ws_list = [
+      {
+        "name": "feat", "repos": ["myrepo"],
+        "branch": "feat",
+        "path": str(self.ws_dir / "feat"),
+        "last_active": 0.0,
+      },
+      {
+        "name": "feat-b", "repos": ["myrepo"],
+        "branch": "feat-b",
+        "path": str(self.ws_dir / "feat-b"),
+        "last_active": 0.0,
+      },
+    ]
+    changes = [{
+      "repo": "myrepo", "branch": "master",
+      "old_ref": "aaa", "new_ref": "bbb",
+      "type": "updated",
+    }]
+    with self._mock_workspaces(ws_list):
+      write_sync_markers(changes, {"repos": {}})
+    m1 = self.repo_dir / ".upstream-sync"
+    m2 = (
+      self.ws_dir / "feat-b" / "myrepo" / ".upstream-sync"
+    )
+    self.assertTrue(m1.exists())
+    self.assertTrue(m2.exists())
+
+
+class TestScanAndSync(unittest.TestCase):
+  """Tests for _scan_and_sync()."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.ws_dir = Path(self.tmpdir) / "workspaces"
+    self.ws_dir.mkdir()
+    self.patch = mock.patch(
+      "bin.pipeline_watch.WORKSPACES_DIR", self.ws_dir,
+    )
+    self.patch.start()
+
+  def tearDown(self):
+    self.patch.stop()
+    shutil.rmtree(self.tmpdir)
+
+  @mock.patch("bin.pipeline_watch.launch_in_kitty")
+  def test_deletes_markers_and_launches(self, mock_launch):
+    """Markers deleted and agent launched on trigger."""
+    repo = self.ws_dir / "ws" / "myrepo"
+    repo.mkdir(parents=True)
+    marker = repo / ".upstream-sync"
+    marker.write_text(
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master\n"
+    )
+    _scan_and_sync()
+    self.assertFalse(marker.exists())
+    mock_launch.assert_called_once()
+
+  @mock.patch("bin.pipeline_watch.launch_in_kitty")
+  def test_noop_without_markers(self, mock_launch):
+    """Does nothing when no markers exist."""
+    _scan_and_sync()
+    mock_launch.assert_not_called()
+
+  @mock.patch("bin.pipeline_watch.launch_in_kitty")
+  def test_passes_workspace_dir_and_sync_role(
+    self, mock_launch,
+  ):
+    """Passes workspace dir and role='sync'."""
+    repo = self.ws_dir / "ws" / "myrepo"
+    repo.mkdir(parents=True)
+    (repo / ".upstream-sync").write_text(
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master\n"
+    )
+    _scan_and_sync()
+    call_args = mock_launch.call_args
+    self.assertEqual(call_args[0][0], "ws")
+    self.assertEqual(call_args[0][1], "sync")
+    self.assertEqual(call_args[0][2], self.ws_dir / "ws")
+
+  @mock.patch("bin.pipeline_watch._kitty_tab_exists")
+  @mock.patch("bin.pipeline_watch.launch_in_kitty")
+  def test_markers_persist_when_tab_exists(
+    self, mock_launch, mock_tab_exists,
+  ):
+    """Markers preserved when sync tab already running."""
+    mock_tab_exists.return_value = True
+    repo = self.ws_dir / "ws" / "myrepo"
+    repo.mkdir(parents=True)
+    marker = repo / ".upstream-sync"
+    marker.write_text(
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master\n"
+    )
+    _scan_and_sync()
+    self.assertTrue(marker.exists())
+    mock_launch.assert_not_called()
 
 
 if __name__ == "__main__":
