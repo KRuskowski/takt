@@ -42,6 +42,14 @@ def load_targets_config():
   return data or {}
 
 
+def save_targets_config(config):
+  """Write config dict back to targets.yaml."""
+  path = CONFIG_DIR / "targets.yaml"
+  with open(path, "w") as f:
+    yaml.dump(config, f, default_flow_style=False,
+              sort_keys=False)
+
+
 def get_repo_path(repo_name, base_dir=None):
   """Return the absolute path to a repo.
 

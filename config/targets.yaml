@@ -1,19 +1,27 @@
 # Target inventory for build/test machines.
 # Types: vm (libvirt/QEMU), hardware (always-on physical devices)
 # Network: 10.101.0.0/20, gateway 10.101.0.1 (this host)
+#
+# Templates (template: true) are read-only base images.
+# Use bin/clone_vm.py to create clones for actual work.
+# Clone IPs start at 10.101.0.100+.
 
 targets:
   deb-01:
     type: vm
+    template: true
+    disk: /var/lib/libvirt/images/deb-01.qcow2
     host: 10.101.0.20
     user: worker
     ssh_key: ~/.ssh/id_ed25519_targets
-    description: Debian 12 build VM (QEMU/KVM)
+    description: Debian 12 build VM — template (do not use directly)
 
   win-01:
     type: vm
+    template: true
+    disk: /home/karl/libvirt/images/win-01.qcow2
     host: 10.101.0.21
     user: worker
     ssh_key: ~/.ssh/id_ed25519_targets
     os: windows
-    description: Windows 11 Pro build VM (QEMU/KVM)
+    description: Windows 11 Pro build VM — template (do not use directly)

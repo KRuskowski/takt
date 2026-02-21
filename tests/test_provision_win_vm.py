@@ -234,9 +234,12 @@ class TestConfigureVsPath(unittest.TestCase):
     provision_win_vm.configure_vs_path(
       "worker", "10.0.0.1", "/k",
     )
-    mock_remote.assert_called_once()
-    cmd = mock_remote.call_args[0][3]
-    self.assertIn("vcvars64.bat", cmd)
+    # Two calls: execution policy + profile write.
+    self.assertEqual(mock_remote.call_count, 2)
+    policy_cmd = mock_remote.call_args_list[0][0][3]
+    self.assertIn("ExecutionPolicy", policy_cmd)
+    profile_cmd = mock_remote.call_args_list[1][0][3]
+    self.assertIn("FromBase64String", profile_cmd)
 
 
 class TestDisableAutologon(unittest.TestCase):
