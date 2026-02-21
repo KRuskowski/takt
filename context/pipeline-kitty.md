@@ -35,12 +35,34 @@ bin/pipeline_watch.py
 bin/dashboard.py
 ```
 
+### Stage triggers
+
 When a stage receives a push, the watcher:
 1. Reads `.pipeline-push` marker files
 2. Builds a trigger prompt with commit log
 3. Opens a kitty tab titled `ws/role` in the pipeline
    terminal
 4. Runs `claude <prompt>` in that tab
+5. Deletes the marker files after launching
+
+### Upstream sync
+
+When a root repo's default branch advances (e.g. a PR merges
+to master), the watcher writes `.upstream-sync` markers in
+every active workspace that uses the repo (skipping workspaces
+whose branch == the default branch).
+
+Marker location: `~/dev/workspaces/<ws>/<repo>/.upstream-sync`
+Marker format: `<iso_timestamp> <old_ref> <new_ref> refs/heads/<branch>`
+
+On the next poll cycle, `_scan_and_sync()` reads these markers
+and launches a sync agent in a kitty tab titled `ws/sync`. The
+agent merges the upstream default branch into the workspace
+branch and pushes.
+
+Key difference from stage triggers: if a `ws/sync` tab already
+exists, markers are **preserved** (not deleted) so they are
+retried on the next cycle after the running agent finishes.
 
 ## Socket Discovery
 

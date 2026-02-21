@@ -399,7 +399,7 @@ def launch_in_kitty(ws, role, stage_dir, prompt):
   # Use bash -i so shell aliases (e.g. claude) are loaded.
   # Single quotes inside prompt are escaped for the shell.
   escaped = prompt.replace("'", "'\\''")
-  shell_cmd = f"unset CLAUDECODE; claude '{escaped}'"
+  shell_cmd = f"unset CLAUDECODE; claude --model sonnet '{escaped}'"
   result = subprocess.run(
     [
       "kitten", "@", "--to", socket,
