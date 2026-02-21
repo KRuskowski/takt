@@ -11,12 +11,15 @@ from textual.widgets import DataTable, Static
 from textual import work
 
 from bin.pipeline_watch import (
+  _kitty_tab_exists,
   _prune_finished_tabs,
+  build_sync_prompt,
   build_trigger_prompt,
   launch_in_kitty,
   scan_markers,
+  scan_sync_markers,
 )
-from lib.config import STAGES_DIR
+from lib.config import STAGES_DIR, WORKSPACES_DIR
 
 MAX_EVENTS = 50
 
@@ -81,9 +84,7 @@ class PipelinePanel(Vertical):
     try:
       markers = scan_markers()
     except Exception:
-      return
-    if not markers:
-      return
+      markers = {}
     for (ws, role), repo_markers in markers.items():
       repos = [r for r, _ in repo_markers]
       stage_dir = STAGES_DIR / ws / role
@@ -103,7 +104,34 @@ class PipelinePanel(Vertical):
         "repos": ", ".join(repos),
         "event": event_type,
       })
-    self.app.call_from_thread(self._update_table)
+    # Scan for upstream sync markers.
+    try:
+      sync_markers = scan_sync_markers()
+    except Exception:
+      sync_markers = {}
+    for ws, repo_markers in sync_markers.items():
+      repos = [r for r, _ in repo_markers]
+      title = f"{ws}/sync"
+      if _kitty_tab_exists(title):
+        continue
+      prompt = build_sync_prompt(ws, repo_markers)
+      for repo, _ in repo_markers:
+        m = WORKSPACES_DIR / ws / repo / ".upstream-sync"
+        m.unlink(missing_ok=True)
+      ws_dir = WORKSPACES_DIR / ws
+      try:
+        launch_in_kitty(ws, "sync", ws_dir, prompt)
+        event_type = "triggered"
+      except Exception:
+        event_type = "error"
+      self._events.appendleft({
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "stage": title,
+        "repos": ", ".join(repos),
+        "event": event_type,
+      })
+    if markers or sync_markers:
+      self.app.call_from_thread(self._update_table)
 
   def _update_table(self) -> None:
     """Render event log to the table."""

@@ -616,8 +616,8 @@ class TestBuildSyncPrompt(unittest.TestCase):
       " refs/heads/master",
     ]
     prompt = build_sync_prompt("ws", [("myrepo", lines)])
-    self.assertIn("git fetch origin master", prompt)
-    self.assertIn("git merge origin/master", prompt)
+    self.assertIn("fetch ~/dev/root/myrepo master", prompt)
+    self.assertIn("merge FETCH_HEAD", prompt)
     self.assertIn("git push origin ws", prompt)
 
   @mock.patch(
@@ -630,8 +630,8 @@ class TestBuildSyncPrompt(unittest.TestCase):
       " refs/heads/develop",
     ]
     prompt = build_sync_prompt("ws", [("myrepo", lines)])
-    self.assertIn("git fetch origin develop", prompt)
-    self.assertIn("git merge origin/develop", prompt)
+    self.assertIn("fetch ~/dev/root/myrepo develop", prompt)
+    self.assertIn("merge FETCH_HEAD", prompt)
 
   @mock.patch(
     "bin.pipeline_watch.get_log",

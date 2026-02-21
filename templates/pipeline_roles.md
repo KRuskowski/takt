@@ -102,14 +102,16 @@ Guidelines:
 - Read the testing stage session state for test results.
 - If tests failed or have blockers, note them in the PR body.
 - Do NOT modify code. Your job is pushing and PR creation.
-- Before creating a PR, check for an existing open PR on the
-  branch: `gh pr list --head <branch> --state open`
+- For each repo, check for an existing open PR:
+  `gh pr list --head <branch> --state open`
   - **Open PR exists** — skip creation. The push already
     updated it with the latest commits.
   - **No open PR** — create a new one.
   - Never edit, reopen, or comment on merged/closed PRs.
-- If `gh pr create` fails due to a merge conflict with the
-  base branch, do NOT attempt to resolve it. Instead:
+- After creating or finding a PR, check its merge state:
+  `gh pr view <number> --json mergeable`
+  If `mergeable` is `"CONFLICTING"`, do NOT attempt to
+  resolve it. Instead:
   1. Write an upstream-sync marker for each conflicting repo
      to trigger the workspace sync agent:
      ```
