@@ -2,13 +2,10 @@
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
 from textual.widgets import Footer, Header
 
 from tui.widgets.agents import AgentsPanel
-from tui.widgets.detail import DetailPane
 from tui.widgets.targets import TargetsPanel
-from tui.widgets.usage import UsagePanel
 from tui.widgets.workspaces import WorkspacesPanel
 
 
@@ -28,11 +25,9 @@ class DashboardApp(App):
 
   def compose(self) -> ComposeResult:
     yield Header(show_clock=True)
-    yield WorkspacesPanel(id="workspaces-panel")
     yield AgentsPanel(id="agents-panel")
-    yield DetailPane(id="detail-pane")
+    yield WorkspacesPanel(id="workspaces-panel")
     yield TargetsPanel(id="targets-panel")
-    yield UsagePanel(id="usage-panel")
     yield Footer()
 
   def on_mount(self) -> None:
@@ -41,14 +36,12 @@ class DashboardApp(App):
     self.set_interval(10, self._poll_workspaces)
     self.set_interval(5, self._poll_agents)
     self.set_interval(10, self._poll_targets)
-    self.set_interval(60, self._poll_usage)
 
   def _refresh_all(self) -> None:
     """Refresh all panels."""
     self._poll_workspaces()
     self._poll_agents()
     self._poll_targets()
-    self._poll_usage()
 
   def _poll_workspaces(self) -> None:
     panel = self.query_one("#workspaces-panel", WorkspacesPanel)
@@ -60,10 +53,6 @@ class DashboardApp(App):
 
   def _poll_targets(self) -> None:
     panel = self.query_one("#targets-panel", TargetsPanel)
-    panel.refresh_data()
-
-  def _poll_usage(self) -> None:
-    panel = self.query_one("#usage-panel", UsagePanel)
     panel.refresh_data()
 
   def action_refresh(self) -> None:
@@ -107,8 +96,3 @@ class DashboardApp(App):
       from lib.target_ops import release_lock
       release_lock(result)
       self._poll_targets()
-
-  def update_detail(self, content: str) -> None:
-    """Update the detail pane with new content."""
-    pane = self.query_one("#detail-pane", DetailPane)
-    pane.update_content(content)

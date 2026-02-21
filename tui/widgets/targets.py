@@ -11,7 +11,6 @@ class TargetsPanel(Vertical):
 
   DEFAULT_CSS = """
   TargetsPanel {
-    border: solid $accent;
     padding: 0 1;
   }
   """
@@ -46,8 +45,6 @@ class TargetsPanel(Vertical):
         claimed,
         key=t["name"],
       )
-    # Store targets for detail lookup.
-    self._targets = {t["name"]: t for t in targets}
 
   def get_selected_target(self):
     """Return the name of the currently selected target."""
@@ -62,32 +59,3 @@ class TargetsPanel(Vertical):
     except Exception:
       return None
 
-  def on_data_table_row_selected(
-    self, event: DataTable.RowSelected
-  ) -> None:
-    """Show target detail when a row is selected."""
-    name = str(event.row_key.value)
-    target = getattr(self, "_targets", {}).get(name)
-    if not target:
-      return
-
-    lock = target["lock"]
-    lines = [
-      f"## Target: {name}",
-      f"",
-      f"  Type:        {target['type']}",
-      f"  Host:        {target['host']}",
-      f"  User:        {target.get('user', '-')}",
-      f"  Port:        {target.get('port') or 'default'}",
-      f"  Description: {target['description']}",
-      f"",
-    ]
-    if lock:
-      lines.extend([
-        f"  Claimed by:  {lock['workspace']}",
-        f"  Claimed at:  {lock['claimed_at']}",
-      ])
-    else:
-      lines.append("  Claimed by:  (none)")
-
-    self.app.update_detail("\n".join(lines))

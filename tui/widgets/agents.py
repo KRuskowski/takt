@@ -1,5 +1,6 @@
 """Agents panel widget."""
 
+import os
 import time
 
 from textual.app import ComposeResult
@@ -7,25 +8,54 @@ from textual.containers import Vertical
 from textual.widgets import DataTable, Static
 from textual import work
 
+_HOME = os.path.expanduser("~")
+_DEV = os.path.join(_HOME, "dev")
+_WORKSPACES = os.path.join(_DEV, "workspaces")
+
 
 def _status_label(session):
-  """Return a status label based on activity recency."""
+  """Return a status label and age in minutes."""
   if session.is_active:
-    return "active"
+    return "active", 0
   if session.last_active:
     from datetime import datetime
     try:
       ts = datetime.fromisoformat(
         session.last_active.replace("Z", "+00:00")
       )
-      age_min = (
-        time.time() - ts.timestamp()
-      ) / 60
-      if age_min < 10:
-        return "recent"
+      age_min = (time.time() - ts.timestamp()) / 60
+      if age_min < 30:
+        return "recent", age_min
     except (ValueError, TypeError):
       pass
-  return "idle"
+  return "idle", float("inf")
+
+
+def _short_project(cwd):
+  """Derive a short project label from a working directory.
+
+  Returns:
+    'ws:<name>/<repo>' for workspace agents,
+    '<repo>' for root repo agents,
+    '~/<relative>' for other paths.
+  """
+  if not cwd:
+    return "?"
+  # Workspace: ~/dev/workspaces/<name>/<repo>/...
+  if cwd.startswith(_WORKSPACES + "/"):
+    rest = cwd[len(_WORKSPACES) + 1:]
+    parts = rest.split("/", 2)
+    if len(parts) >= 2:
+      return f"ws:{parts[0]}/{parts[1]}"
+    return f"ws:{parts[0]}"
+  # Root repo: ~/dev/<repo>/...
+  if cwd.startswith(_DEV + "/"):
+    rest = cwd[len(_DEV) + 1:]
+    return rest.split("/", 1)[0]
+  # Anything else: show relative to home.
+  if cwd.startswith(_HOME + "/"):
+    return "~/" + cwd[len(_HOME) + 1:]
+  return cwd
 
 
 def _format_tokens(n):
@@ -37,12 +67,20 @@ def _format_tokens(n):
   return str(n)
 
 
+def _format_context(session):
+  """Format context window usage as 'used/limit'."""
+  if session.context_limit <= 0:
+    return "-"
+  used = _format_tokens(session.context_tokens)
+  limit = _format_tokens(session.context_limit)
+  return f"{used}/{limit}"
+
+
 class AgentsPanel(Vertical):
-  """Panel showing active Claude agent sessions."""
+  """Panel showing active/recent Claude agent sessions."""
 
   DEFAULT_CSS = """
   AgentsPanel {
-    border: solid $accent;
     padding: 0 1;
   }
   """
@@ -56,7 +94,7 @@ class AgentsPanel(Vertical):
     table.cursor_type = "row"
     table.add_columns(
       "Slug", "Project", "Branch", "Model", "Status",
-      "Tokens",
+      "Context", "Tokens",
     )
 
   @work(thread=True)
@@ -67,56 +105,41 @@ class AgentsPanel(Vertical):
     self.app.call_from_thread(self._update_table, sessions)
 
   def _update_table(self, sessions) -> None:
-    """Update the table with fresh session data."""
+    """Update the table, filtering out idle sessions."""
     table = self.query_one("#agents-table", DataTable)
     table.clear()
+
+    active_count = 0
+    hidden_count = 0
     for s in sessions:
-      # Extract short project name from path.
-      project = s.cwd.rstrip("/").rsplit("/", 1)[-1] if s.cwd else "?"
-      # Short model name.
-      model = s.model.split("-")[1] if "-" in s.model else s.model
+      status, _ = _status_label(s)
+      if status == "idle":
+        hidden_count += 1
+        continue
+      if status == "active":
+        active_count += 1
+
+      model = (
+        s.model.split("-")[1] if "-" in s.model else s.model
+      )
       model = model[:6]
-      status = _status_label(s)
       total_tok = s.total_input_tokens + s.total_output_tokens
+      project = _short_project(s.cwd)
       table.add_row(
         s.slug[:20] if s.slug else s.session_id[:8],
-        project[:15],
+        project[:25],
         s.git_branch[:15] if s.git_branch else "-",
         model,
         status,
+        _format_context(s),
         _format_tokens(total_tok),
         key=s.session_id,
       )
-    # Store sessions for detail lookup.
-    self._sessions = {s.session_id: s for s in sessions}
 
-  def on_data_table_row_selected(
-    self, event: DataTable.RowSelected
-  ) -> None:
-    """Show session detail when a row is selected."""
-    sid = str(event.row_key.value)
-    session = getattr(self, "_sessions", {}).get(sid)
-    if not session:
-      return
-
-    lines = [
-      f"## Agent: {session.slug or session.session_id}",
-      f"",
-      f"  Session:  {session.session_id}",
-      f"  CWD:      {session.cwd}",
-      f"  Branch:   {session.git_branch}",
-      f"  Model:    {session.model}",
-      f"  Status:   {'ACTIVE' if session.is_active else 'idle'}",
-      f"  Started:  {session.started_at}",
-      f"  Last:     {session.last_active}",
-      f"  Messages: {session.message_count}",
-      f"",
-      f"  Token Breakdown:",
-      f"    Input:        {session.total_input_tokens:>12,}",
-      f"    Output:       {session.total_output_tokens:>12,}",
-      f"    Cache read:   {session.total_cache_read:>12,}",
-      f"    Cache create: {session.total_cache_create:>12,}",
-      f"",
-      f"  Est. Cost: ${session.estimated_cost_usd:.4f}",
-    ]
-    self.app.update_detail("\n".join(lines))
+    # Update panel title with counts.
+    title = self.query_one(".panel-title", Static)
+    parts = [f"Agents ({active_count} active"]
+    if hidden_count:
+      parts[0] += f", {hidden_count} hidden"
+    parts[0] += ")"
+    title.update(parts[0])

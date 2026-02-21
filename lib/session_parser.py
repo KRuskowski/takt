@@ -40,6 +40,13 @@ _MODEL_RATE_MAP = {
   "haiku": "haiku",
 }
 
+# Context window limits by model family.
+_MODEL_CONTEXT_LIMIT = {
+  "opus": 200_000,
+  "sonnet": 200_000,
+  "haiku": 200_000,
+}
+
 CLAUDE_DIR = Path(os.path.expanduser("~/.claude"))
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 STATS_CACHE = CLAUDE_DIR / "stats-cache.json"
@@ -64,6 +71,8 @@ class SessionInfo:
   total_cache_create: int = 0
   estimated_cost_usd: float = 0.0
   duration_ms: int = 0
+  context_tokens: int = 0
+  context_limit: int = 0
 
 
 @dataclass
@@ -205,18 +214,16 @@ def parse_session_file(path, quick=True):
       if not info.model:
         info.model = msg.get("model", "")
       usage = msg["usage"]
-      info.total_input_tokens += usage.get(
-        "input_tokens", 0
-      )
-      info.total_output_tokens += usage.get(
-        "output_tokens", 0
-      )
-      info.total_cache_read += usage.get(
-        "cache_read_input_tokens", 0
-      )
-      info.total_cache_create += usage.get(
-        "cache_creation_input_tokens", 0
-      )
+      inp = usage.get("input_tokens", 0)
+      out = usage.get("output_tokens", 0)
+      cr = usage.get("cache_read_input_tokens", 0)
+      cc = usage.get("cache_creation_input_tokens", 0)
+      info.total_input_tokens += inp
+      info.total_output_tokens += out
+      info.total_cache_read += cr
+      info.total_cache_create += cc
+      # Track last turn's context size (all input tokens).
+      info.context_tokens = inp + cr + cc
 
   if first_ts:
     info.started_at = first_ts
@@ -239,7 +246,7 @@ def parse_session_file(path, quick=True):
   # Check if active based on mtime.
   info.is_active = (time.time() - mtime) < 120
 
-  # Calculate cost.
+  # Calculate cost and set context limit.
   if info.model:
     info.estimated_cost_usd = calculate_cost(
       info.model,
@@ -247,6 +254,10 @@ def parse_session_file(path, quick=True):
       info.total_output_tokens,
       info.total_cache_read,
       info.total_cache_create,
+    )
+    key = _rate_key(info.model)
+    info.context_limit = _MODEL_CONTEXT_LIMIT.get(
+      key, 200_000
     )
 
   return info
