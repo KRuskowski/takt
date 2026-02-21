@@ -175,6 +175,31 @@ def push_branch(repo_path, branch, remote="origin"):
   run_git(["push", remote, branch], cwd=repo_path)
 
 
+def set_config(repo_path, key, value):
+  """Set a git config value in a repo.
+
+  Args:
+    repo_path: Path to the repo.
+    key: Config key (e.g. 'receive.denyCurrentBranch').
+    value: Config value.
+  """
+  run_git(["config", key, value], cwd=repo_path)
+
+
+def set_receive_update(repo_path):
+  """Configure a repo to accept pushes and update its working tree.
+
+  Sets receive.denyCurrentBranch=updateInstead so pushes to the
+  checked-out branch update the working tree automatically.
+
+  Args:
+    repo_path: Path to the repo.
+  """
+  set_config(
+    repo_path, "receive.denyCurrentBranch", "updateInstead",
+  )
+
+
 def get_status(repo_path, short=True):
   """Return git status output.
 
