@@ -113,6 +113,17 @@ def create_storage_dir():
     run(["chown", "libvirt-qemu:kvm", str(IMAGES_DIR)])
     print(f"[ok] Created {IMAGES_DIR}")
 
+  # libvirt-qemu needs search (execute) permission on parent
+  # directories to access disk images.
+  for parent in IMAGES_DIR.parents:
+    if parent == Path("/"):
+      break
+    import stat
+    st = parent.stat()
+    if not (st.st_mode & stat.S_IXOTH):
+      run(["chmod", "o+x", str(parent)])
+      print(f"[ok] Added o+x to {parent}")
+
   # AppArmor: allow libvirt to access the custom path.
   rule = f'  "{IMAGES_DIR}/**" rwk,'
   if APPARMOR_LOCAL.exists():
@@ -181,16 +192,22 @@ def _generate_autounattend_xml():
   product_key = "8WRPJ-JNGPC-68MHF-T87DR-JHV3B"
 
   # VirtIO driver paths — try multiple CD letters since
-  # Windows assigns them variably.
+  # Windows assigns them variably depending on drive order.
+  # Use specific driver subdirs (viostor, NetKVM) for w11.
   driver_paths = ""
+  key_idx = 1
   for letter in ("D", "E", "F"):
-    for subdir in ("amd64/w11", "amd64/w10", "w11/amd64"):
+    for subdir in (
+      "viostor\\w11\\amd64",
+      "NetKVM\\w11\\amd64",
+    ):
       driver_paths += (
         f'            <PathAndCredentials '
-        f'wcm:action="add" wcm:keyValue="{letter}_{subdir}">'
+        f'wcm:action="add" wcm:keyValue="{key_idx}">'
         f'\n              <Path>{letter}:\\{subdir}</Path>'
         f'\n            </PathAndCredentials>\n'
       )
+      key_idx += 1
 
   return textwrap.dedent(f"""\
     <?xml version="1.0" encoding="utf-8"?>
@@ -472,21 +489,17 @@ def create_vm():
     # Main disk: VirtIO for performance.
     "--disk",
     f"path={DISK_PATH},format=qcow2,bus=virtio,"
-    f"cache=writeback",
-    # CD-ROMs: Windows ISO, autounattend, VirtIO drivers.
+    "cache=writeback,boot.order=2",
+    # CD-ROMs: Windows ISO (boot), autounattend, VirtIO.
     "--disk",
-    f"path={WIN_ISO},device=cdrom,bus=sata",
+    f"path={WIN_ISO},device=cdrom,bus=sata,"
+    "boot.order=1",
     "--disk",
     f"path={AUTOUNATTEND_ISO},device=cdrom,bus=sata",
     "--disk",
     f"path={VIRTIO_ISO},device=cdrom,bus=sata",
-    # UEFI with Secure Boot support + per-VM NVRAM.
+    # UEFI firmware.
     "--boot", "uefi",
-    "--boot",
-    "loader=/usr/share/OVMF/OVMF_CODE_4M.ms.fd,"
-    "loader.readonly=yes,loader.type=pflash,"
-    "nvram.template=/usr/share/OVMF/OVMF_VARS_4M.ms.fd,"
-    "loader.secure=yes",
     # TPM 2.0 (swtpm emulator).
     "--tpm",
     "backend.type=emulator,"
@@ -502,6 +515,15 @@ def create_vm():
     "--os-variant", "win11",
     "--noautoconsole",
   ])
+
+  # UEFI shows "Press any key to boot from CD" — send a
+  # keypress so the installer starts automatically.
+  print("[..] Sending keypress to boot from CD...")
+  time.sleep(3)
+  run(
+    ["virsh", "send-key", VM_NAME, "KEY_ENTER"],
+    check=False,
+  )
   print(f"[ok] VM '{VM_NAME}' created and booting")
 
 
