@@ -439,5 +439,315 @@ class TestStageOperations(unittest.TestCase):
       refresh_stage("test-ws", "test")
 
 
+class TestSubmoduleHandling(unittest.TestCase):
+  """Tests for submodule init during workspace/stage creation."""
+
+  GIT_ENV = {
+    **os.environ,
+    "GIT_COMMITTER_NAME": "test",
+    "GIT_AUTHOR_NAME": "test",
+    "GIT_COMMITTER_EMAIL": "t@t",
+    "GIT_AUTHOR_EMAIL": "t@t",
+  }
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.base_dir = Path(self.tmpdir)
+
+    self.patches = []
+    for attr, subdir in [
+      ("BASE_DIR", ""),
+      ("ROOT_DIR", "root"),
+      ("STAGES_DIR", "stages"),
+      ("WORKSPACES_DIR", "workspaces"),
+    ]:
+      p = mock.patch(
+        f"lib.config.{attr}",
+        self.base_dir / subdir if subdir else self.base_dir,
+      )
+      p.start()
+      self.patches.append(p)
+    for attr, subdir in [
+      ("STAGES_DIR", "stages"),
+      ("WORKSPACES_DIR", "workspaces"),
+    ]:
+      p = mock.patch(
+        f"lib.workspace_ops.{attr}",
+        self.base_dir / subdir if subdir else self.base_dir,
+      )
+      p.start()
+      self.patches.append(p)
+
+    (self.base_dir / "root").mkdir()
+    (self.base_dir / "stages").mkdir()
+    (self.base_dir / "workspaces").mkdir()
+
+    # Create a root repo with a submodule.
+    self.repo_name = "parent-repo"
+    repo_path = self.base_dir / "root" / self.repo_name
+    repo_path.mkdir(parents=True)
+    subprocess.run(
+      ["git", "init"], cwd=repo_path,
+      capture_output=True, check=True,
+    )
+
+    # Create a separate repo to use as the submodule source.
+    sub_source = self.base_dir / "sub-source"
+    sub_source.mkdir()
+    subprocess.run(
+      ["git", "init"], cwd=sub_source,
+      capture_output=True, check=True,
+    )
+    (sub_source / "lib.c").write_text("int x = 1;\n")
+    subprocess.run(
+      ["git", "add", "lib.c"], cwd=sub_source,
+      capture_output=True, check=True,
+    )
+    subprocess.run(
+      ["git", "commit", "-m", "init sub"],
+      cwd=sub_source, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+
+    # Add it as a submodule in the root repo.
+    subprocess.run(
+      ["git", "-c", "protocol.file.allow=always",
+       "submodule", "add", str(sub_source), "vendor/sub"],
+      cwd=repo_path, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+    subprocess.run(
+      ["git", "commit", "-m", "add submodule"],
+      cwd=repo_path, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+
+    self.repos_config_patch = mock.patch(
+      "lib.workspace_ops.load_repos_config",
+      return_value={
+        "repos": {
+          self.repo_name: {
+            "path": self.repo_name,
+            "default_branch": "master",
+            "push_order": 1,
+          },
+        },
+      },
+    )
+    self.repos_config_patch.start()
+    self.patches.append(self.repos_config_patch)
+
+    self.validate_patch = mock.patch(
+      "lib.workspace_ops.validate_repo",
+      return_value=True,
+    )
+    self.validate_patch.start()
+    self.patches.append(self.validate_patch)
+
+    ctx_patch = mock.patch(
+      "lib.workspace_ops.CONTEXT_DIR",
+      self.base_dir / "nonexistent_context",
+    )
+    ctx_patch.start()
+    self.patches.append(ctx_patch)
+
+  def tearDown(self):
+    for p in self.patches:
+      p.stop()
+    shutil.rmtree(self.tmpdir)
+
+  def test_workspace_inits_submodule(self):
+    """Workspace creation initializes submodules."""
+    from lib.workspace_ops import create_workspace
+    ws_dir = create_workspace("test-ws", [self.repo_name])
+    sub_path = ws_dir / self.repo_name / "vendor" / "sub"
+    self.assertTrue(sub_path.is_dir())
+    self.assertTrue((sub_path / "lib.c").exists())
+
+  def test_stage_inits_submodule_with_local_commits(self):
+    """Stage creation inits submodules using workspace reference.
+
+    Simulates an agent making local-only commits in the
+    submodule, then verifies the stage gets those commits.
+    """
+    from lib.workspace_ops import create_workspace, create_stage
+    ws_dir = create_workspace("test-ws", [self.repo_name])
+    ws_repo = ws_dir / self.repo_name
+    ws_sub = ws_repo / "vendor" / "sub"
+
+    # Simulate agent making a local commit in the submodule.
+    (ws_sub / "extra.c").write_text("int y = 2;\n")
+    subprocess.run(
+      ["git", "add", "extra.c"], cwd=ws_sub,
+      capture_output=True, check=True,
+    )
+    subprocess.run(
+      ["git", "commit", "-m", "agent change"],
+      cwd=ws_sub, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+    # Record the new submodule commit in the parent.
+    subprocess.run(
+      ["git", "add", "vendor/sub"], cwd=ws_repo,
+      capture_output=True, check=True,
+    )
+    subprocess.run(
+      ["git", "commit", "-m", "update submodule"],
+      cwd=ws_repo, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+    # Push parent to origin (root repo).
+    subprocess.run(
+      ["git", "push", "origin", "test-ws"],
+      cwd=ws_repo, capture_output=True, check=True,
+    )
+
+    # Create a stage — it should get the local submodule
+    # commit via the workspace reference.
+    stage_dir = create_stage("test-ws", "test")
+    stage_sub = (
+      stage_dir / self.repo_name / "vendor" / "sub"
+    )
+    self.assertTrue(stage_sub.is_dir())
+    self.assertTrue((stage_sub / "extra.c").exists())
+
+  def test_no_submodule_noop(self):
+    """init_submodules is a no-op for repos without submodules."""
+    from lib.git_utils import init_submodules
+    # Create a repo without submodules.
+    plain = self.base_dir / "plain"
+    plain.mkdir()
+    subprocess.run(
+      ["git", "init"], cwd=plain,
+      capture_output=True, check=True,
+    )
+    subprocess.run(
+      ["git", "commit", "--allow-empty", "-m", "init"],
+      cwd=plain, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+    # Should not raise.
+    init_submodules(plain)
+
+  def test_resolve_submodule_git_dir(self):
+    """_resolve_submodule_git_dir follows .git file to modules dir."""
+    from lib.git_utils import _resolve_submodule_git_dir
+    from lib.workspace_ops import create_workspace
+    ws_dir = create_workspace("test-ws", [self.repo_name])
+    ws_sub = ws_dir / self.repo_name / "vendor" / "sub"
+    resolved = _resolve_submodule_git_dir(ws_sub)
+    # Should point to .git/modules/vendor/sub.
+    self.assertIn("modules", str(resolved))
+    self.assertTrue(resolved.is_dir())
+
+  def test_post_receive_hook_has_submodule_update(self):
+    """Post-receive hook includes submodule update logic."""
+    from lib.workspace_ops import create_stage
+    from lib.workspace_ops import create_workspace
+    create_workspace("test-ws", [self.repo_name])
+    stage_dir = create_stage("test-ws", "test")
+    hook = (
+      stage_dir / self.repo_name / ".git"
+      / "hooks" / "post-receive"
+    )
+    content = hook.read_text()
+    self.assertIn("submodule update", content)
+    self.assertIn("protocol.file.allow=always", content)
+
+  def test_pipeline_push_updates_submodule(self):
+    """Pushing through the pipeline updates submodules.
+
+    Simulates: workspace agent commits in submodule, pushes
+    to test stage, test stage pushes to review stage. Each
+    stage's post-receive hook should update its submodule.
+    """
+    from lib.workspace_ops import create_workspace, create_stage
+    ws_dir = create_workspace("test-ws", [self.repo_name])
+    ws_repo = ws_dir / self.repo_name
+    ws_sub = ws_repo / "vendor" / "sub"
+
+    create_stage("test-ws", "test")
+    create_stage("test-ws", "review")
+
+    test_dir = (
+      self.base_dir / "stages" / "test-ws" / "test"
+    )
+    review_dir = (
+      self.base_dir / "stages" / "test-ws" / "review"
+    )
+
+    # Workspace agent commits in the submodule.
+    (ws_sub / "new.c").write_text("int z = 3;\n")
+    subprocess.run(
+      ["git", "add", "new.c"], cwd=ws_sub,
+      capture_output=True, check=True,
+    )
+    subprocess.run(
+      ["git", "commit", "-m", "ws submod change"],
+      cwd=ws_sub, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+    subprocess.run(
+      ["git", "add", "vendor/sub"], cwd=ws_repo,
+      capture_output=True, check=True,
+    )
+    subprocess.run(
+      ["git", "commit", "-m", "bump sub"],
+      cwd=ws_repo, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+    # Push workspace -> test stage.
+    subprocess.run(
+      ["git", "push", "origin", "test-ws"],
+      cwd=ws_repo, capture_output=True, check=True,
+    )
+
+    # Verify test stage's submodule was updated by the hook.
+    test_sub = test_dir / self.repo_name / "vendor" / "sub"
+    self.assertTrue(
+      (test_sub / "new.c").exists(),
+      "Test stage submodule missing workspace's new file",
+    )
+
+    # Test agent makes its own submodule commit.
+    test_sub_path = (
+      test_dir / self.repo_name / "vendor" / "sub"
+    )
+    (test_sub_path / "test_extra.c").write_text("int t;\n")
+    subprocess.run(
+      ["git", "add", "test_extra.c"], cwd=test_sub_path,
+      capture_output=True, check=True,
+    )
+    subprocess.run(
+      ["git", "commit", "-m", "test agent submod commit"],
+      cwd=test_sub_path, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+    test_repo = test_dir / self.repo_name
+    subprocess.run(
+      ["git", "add", "vendor/sub"], cwd=test_repo,
+      capture_output=True, check=True,
+    )
+    subprocess.run(
+      ["git", "commit", "-m", "test: bump sub"],
+      cwd=test_repo, capture_output=True, check=True,
+      env=self.GIT_ENV,
+    )
+    # Push test -> review stage.
+    subprocess.run(
+      ["git", "push", "origin", "test-ws"],
+      cwd=test_repo, capture_output=True, check=True,
+    )
+
+    # Verify review stage's submodule was updated.
+    review_sub = (
+      review_dir / self.repo_name / "vendor" / "sub"
+    )
+    self.assertTrue(
+      (review_sub / "test_extra.c").exists(),
+      "Review stage submodule missing test agent's file",
+    )
+
+
 if __name__ == "__main__":
   unittest.main()

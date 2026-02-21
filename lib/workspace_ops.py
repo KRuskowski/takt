@@ -27,7 +27,9 @@ from lib.git_utils import (
   get_current_branch,
   get_index_mtime,
   get_status,
+  init_submodules,
   install_push_hook,
+  rechain_submodule_remotes,
   run_git,
   set_receive_update,
 )
@@ -192,6 +194,7 @@ def create_workspace(name, repos):
       dest = ws_dir / repo_name
       clone_local(source, dest)
       create_branch(dest, name)
+      init_submodules(dest)
   except GitError:
     shutil.rmtree(ws_dir, ignore_errors=True)
     raise
@@ -495,6 +498,13 @@ def _rechain_remotes(workspace_name):
       except GitError:
         pass
 
+      # Submodule origins point BACKWARD in the chain (to
+      # the push source), not forward. When a push arrives,
+      # the hook fetches submodule objects from the pusher.
+      if i > 0:
+        prev = chain_dirs[i - 1] / repo_name
+        rechain_submodule_remotes(repo_path, prev)
+
 
 def create_stage(workspace_name, role):
   """Create a stage for an existing workspace.
@@ -558,13 +568,20 @@ def create_stage(workspace_name, role):
 
       clone_local(source, dest)
 
-      # Check out workspace branch (create if needed).
+      # Check out workspace branch. Try checkout first (auto-
+      # tracks origin/<branch> if it exists), then fall back
+      # to creating a new branch from HEAD.
       ws_repo = ws_dir / repo_name
       ws_branch = get_current_branch(ws_repo)
       try:
-        create_branch(dest, ws_branch)
-      except GitError:
         run_git(["checkout", ws_branch], cwd=dest)
+      except GitError:
+        create_branch(dest, ws_branch)
+
+      # Init submodules using workspace as reference — the
+      # workspace may have local-only submodule commits that
+      # aren't available at the upstream URL.
+      init_submodules(dest, reference=ws_repo)
 
       # Allow upstream to push here.
       set_receive_update(dest)
