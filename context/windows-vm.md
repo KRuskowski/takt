@@ -10,7 +10,7 @@
 | vCPUs | 8 |
 | RAM | 8192 MB |
 | Disk | 120 GB qcow2, VirtIO bus |
-| Disk location | `/home/karl/libvirt/images/win-01.qcow2` |
+| Disk location | `~/libvirt/images/win-01.qcow2` |
 | User | worker |
 | SSH key | `~/.ssh/id_ed25519_targets` |
 | UEFI | OVMF_CODE_4M.ms.fd (Secure Boot) |
@@ -63,16 +63,16 @@ SSH login via PowerShell profile that sources `vcvars64.bat`.
 
 ## Samba Share
 
-Host exports `/home/karl/dev` as `[dev]` share via Samba.
+Host exports `~/dev` as `[dev]` share via Samba.
 Guest maps it as `W:` drive (`\\10.101.0.1\dev`).
 
 To update the Samba password:
 ```bash
 # On host
-sudo smbpasswd -a karl
+sudo smbpasswd -a $USER
 
 # On guest (via SSH)
-cmdkey /add:10.101.0.1 /user:karl /pass:newpassword
+cmdkey /add:10.101.0.1 /user:<samba_user> /pass:newpassword
 net use W: /delete
 net use W: \\10.101.0.1\dev /persistent:yes
 ```
@@ -131,7 +131,7 @@ The setup script handles these UEFI-specific quirks:
 - **AutoLogon count**: Set to 3 (profile setup consumes
   initial auto-logons before FirstLogonCommands run)
 - **Parent dir permissions**: `libvirt-qemu` needs `o+x`
-  on parent dirs to access images in `/home/karl/`
+  on parent dirs to access images in `~/`
 
 ## Recovery
 
@@ -162,8 +162,8 @@ virt-viewer win-01
 ```bash
 virsh destroy win-01
 virsh undefine win-01 --nvram --tpm
-rm /home/karl/libvirt/images/win-01.qcow2
-rm /home/karl/libvirt/images/win-01-autounattend.iso
+rm ~/libvirt/images/win-01.qcow2
+rm ~/libvirt/images/win-01-autounattend.iso
 sudo python3 bin/setup_win_vm.py
 python3 bin/provision_win_vm.py win-01
 ```

@@ -34,8 +34,8 @@ NETWORK_GATEWAY = "10.101.0.1"
 NETWORK_PREFIX = 20
 
 # Paths.
-IMAGES_DIR = Path("/home/karl/libvirt/images")
-WIN_ISO = Path("/media/karl/Ventoy/Win23H2_engl.iso")
+IMAGES_DIR = Path.home() / "libvirt" / "images"
+WIN_ISO = Path(f"/media/{os.getlogin()}/Ventoy/Win23H2_engl.iso")
 VIRTIO_ISO = IMAGES_DIR / "virtio-win.iso"
 VIRTIO_URL = (
   "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads"
@@ -136,7 +136,7 @@ def create_storage_dir():
 
   APPARMOR_LOCAL.parent.mkdir(parents=True, exist_ok=True)
   with open(APPARMOR_LOCAL, "a") as f:
-    f.write("\n# agent-orchestration: custom image store\n")
+    f.write("\n# takt: custom image store\n")
     f.write(f"{rule}\n")
 
   # Reload apparmor profile.
@@ -574,7 +574,7 @@ def wait_for_ssh(timeout=900):
 def configure_ssh_config():
   """Add an SSH config entry for win-01."""
   ssh_config = _REAL_HOME / ".ssh" / "config"
-  marker = f"# agent-orchestration: {VM_NAME}"
+  marker = f"# takt: {VM_NAME}"
 
   if ssh_config.exists():
     content = ssh_config.read_text()

@@ -25,7 +25,7 @@ from lib.ssh_utils import SSHError, run_ssh
 from lib.target_ops import get_target
 
 # All clone disks go here (has space).
-CLONE_DISK_DIR = Path("/home/karl/libvirt/images")
+CLONE_DISK_DIR = Path.home() / "libvirt" / "images"
 
 # SSH settings for targets.
 DEFAULT_SSH_KEY = Path("~/.ssh/id_ed25519_targets").expanduser()

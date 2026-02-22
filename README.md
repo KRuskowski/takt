@@ -1,18 +1,22 @@
 # takt
 
-Multi-agent pipeline orchestration for running Claude CLI
-agents in parallel across multi-repo projects.
+Multi-agent pipeline orchestration for running Claude Code
+agents across multi-repo projects.
 
 ## What it does
 
 - Creates isolated **workspaces** (local clones + branches)
   for parallel agent work across multiple repos
-- Chains **pipeline stages** (feature, test, review, docs)
-  with automatic handoff via branch watching
+- Defines **pipelines** per workspace — ordered sequences
+  of agent steps (with per-step model selection) and
+  script steps (push, PR creation, upstream merge)
+- Runs pipelines via a **background service** that watches
+  for branch changes and executes steps in temporary
+  worktrees
 - Manages **build/test targets** (VMs and hardware) with
-  exclusive locking and VM cloning from templates
+  exclusive locking and qcow2-backed VM cloning
 - Provides a **TUI dashboard** for monitoring workspaces,
-  agents, targets, and usage in real time
+  agents, pipelines, and targets in real time
 
 ## Architecture
 
@@ -20,26 +24,30 @@ agents in parallel across multi-repo projects.
 GitHub (upstream)
   |
   v
-~/dev/root/<repo>           Local mirrors (never touched by agents)
+~/dev/root/<repo>           Local mirrors (fetch-only)
   |
   v
 ~/dev/workspaces/<name>/    Isolated clones, one per task
   |
   v
-~/dev/stages/<ws>/<role>/   Pipeline stages (test, review, etc.)
+~/dev/runs/<ws>-<id>/<repo> Temporary worktrees per run
 ```
 
 ### Data flow
 
-1. **Pull**: GitHub -> root repos (manual `git pull`)
+1. **Pull**: GitHub -> root repos (fetch via service or
+   manual `git pull`)
 2. **Clone**: root repos -> workspace clones
    (`workspace.py create`)
 3. **Work**: agent modifies workspace clones, pushes to
    root repo (its origin)
-4. **Watch**: `pipeline_watch.py` detects branch changes in
-   root repos, triggers next pipeline stage
-5. **Push**: operator reviews and pushes from root repos to
-   GitHub (`push_to_github.py`)
+4. **Watch**: takt-service detects branch changes in root
+   repos, creates pipeline runs
+5. **Execute**: pipeline steps run sequentially in
+   temporary worktrees — agents via Claude Code SDK,
+   scripts via Python functions
+6. **Push**: operator reviews and pushes from root repos
+   to GitHub (`push_to_github.py`)
 
 ### Design principles
 
@@ -47,77 +55,40 @@ GitHub (upstream)
   identifier ties together repos, tools, and git history.
 - **No direct GitHub push.** Agents push to origin (root
   repo) only. Human operator gates what reaches GitHub.
-- **Session state in CLAUDE.md.** Agent progress persists at
-  the bottom of the workspace CLAUDE.md -- task + progress
-  in one read, no separate state files.
+- **All state in SQLite.** Pipeline definitions, runs,
+  steps, agent output, and branch refs live in
+  `.state/takt.db` (WAL mode).
+- **Per-step model selection.** Each agent step can run
+  with a different Claude model (sonnet/opus/haiku).
 - **Progressive context disclosure.** CLAUDE.md files are
-  lean (<150 lines) and point to context packets. Agents
-  fetch what they need rather than loading everything
-  upfront.
+  lean and point to context packets. Agents fetch what
+  they need rather than loading everything upfront.
 - **Pooled targets.** Build/test targets (VMs, hardware)
-  are shared resources with file-based locks for exclusive
-  access. Agents claim, use, and release.
-- **Shared folders eliminate file transfer.** Host exports
-  `~/dev` via Samba; VMs build directly from the share.
-
-### Agent context layering
-
-Three layers of context, each with a different purpose:
-
-1. **Root repo CLAUDE.md** -- project-level truth:
-   architecture, conventions, build commands. One per repo,
-   doesn't change per task.
-2. **Workspace CLAUDE.md** -- task-level context: role, task
-   description, acceptance criteria, session state. Generated
-   per workspace from templates.
-3. **Context packets** -- focused docs in `context/`
-   directories (architecture, decisions, environment). Agents
-   self-select which packets to read based on their role.
-
-### Pipeline stages
-
-```
-workspace -> feature -> test -> review -> docs -> root
-```
-
-Each stage is a clone with a role-specific CLAUDE.md. Roles
-are defined in `templates/pipeline_roles.md`. Not every
-change needs all stages. The remote chain is automatically
-maintained: adding or removing a stage re-links the git
-remotes.
+  are shared resources with exclusive locking. Agents
+  claim, use, and release.
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `bin/workspace.py` | Create/delete workspaces, manage pipeline stages |
-| `bin/takt_service.py` | Background service for pipeline watching + agents |
+| `bin/workspace.py` | Create/delete workspaces, define pipelines |
+| `bin/takt_service.py` | Background service for pipeline watching + execution |
 | `bin/takt.py` | Textual TUI (connects to takt-service) |
-| `bin/pipeline_watch.py` | Reusable poll functions for branch changes |
-| `bin/target.py` | Claim/release targets, VM lifecycle, SSH commands |
-| `bin/clone_vm.py` | Create/delete qcow2-backed VM clones from templates |
+| `bin/pipeline_watch.py` | Standalone poll for branch changes |
+| `bin/target.py` | Claim/release targets, VM lifecycle, SSH |
+| `bin/clone_vm.py` | Create/delete qcow2-backed VM clones |
 | `bin/push_to_github.py` | Push branches from root repos to GitHub |
-| `bin/setup_win_vm.py` | Create Windows 11 VM with unattended install |
+| `bin/setup_win_vm.py` | Create Windows 11 VM (unattended) |
 | `bin/provision_win_vm.py` | Provision Windows VM (VS2022, Git, Samba) |
 
 ## Quick start
 
 ```bash
 # Create a workspace across multiple repos
-bin/workspace.py create feature-auth Combatant Conveyor config
+bin/workspace.py create feature-auth RepoA RepoB
 
-# Add pipeline stages
-bin/workspace.py stage-add feature-auth test
-bin/workspace.py stage-add feature-auth review
-
-# Manage build targets
-bin/target.py list
-bin/target.py claim deb-02 feature-auth
-bin/target.py run deb-02 "cmake --build ."
-
-# Clone a VM from a template
-sudo python3 bin/clone_vm.py create deb-01 deb-02 \
-  --ip 10.101.0.100
+# Define a pipeline
+bin/workspace.py pipeline-set feature-auth test push_to_github
 
 # Start the background service
 systemctl --user start takt-service
@@ -125,56 +96,75 @@ systemctl --user start takt-service
 # Launch the TUI
 bin/takt.py
 
+# Or trigger a run manually
+bin/workspace.py trigger feature-auth
+
 # Push to GitHub when ready
 bin/push_to_github.py feature-auth
 ```
 
-## Build targets
+## Pipeline
 
-Targets are VMs and hardware registered in
-`config/targets.yaml`. Template VMs (deb-01, win-01) are
-read-only base images -- agents work on clones.
+Pipelines are ordered sequences of steps defined per
+workspace. Steps are either **agent** (Claude Code via
+SDK) or **script** (built-in Python functions).
 
-| Target | OS | Role |
-|--------|----|------|
-| deb-01 | Debian 12 | Template (QEMU/KVM) |
-| win-01 | Windows 11 Pro | Template (QEMU/KVM, UEFI + TPM) |
+Built-in scripts:
+- `push_to_github` — push branch to GitHub in dependency
+  order
+- `create_pr` — create GitHub PRs via `gh` CLI
+- `merge_upstream` — fetch and merge default branch into
+  workspace branch
 
-Clones use qcow2 backing files (fast to create,
-space-efficient -- only store diffs from the template).
-Clone IPs are allocated from `10.101.0.100+`. VMs use
-KVM with `-cpu host` for near-native build performance
-and mount `~/dev` via Samba for zero-copy source access.
-
-```bash
-# Create a Debian clone
-sudo python3 bin/clone_vm.py create deb-01 deb-02 \
-  --ip 10.101.0.100
-
-# Create a Windows clone
-sudo python3 bin/clone_vm.py create win-01 win-02 \
-  --ip 10.101.0.101
-
-# Delete a clone
-sudo python3 bin/clone_vm.py delete deb-02
-```
+Agent steps run with a configurable model
+(sonnet/opus/haiku) and get a role prompt from
+`templates/pipeline_roles.md`. Results are written to
+`.stage-result.json` in the worktree.
 
 ## Dashboard
 
-The TUI (`bin/takt.py`) connects to takt-service and
-monitors the system in real time:
+The TUI (`bin/takt.py`) connects to takt-service via
+ZMQ IPC:
 
 ```
 +------------------------------------------------------------+
-| Agents (3 active, 12 hidden)                               |
-| Slug       Branch       Model  Status  Context   Tokens    |
-+----------------------------+-------------------------------+
-| Workspaces               | Stages                         |
-+----------------------------+-------------------------------+
-| Targets                                                    |
+| [Dashboard] [Agents] [Pipeline] [Trigger] [Settings]       |
 +------------------------------------------------------------+
-| [n]ew ws  [c]laim  [x]release  [r]efresh  [q]uit          |
-+------------------------------------------------------------+
+| Agents         | Workspaces      | Pipeline Grid            |
+|   role  model  |   name  repos   |   ws → step → step       |
+|   state cost   |   status        |                          |
++----------------+-----------------+--------------------------+
+| Pipeline Events               | Targets                    |
+|   time  ws  event             |   name  os  status         |
++-------------------------------+----------------------------+
+```
+
+### Pipeline tab
+
+Inline editor for pipeline definitions. Select a
+workspace, add/remove/reorder steps, choose model per
+agent step, edit role text. Changes persist to SQLite.
+
+## Build targets
+
+Targets are VMs and hardware registered in
+`config/targets.yaml`. Template VMs are read-only base
+images — agents work on clones.
+
+Clones use qcow2 backing files (fast to create,
+space-efficient — only store diffs from the template).
+VMs use KVM with `-cpu host` for near-native performance
+and mount `~/dev` via Samba for zero-copy source access.
+
+```bash
+# Create a clone from a template
+sudo python3 bin/clone_vm.py create deb-01 deb-02 \
+  --ip 10.101.0.100
+
+# Manage targets
+bin/target.py list
+bin/target.py claim deb-02 feature-auth
+bin/target.py run deb-02 "cmake --build ."
 ```
 
 ## Project layout
@@ -183,16 +173,19 @@ monitors the system in real time:
 bin/                  CLI tools
 lib/                  Shared library modules
   config.py           Constants, config loaders
-  workspace_ops.py    Workspace/stage operations
-  target_ops.py       Target lock management
-  session_parser.py   Claude session file parser
-  ssh_utils.py        SSH command execution
+  db.py               SQLite state layer
+  pipeline.py         Pipeline executor
+  service.py          Background service (ZMQ + asyncio)
+  agent_runner.py     Claude Code SDK wrapper
+  workspace_ops.py    Workspace operations
   git_utils.py        Git helpers
 tui/                  Dashboard TUI (Textual)
+  tabs/               Tab implementations
+  widgets/            Reusable panel widgets
 config/
-  repos.yaml          Managed repo registry with push order
-  targets.yaml        Target inventory (VMs + hardware)
-templates/            CLAUDE.md templates, pipeline role snippets
+  repos.yaml          Managed repo registry (gitignored)
+  targets.yaml        Target inventory (gitignored)
+templates/            CLAUDE.md templates, pipeline roles
 context/              Architecture and decision docs
 tests/                Unit tests
 ```
@@ -202,6 +195,9 @@ tests/                Unit tests
 - Python 3.11+
 - PyYAML, pyzmq, textual, claude-code-sdk
 - Git
-- libvirt + QEMU (for VM management)
-- virtinst, libguestfs-tools, qemu-utils (for VM cloning)
-- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code)
+- libvirt + QEMU (for VM management, optional)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+
+## License
+
+MIT — see [LICENSE](LICENSE).
