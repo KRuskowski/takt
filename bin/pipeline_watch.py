@@ -442,11 +442,6 @@ def _scan_and_trigger():
     repos = [r for r, _ in repo_markers]
     title = f"{ws}/{role}"
     if _kitty_tab_exists(title):
-      events.append({
-        "stage": title,
-        "repos": ", ".join(repos),
-        "event": "skipped",
-      })
       continue
     stage_dir = STAGES_DIR / ws / role
     prompt = build_trigger_prompt(ws, role, repo_markers)
@@ -636,11 +631,6 @@ def _scan_and_sync():
     repos = [r for r, _ in repo_markers]
     title = f"{ws}/sync"
     if _kitty_tab_exists(title):
-      events.append({
-        "stage": title,
-        "repos": ", ".join(repos),
-        "event": "skipped",
-      })
       continue
     prompt = build_sync_prompt(ws, repo_markers)
     ws_dir = WORKSPACES_DIR / ws
