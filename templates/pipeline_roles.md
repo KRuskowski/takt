@@ -102,40 +102,34 @@ Guidelines:
 - Read the testing stage session state for test results.
 - If tests failed or have blockers, note them in the PR body.
 - Do NOT modify code. Your job is pushing and PR creation.
-- For each repo, check for an existing open PR:
-  `gh pr list --head <branch> --state open`
-  - **Open PR exists** — skip creation. The push already
-    updated it with the latest commits.
-  - **No open PR** — create a new one.
-  - Never edit, reopen, or comment on merged/closed PRs.
-- After creating or finding a PR, check its merge state:
-  `gh pr view <number> --json mergeable`
-  If `mergeable` is `"CONFLICTING"`, do NOT attempt to
-  resolve it. Instead:
-  1. Write an upstream-sync marker for each conflicting repo
-     to trigger the workspace sync agent:
+- Never edit, reopen, or comment on merged/closed PRs.
+- Update session state before ending your session.
+- Workflow — always run steps 1-2, even if a PR already exists:
+  1. Push to origin (root repo): `git push origin <branch>`
+  2. Push from root to GitHub:
+     `~/dev/agent-orchestration/bin/push_to_github.py <branch>`
+  3. Gather diffs, logs, and testing stage session state.
+  4. Check for open PR:
+     `gh pr list --head <branch> --state open --json number`
+     - If open PR exists, skip to step 6.
+     - If no open PR, create one:
+       ```
+       cd <repo> && gh pr create --base <default_branch> \
+         --head <branch> --title "..." --body "..."
+       ```
+  5. Document PR URLs and status in session state.
+  6. Check merge state of the PR:
+     `gh pr view <number> --json mergeable`
+     If `"CONFLICTING"`, do NOT resolve it. Write a sync
+     marker for each conflicting repo and stop:
      ```
      TIMESTAMP=$(date +%Y-%m-%dT%H:%M:%S%z)
      ZEROS=$(printf '0%.0s' {1..40})
      echo "$TIMESTAMP $ZEROS $ZEROS refs/heads/<default_branch>" \
        >> ~/dev/workspaces/<branch>/<repo>/.upstream-sync
      ```
-  2. Record the conflict in session state as a blocker.
-  3. Stop. The sync agent will merge upstream into the
-     workspace and the changes will re-propagate through
-     the pipeline.
-- Update session state before ending your session.
-- Workflow:
-  1. Push to origin (root repo): `git push origin <branch>`
-  2. Push from root to GitHub:
-     `~/dev/agent-orchestration/bin/push_to_github.py <branch>`
-  3. Gather diffs, logs, and testing stage session state.
-  4. Create PRs on GitHub:
-     ```
-     cd <repo> && gh pr create --base <default_branch> \
-       --head <branch> --title "..." --body "..."
-     ```
-  5. Document PR URLs and status in session state.
+     The sync agent will merge upstream and changes will
+     re-propagate through the pipeline.
 
 ---
 
