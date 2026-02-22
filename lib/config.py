@@ -7,18 +7,31 @@ from pathlib import Path
 import yaml
 
 
-BASE_DIR = Path(os.environ.get(
-  "ORCH_BASE_DIR", os.path.expanduser("~/dev")
-))
-ROOT_DIR = BASE_DIR / "root"
-STAGES_DIR = BASE_DIR / "stages"
-WORKSPACES_DIR = BASE_DIR / "workspaces"
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJECT_DIR / "config"
 TEMPLATES_DIR = PROJECT_DIR / "templates"
 CONTEXT_DIR = PROJECT_DIR / "context"
 STATE_DIR = PROJECT_DIR / ".state"
 LOCKS_DIR = PROJECT_DIR / ".locks"
+
+
+def load_takt_config():
+  """Load config/takt.yaml and return as a dict."""
+  path = CONFIG_DIR / "takt.yaml"
+  if path.exists():
+    with open(path) as f:
+      return yaml.safe_load(f) or {}
+  return {}
+
+
+_takt = load_takt_config()
+BASE_DIR = Path(_takt.get(
+  "base_dir",
+  os.environ.get("ORCH_BASE_DIR", "/home/karl/dev"),
+))
+ROOT_DIR = BASE_DIR / "root"
+STAGES_DIR = BASE_DIR / "stages"
+WORKSPACES_DIR = BASE_DIR / "workspaces"
 
 # Ensure runtime dirs exist.
 STATE_DIR.mkdir(exist_ok=True)
@@ -103,6 +116,91 @@ def parse_pipeline_roles():
       roles[current_name] = snippet
 
   return roles
+
+
+def parse_pipeline_roles_full():
+  """Parse pipeline_roles.md preserving order and headings.
+
+  Like parse_pipeline_roles() but returns full role metadata
+  for round-trip editing.
+
+  Returns:
+    List of dicts: [{"slug", "heading", "text"}, ...].
+  """
+  roles_path = TEMPLATES_DIR / "pipeline_roles.md"
+  if not roles_path.exists():
+    return []
+
+  text = roles_path.read_text()
+  roles = []
+  current_heading = None
+  current_lines = []
+
+  for line in text.splitlines():
+    if line.startswith("## "):
+      # Save previous role.
+      if current_heading:
+        snippet = "\n".join(current_lines).strip()
+        roles.append({
+          "slug": _slugify_role(current_heading),
+          "heading": current_heading,
+          "text": snippet,
+        })
+      # Parse new role heading.
+      current_heading = line[3:].strip()
+      current_lines = []
+    elif line.strip() == "---":
+      continue
+    elif current_heading is not None:
+      current_lines.append(line)
+
+  # Save last role.
+  if current_heading:
+    snippet = "\n".join(current_lines).strip()
+    roles.append({
+      "slug": _slugify_role(current_heading),
+      "heading": current_heading,
+      "text": snippet,
+    })
+
+  return roles
+
+
+def save_pipeline_roles(roles):
+  """Write role list back to pipeline_roles.md.
+
+  Preserves preamble text (everything before the first
+  ``## `` heading) from the existing file.
+
+  Args:
+    roles: List of dicts with keys "heading" and "text".
+  """
+  roles_path = TEMPLATES_DIR / "pipeline_roles.md"
+
+  # Extract preamble from existing file.
+  preamble = ""
+  if roles_path.exists():
+    existing = roles_path.read_text()
+    first_h2 = existing.find("\n## ")
+    if first_h2 == -1:
+      # Check if file starts with ## .
+      if existing.startswith("## "):
+        preamble = ""
+      else:
+        preamble = existing
+    else:
+      preamble = existing[:first_h2 + 1]
+
+  parts = [preamble.rstrip("\n")]
+  for role in roles:
+    parts.append("---")
+    parts.append("")
+    parts.append(f"## {role['heading']}")
+    parts.append("")
+    parts.append(role["text"])
+    parts.append("")
+
+  roles_path.write_text("\n".join(parts) + "\n")
 
 
 def _slugify_role(name):

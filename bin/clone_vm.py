@@ -20,12 +20,17 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from lib.config import load_targets_config, save_targets_config
+from lib.config import (
+  load_takt_config, load_targets_config, save_targets_config,
+)
 from lib.ssh_utils import SSHError, run_ssh
 from lib.target_ops import get_target
 
 # All clone disks go here (has space).
-CLONE_DISK_DIR = Path.home() / "libvirt" / "images"
+_takt = load_takt_config()
+CLONE_DISK_DIR = Path(_takt.get(
+  "clone_disk_dir", "/home/karl/libvirt/images",
+))
 
 # SSH settings for targets.
 DEFAULT_SSH_KEY = Path("~/.ssh/id_ed25519_targets").expanduser()

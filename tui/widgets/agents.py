@@ -6,15 +6,17 @@ import time
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import DataTable, Static
+from textual.css.query import NoMatches
+from textual.widgets import DataTable, Static, TabbedContent
 from textual import work
 
+from lib.config import BASE_DIR, ROOT_DIR, WORKSPACES_DIR
 from tui.widgets.style_utils import age_style, agent_bucket
 
 _HOME = os.path.expanduser("~")
-_DEV = os.path.join(_HOME, "dev")
-_ROOT = os.path.join(_DEV, "root")
-_WORKSPACES = os.path.join(_DEV, "workspaces")
+_DEV = str(BASE_DIR)
+_ROOT = str(ROOT_DIR)
+_WORKSPACES = str(WORKSPACES_DIR)
 
 
 def _status_label(session):
@@ -69,24 +71,6 @@ def _short_project(cwd):
   return cwd
 
 
-def _format_tokens(n):
-  """Format a token count to a human-readable string."""
-  if n >= 1_000_000:
-    return f"{n / 1_000_000:.1f}M"
-  if n >= 1_000:
-    return f"{n / 1_000:.0f}K"
-  return str(n)
-
-
-def _format_context(session):
-  """Format context window usage as 'used/limit'."""
-  if session.context_limit <= 0:
-    return "-"
-  used = _format_tokens(session.context_tokens)
-  limit = _format_tokens(session.context_limit)
-  return f"{used}/{limit}"
-
-
 class AgentsPanel(Vertical):
   """Panel showing active/recent Claude agent sessions."""
 
@@ -106,10 +90,7 @@ class AgentsPanel(Vertical):
   def on_mount(self) -> None:
     table = self.query_one("#agents-table", DataTable)
     table.cursor_type = "row"
-    table.add_columns(
-      "Slug", "Project", "Branch", "Model", "Status",
-      "Context", "Tokens",
-    )
+    table.add_columns("Slug", "Project", "Model", "Status")
 
   @work(thread=True)
   def refresh_data(self) -> None:
@@ -138,16 +119,12 @@ class AgentsPanel(Vertical):
         s.model.split("-")[1] if "-" in s.model else s.model
       )
       model = model[:6]
-      total_tok = s.total_input_tokens + s.total_output_tokens
       project = _short_project(s.cwd)
       cells = [
         s.slug[:20] if s.slug else s.session_id[:8],
         project[:25],
-        s.git_branch[:15] if s.git_branch else "-",
         model,
         label,
-        _format_context(s),
-        _format_tokens(total_tok),
       ]
       table.add_row(
         *(Text(c, style=style) for c in cells),
@@ -161,3 +138,15 @@ class AgentsPanel(Vertical):
       parts[0] += f", {hidden_count} hidden"
     parts[0] += ")"
     title.update(parts[0])
+
+  def on_data_table_row_selected(
+    self, event: DataTable.RowSelected
+  ) -> None:
+    """Switch to the Agents tab on row selection."""
+    try:
+      tabs = self.app.query_one(
+        "#tabs", TabbedContent
+      )
+      tabs.active = "tab-agents"
+    except NoMatches:
+      pass
