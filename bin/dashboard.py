@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent Orchestration Dashboard — TUI entry point."""
+"""takt dashboard — TUI entry point."""
 
 import sys
 from pathlib import Path
@@ -8,11 +8,11 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from tui.app import DashboardApp
+from tui.app import TaktApp
 
 
 def main():
-  app = DashboardApp()
+  app = TaktApp()
   app.run()
 
 

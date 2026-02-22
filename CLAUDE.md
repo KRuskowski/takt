@@ -6,7 +6,7 @@
 - keep CLAUDE.md concise — put details in `context/` files
   and reference them by filepath from here
 
-# Agent Orchestration Tools
+# takt Tools
 
 ## Workspace Management (`bin/workspace.py`)
 
@@ -27,6 +27,9 @@ bin/workspace.py status feature-auth
 # Delete a workspace (-f to skip confirmation)
 bin/workspace.py delete feature-auth
 
+# Delete workspace + all pipeline stages
+bin/workspace.py delete feature-auth --cascade
+
 # Add a pipeline stage (role from pipeline_roles.md)
 bin/workspace.py stage-add feature-auth test
 bin/workspace.py stage-add feature-auth review
@@ -44,6 +47,9 @@ bin/workspace.py stage-refresh --all
 
 # Show pipeline chain for a workspace
 bin/workspace.py pipeline feature-auth
+
+# Show pipeline run history
+bin/workspace.py runs feature-auth
 ```
 
 ## Pipeline Watcher (`bin/pipeline_watch.py`)
@@ -113,8 +119,11 @@ sudo python3 bin/clone_vm.py delete deb-02
 
 ## Dashboard (`bin/dashboard.py`)
 
-Textual TUI for monitoring workspaces, agents, targets, and
-usage. Details: `context/dashboard.md`
+Tabbed TUI: Dashboard (monitoring panels), Trigger
+(workflow actions), Settings, plus dynamic agent tabs
+for inline Claude agents via `claude-code-sdk`. Pipeline
+agents run inline instead of in kitty tabs.
+Details: `context/dashboard.md`
 
 ## Push to GitHub (`bin/push_to_github.py`)
 
