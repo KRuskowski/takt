@@ -36,6 +36,39 @@ Output is buffered on each runner so switching agents
 replays full history. Implemented in
 `tui/tabs/agents_tab.py`.
 
+### Pipeline tab
+
+Inline pipeline editor for defining per-workspace step
+sequences. Select a workspace, add/remove/reorder steps.
+Agent steps get a model selector (sonnet/opus/haiku);
+script steps hide the model row. Role text is editable
+in a TextArea below the steps table. Save writes to
+`pipeline_steps` in SQLite; model choice persists in
+the step's `config_json` column.
+
+```
+Workspace: [Select ▾ feature-auth]
+| #  | Name             | Type   |
+|----|------------------|--------|
+| 1  | test             | agent  |
+| 2  | push_to_github   | script |
+
+[Select ▾ step...] [Add] [Remove]
+Model: [Select ▾ sonnet/opus/haiku]
+Role: Test Agent
+┌────────────────────────────────────┐
+│ (TextArea — editable role text)    │
+└────────────────────────────────────┘
+                         [Save] [Delete Pipeline]
+```
+
+Model Select + label hidden for script steps. The model
+flows from `pipeline_steps.config_json` through
+`steps.config_json` (copied at run creation) to
+`AgentInfo.model` in the executor.
+
+Implemented in `tui/tabs/pipeline_tab.py`.
+
 ### Trigger tab
 
 Workflow action buttons + stages table + run history.
@@ -67,6 +100,7 @@ tui/
     __init__.py
     dashboard_tab.py           Grid of 6 monitoring panels
     agents_tab.py              Agent list + output viewer
+    pipeline_tab.py            Inline pipeline editor
     trigger_tab.py             Workflow action buttons
     settings_tab.py            Config display
     agent_tab.py               Streaming agent output

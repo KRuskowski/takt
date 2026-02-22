@@ -1,28 +1,38 @@
 """takt-service — persistent background service.
 
-Runs the pipeline watcher, agent executor, and ZMQ IPC
-sockets in a single asyncio event loop.
+Orchestrates pipeline execution via SQLite state and
+ZMQ IPC. Polls root repos for changes, creates runs,
+and executes pipeline steps sequentially.
 
 Architecture:
-  PipelineWatcher: poll_once() on asyncio timer.
-  AgentExecutor: runs agents via AgentRunner as tasks.
-  AgentStore: persists info + output to .state/agents/.
+  PipelineExecutor: runs steps in worktrees.
+  SQLite (lib.db): all state — runs, steps, events.
   ZMQ ROUTER: request/reply commands from TUI clients.
-  ZMQ PUB: broadcasts agent updates, output, events.
+  ZMQ PUB: broadcasts step updates, output, events.
 """
 
 import asyncio
 import json
 import logging
+import subprocess
 import time
 
 import zmq
 import zmq.asyncio
 
-from lib.agent_runner import AgentInfo, AgentRunner, AgentState
-from lib.agent_store import AgentStore
-from lib.config import STATE_DIR, load_repos_config
-from lib.protocol import serialize_sdk_message
+from lib import db
+from lib.config import (
+  STATE_DIR,
+  get_repo_path,
+  load_repos_config,
+)
+from lib.pipeline import (
+  PipelineExecutor,
+  find_changes,
+  group_by_branch,
+  snapshot_all_refs,
+)
+from lib.workspace_ops import list_workspaces
 
 log = logging.getLogger("takt.service")
 
@@ -33,28 +43,31 @@ DEFAULT_MAX_AGENTS = 4
 
 
 class TaktService:
-  """Background service orchestrating pipeline and agents.
+  """Background service orchestrating pipeline runs.
+
+  Polls root repos for branch changes, creates pipeline
+  runs in SQLite, executes them via PipelineExecutor.
 
   Attributes:
     interval: Poll interval in seconds.
     cmd_addr: ZMQ ROUTER bind address.
     pub_addr: ZMQ PUB bind address.
-    max_agents: Max concurrent agent tasks.
+    max_agents: Max concurrent pipeline runs.
   """
 
   def __init__(self, interval=DEFAULT_INTERVAL,
                cmd_addr=None, pub_addr=None,
                max_agents=DEFAULT_MAX_AGENTS,
-               zmq_ctx=None, store=None):
+               zmq_ctx=None, db_path=None):
     """Initialize the service.
 
     Args:
       interval: Poll interval in seconds.
       cmd_addr: ZMQ ROUTER bind address.
       pub_addr: ZMQ PUB bind address.
-      max_agents: Max concurrent agent tasks.
+      max_agents: Max concurrent pipeline runs.
       zmq_ctx: Optional ZMQ context (for testing).
-      store: Optional AgentStore (for testing).
+      db_path: Optional DB path (for testing).
     """
     self.interval = interval
     self.cmd_addr = cmd_addr or DEFAULT_CMD_ADDR
@@ -62,11 +75,9 @@ class TaktService:
     self.max_agents = max_agents
     self._ctx = zmq_ctx or zmq.asyncio.Context()
     self._own_ctx = zmq_ctx is None
-    self._store = store or AgentStore()
+    self._db_path = db_path
     self._semaphore = asyncio.Semaphore(max_agents)
-    self._agents = {}  # agent_id -> asyncio.Task
-    self._agent_infos = {}  # agent_id -> AgentInfo
-    self._agent_line_counts = {}  # agent_id -> int
+    self._run_tasks = {}  # run_id -> asyncio.Task
     self._router = None
     self._pub = None
     self._running = False
@@ -84,14 +95,15 @@ class TaktService:
       "max_agents=%d)",
       self.interval, self.max_agents,
     )
+    # Ensure DB schema is current.
+    db.migrate(db_path=self._db_path)
     self._router = self._ctx.socket(zmq.ROUTER)
     self._router.bind(self.cmd_addr)
     self._pub = self._ctx.socket(zmq.PUB)
     self._pub.bind(self.pub_addr)
     self._running = True
-    # Restore agent infos from disk.
-    for info in self._store.list_agents():
-      self._agent_infos[info.agent_id] = info
+    # Warm GPG/SSH caches so agents don't prompt.
+    await self._warm_caches()
     if once:
       await self._poll_once()
     else:
@@ -110,12 +122,11 @@ class TaktService:
     """Stop the service gracefully."""
     log.info("Stopping takt-service")
     self._running = False
-    # Cancel running agents.
-    for agent_id, task in list(self._agents.items()):
+    for run_id, task in list(self._run_tasks.items()):
       task.cancel()
-    if self._agents:
+    if self._run_tasks:
       await asyncio.gather(
-        *self._agents.values(),
+        *self._run_tasks.values(),
         return_exceptions=True,
       )
     if self._poll_task:
@@ -128,6 +139,50 @@ class TaktService:
       self._pub.close(linger=0)
     if self._own_ctx:
       self._ctx.term()
+
+  async def _warm_caches(self):
+    """Warm GPG and SSH caches at startup."""
+    import os
+    loop = asyncio.get_running_loop()
+    try:
+      await loop.run_in_executor(None, lambda: (
+        subprocess.run(
+          ["gpg", "--sign", "--default-key",
+           "AEEE0FE87FB8D58F", "-o", "/dev/null"],
+          input=b"warmup",
+          capture_output=True, timeout=60,
+        )
+      ))
+      log.info("GPG cache warmed")
+    except Exception as e:
+      log.warning("GPG cache warmup failed: %s", e)
+    sock = os.environ.get("SSH_AUTH_SOCK", "")
+    if not sock:
+      log.warning(
+        "SSH_AUTH_SOCK not set — agents may prompt "
+        "for SSH passphrases"
+      )
+    else:
+      try:
+        result = await loop.run_in_executor(
+          None, lambda: subprocess.run(
+            ["ssh-add", "-l"],
+            capture_output=True, timeout=5,
+          )
+        )
+        count = len(
+          result.stdout.decode().strip().splitlines()
+        )
+        if result.returncode == 0 and count > 0:
+          log.info(
+            "SSH agent has %d key(s) loaded", count
+          )
+        else:
+          log.warning(
+            "SSH agent has no keys — run ssh-add"
+          )
+      except Exception as e:
+        log.warning("SSH agent check failed: %s", e)
 
   # -- Command handling --
 
@@ -143,7 +198,6 @@ class TaktService:
       if len(frames) < 3:
         continue
       identity = frames[0]
-      # frames[1] is the empty delimiter.
       try:
         payload = json.loads(frames[2])
       except (json.JSONDecodeError, IndexError):
@@ -193,131 +247,190 @@ class TaktService:
     """Handle ping command."""
     return {"pong": True}
 
-  async def _handle_list_agents(self, payload):
-    """Handle list_agents command."""
-    agents = []
-    for aid, info in self._agent_infos.items():
-      agents.append({
-        "agent_id": info.agent_id,
-        "workspace": info.workspace,
-        "role": info.role,
-        "model": info.model,
-        "state": info.state.value,
-        "total_cost_usd": info.total_cost_usd,
-        "num_turns": info.num_turns,
-        "started_at": info.started_at,
-        "finished_at": info.finished_at,
-        "error": info.error,
-      })
-    return {"agents": agents}
+  async def _handle_list_runs(self, payload):
+    """Handle list_runs command."""
+    workspace = payload.get("workspace")
+    limit = payload.get("limit", 20)
+    runs = db.list_runs(
+      workspace, limit, db_path=self._db_path,
+    )
+    return {"runs": runs}
+
+  async def _handle_get_run_detail(self, payload):
+    """Handle get_run_detail command."""
+    run_id = payload["run_id"]
+    run = db.get_run(run_id, db_path=self._db_path)
+    if run is None:
+      raise ValueError(f"Run {run_id} not found")
+    steps = db.get_run_steps(
+      run_id, db_path=self._db_path,
+    )
+    return {"run": run, "steps": steps}
+
+  async def _handle_get_step_detail(self, payload):
+    """Handle get_step_detail command."""
+    step_id = payload["step_id"]
+    step = db.get_step(step_id, db_path=self._db_path)
+    if step is None:
+      raise ValueError(f"Step {step_id} not found")
+    events = db.get_events(
+      entity="step", entity_id=step_id,
+      db_path=self._db_path,
+    )
+    return {"step": step, "events": events}
 
   async def _handle_replay_output(self, payload):
     """Handle replay_output command."""
-    agent_id = payload["agent_id"]
+    step_id = payload["step_id"]
     from_line = payload.get("from_line", 0)
-    lines = self._store.load_output(
-      agent_id, from_line=from_line
+    lines = db.get_output(
+      step_id, from_line, db_path=self._db_path,
     )
-    return {"lines": lines, "agent_id": agent_id}
+    return {"lines": lines, "step_id": step_id}
 
-  async def _handle_launch_agent(self, payload):
-    """Handle launch_agent command."""
-    agent_id = payload["agent_id"]
-    if agent_id in self._agents:
+  async def _handle_get_events(self, payload):
+    """Handle get_events command."""
+    entity = payload.get("entity")
+    entity_id = payload.get("entity_id")
+    limit = payload.get("limit", 50)
+    events = db.get_events(
+      entity, entity_id, limit,
+      db_path=self._db_path,
+    )
+    return {"events": events}
+
+  async def _handle_trigger_run(self, payload):
+    """Handle trigger_run command — manual run trigger."""
+    workspace = payload["workspace"]
+    pipeline = db.get_pipeline(
+      workspace, db_path=self._db_path,
+    )
+    if not pipeline:
       raise ValueError(
-        f"Agent {agent_id} already running"
+        f"No pipeline defined for {workspace}"
       )
-    prompt = payload["prompt"]
-    cwd = payload["cwd"]
-    model = payload.get("model", "sonnet")
-    workspace = payload.get("workspace", "")
-    role = payload.get("role", "")
-    info = AgentInfo(
-      agent_id=agent_id,
-      workspace=workspace,
-      role=role,
-      cwd=cwd,
-      model=model,
+    # Gather repos and refs.
+    workspaces = list_workspaces()
+    ws_info = next(
+      (w for w in workspaces if w["name"] == workspace),
+      None,
     )
-    self._agent_infos[agent_id] = info
-    self._agent_line_counts[agent_id] = 0
-    self._store.save_info(info)
-    task = asyncio.create_task(
-      self._run_agent(info, prompt)
+    repos = ws_info["repos"] if ws_info else []
+    refs = self._snapshot_workspace_refs(workspace, repos)
+    run_id = db.create_run(
+      workspace, "manual", repos, refs,
+      db_path=self._db_path,
     )
-    self._agents[agent_id] = task
-    return {"agent_id": agent_id}
+    if run_id is None:
+      raise ValueError("Duplicate trigger")
+    # Launch executor.
+    self._launch_run(run_id)
+    return {"run_id": run_id}
+
+  async def _handle_cancel_run(self, payload):
+    """Handle cancel_run command."""
+    run_id = payload["run_id"]
+    task = self._run_tasks.get(run_id)
+    if task:
+      task.cancel()
+    else:
+      # Mark as cancelled in DB directly.
+      run = db.get_run(run_id, db_path=self._db_path)
+      if run and run["status"] in ("queued", "running"):
+        with db._connect(self._db_path) as conn:
+          conn.execute(
+            "UPDATE runs SET status = 'cancelled', "
+            "finished_at = strftime("
+            "'%Y-%m-%dT%H:%M:%fZ','now') "
+            "WHERE id = ?",
+            (run_id,),
+          )
+        db.log_event(
+          "run", run_id, run["status"], "cancelled",
+          "operator cancelled", db_path=self._db_path,
+        )
+    return {"run_id": run_id}
+
+  async def _handle_pause_step(self, payload):
+    """Handle pause_step command."""
+    step_id = payload["step_id"]
+    db.advance_step(
+      step_id, "paused", reason="operator paused",
+      db_path=self._db_path,
+    )
+    return {"step_id": step_id}
+
+  async def _handle_resume_step(self, payload):
+    """Handle resume_step command."""
+    step_id = payload["step_id"]
+    db.advance_step(
+      step_id, "queued", reason="operator resumed",
+      db_path=self._db_path,
+    )
+    return {"step_id": step_id}
+
+  async def _handle_retry_step(self, payload):
+    """Handle retry_step command."""
+    step_id = payload["step_id"]
+    db.advance_step(
+      step_id, "queued", reason="operator retry",
+      db_path=self._db_path,
+    )
+    return {"step_id": step_id}
+
+  async def _handle_skip_step(self, payload):
+    """Handle skip_step command."""
+    step_id = payload["step_id"]
+    db.advance_step(
+      step_id, "skipped", reason="operator skipped",
+      db_path=self._db_path,
+    )
+    return {"step_id": step_id}
+
+  async def _handle_list_agents(self, payload):
+    """Handle list_agents — return recent agent steps."""
+    limit = payload.get("limit", 50)
+    rows = db.list_agent_steps(
+      limit=limit, db_path=self._db_path,
+    )
+    model_map = {
+      "sonnet": "claude-sonnet-4-6",
+      "opus": "claude-opus-4-6",
+      "haiku": "claude-haiku-4-5",
+    }
+    agents = []
+    for row in rows:
+      agent_id = f"run-{row['run_id']}/{row['name']}"
+      config = json.loads(row.get("config_json", "{}"))
+      short = config.get("model", "sonnet")
+      model = model_map.get(short, short)
+      agents.append({
+        "agent_id": agent_id,
+        "step_id": row["id"],
+        "workspace": row["workspace"],
+        "role": row["name"],
+        "model": model,
+        "state": row["status"],
+        "num_turns": row.get("num_turns", 0),
+        "total_cost_usd": row.get("cost_usd", 0),
+        "run_id": row["run_id"],
+      })
+    return {"agents": agents}
 
   async def _handle_cancel_agent(self, payload):
-    """Handle cancel_agent command."""
+    """Handle cancel_agent — cancel via parent run."""
     agent_id = payload["agent_id"]
-    task = self._agents.get(agent_id)
-    if task is None:
+    # Parse run_id from agent_id format "run-N/role".
+    try:
+      run_part = agent_id.split("/")[0]
+      run_id = int(run_part.replace("run-", ""))
+    except (ValueError, IndexError):
       raise ValueError(
-        f"Agent {agent_id} not running"
+        f"Invalid agent_id format: {agent_id}"
       )
-    task.cancel()
-    return {"agent_id": agent_id}
-
-  async def _handle_trigger_stage(self, payload):
-    """Handle trigger_stage command."""
-    from bin.pipeline_watch import (
-      build_trigger_prompt,
-      scan_markers,
+    return await self._handle_cancel_run(
+      {"run_id": run_id}
     )
-    from lib.config import STAGES_DIR
-    from lib.run_log import (
-      get_active_run,
-      start_run,
-      update_stage,
-    )
-    from lib.workspace_ops import get_pipeline_stages
-
-    ws = payload["workspace"]
-    role = payload["role"]
-    markers = scan_markers()
-    repo_markers = markers.get((ws, role), [])
-    if not repo_markers:
-      raise ValueError(
-        f"No markers for {ws}/{role}"
-      )
-    repos = [r for r, _ in repo_markers]
-    agent_id = f"{ws}/{role}"
-    stage_dir = STAGES_DIR / ws / role
-    prompt = build_trigger_prompt(
-      ws, role, repo_markers
-    )
-    # Launch the agent.
-    result = await self._handle_launch_agent({
-      "cmd": "launch_agent",
-      "agent_id": agent_id,
-      "prompt": prompt,
-      "cwd": str(stage_dir),
-      "workspace": ws,
-      "role": role,
-    })
-    # Delete markers.
-    for repo, _ in repo_markers:
-      marker = (
-        STAGES_DIR / ws / role / repo
-        / ".pipeline-push"
-      )
-      marker.unlink(missing_ok=True)
-    # Start run if first stage.
-    pipeline = get_pipeline_stages(ws)
-    if pipeline and role == pipeline[0]:
-      if get_active_run(ws) is None:
-        start_run(ws, repos, pipeline)
-    update_stage(ws, role, "running")
-    await self._publish(
-      "pipeline.event", {
-        "time": time.strftime("%H:%M:%S"),
-        "stage": agent_id,
-        "repos": ", ".join(repos),
-        "event": "triggered",
-      }
-    )
-    return result
 
   async def _handle_poll_now(self, payload):
     """Handle poll_now command — run one poll cycle."""
@@ -326,65 +439,65 @@ class TaktService:
 
   _cmd_handlers = {
     "ping": _handle_ping,
-    "list_agents": _handle_list_agents,
+    "list_runs": _handle_list_runs,
+    "get_run_detail": _handle_get_run_detail,
+    "get_step_detail": _handle_get_step_detail,
     "replay_output": _handle_replay_output,
-    "launch_agent": _handle_launch_agent,
-    "cancel_agent": _handle_cancel_agent,
-    "trigger_stage": _handle_trigger_stage,
+    "get_events": _handle_get_events,
+    "trigger_run": _handle_trigger_run,
+    "cancel_run": _handle_cancel_run,
+    "pause_step": _handle_pause_step,
+    "resume_step": _handle_resume_step,
+    "retry_step": _handle_retry_step,
+    "skip_step": _handle_skip_step,
     "poll_now": _handle_poll_now,
+    "list_agents": _handle_list_agents,
+    "cancel_agent": _handle_cancel_agent,
   }
 
-  # -- Agent execution --
+  # -- Pipeline execution --
 
-  async def _run_agent(self, info, prompt):
-    """Run an agent with semaphore concurrency control.
-
-    Args:
-      info: AgentInfo for the agent.
-      prompt: Prompt string.
-    """
-    agent_id = info.agent_id
-    async with self._semaphore:
-      runner = AgentRunner(info)
-      try:
-        await runner.run(prompt, lambda msg: (
-          self._on_agent_message(agent_id, msg)
-        ))
-      except Exception as e:
-        log.error(
-          "Agent %s failed: %s", agent_id, e,
-        )
-      finally:
-        self._store.save_info(info)
-        await self._publish_agent_update(info)
-        self._agents.pop(agent_id, None)
-        self._on_agent_finished(info)
-
-  def _on_agent_message(self, agent_id, msg):
-    """Handle a message from a running agent.
-
-    Serializes, persists, and publishes the output.
+  def _launch_run(self, run_id):
+    """Launch a pipeline run as an asyncio task.
 
     Args:
-      agent_id: Agent ID string.
-      msg: SDK message object.
+      run_id: Run row ID.
     """
-    line_no = self._agent_line_counts.get(agent_id, 0)
-    lines = serialize_sdk_message(msg, line_no)
-    if not lines:
+    if run_id in self._run_tasks:
       return
-    self._agent_line_counts[agent_id] = (
-      line_no + len(lines)
-    )
-    self._store.append_output(agent_id, lines)
-    # Update info periodically.
-    info = self._agent_infos.get(agent_id)
-    if info:
-      self._store.save_info(info)
-    # Publish each line to PUB socket.
+
+    async def _execute():
+      async with self._semaphore:
+        executor = PipelineExecutor(
+          on_output=self._on_step_output,
+          on_step_update=self._on_step_update,
+          db_path=self._db_path,
+        )
+        try:
+          status = await executor.execute_run(run_id)
+          log.info(
+            "Run %d finished: %s", run_id, status,
+          )
+        except Exception as e:
+          log.error(
+            "Run %d failed: %s", run_id, e,
+            exc_info=True,
+          )
+        finally:
+          self._run_tasks.pop(run_id, None)
+
+    task = asyncio.create_task(_execute())
+    self._run_tasks[run_id] = task
+
+  def _on_step_output(self, step_id, lines):
+    """Publish agent output lines via ZMQ.
+
+    Args:
+      step_id: Step row ID.
+      lines: List of output line dicts.
+    """
     for line in lines:
-      # Fire-and-forget publish (non-async).
-      topic = f"agent.output.{agent_id}"
+      topic = f"agent.output.step-{step_id}"
       try:
         self._pub.send_multipart(
           [topic.encode(), json.dumps(line).encode()],
@@ -392,84 +505,28 @@ class TaktService:
         )
       except zmq.ZMQError:
         pass
-    # Publish agent update.
-    if info:
-      try:
-        self._pub.send_multipart(
-          [
-            b"agent.update",
-            json.dumps({
-              "agent_id": info.agent_id,
-              "state": info.state.value,
-              "total_cost_usd": info.total_cost_usd,
-              "num_turns": info.num_turns,
-            }).encode(),
-          ],
-          flags=zmq.NOBLOCK,
-        )
-      except zmq.ZMQError:
-        pass
 
-  def _on_agent_finished(self, info):
-    """Handle post-completion for an agent.
-
-    Detects stage results, updates run log, retriggers
-    PR stages, sends notifications.
+  def _on_step_update(self, step_id, status):
+    """Publish step status change via ZMQ.
 
     Args:
-      info: AgentInfo for the finished agent.
+      step_id: Step row ID.
+      status: New status string.
     """
-    from bin.pipeline_watch import (
-      _detect_stage_result,
-      _maybe_finish_run,
-      _retrigger_pr_stage,
-    )
-    from lib.run_log import update_stage
-    ws = info.workspace
-    role = info.role
-    if role == "sync":
-      _retrigger_pr_stage(ws)
-      return
-    stage_result = _detect_stage_result(ws, role)
-    if info.state == AgentState.FAILED:
-      stage_result = "failed"
-    if stage_result:
-      update_stage(ws, role, stage_result)
-      _maybe_finish_run(ws)
-    ev_name = "finished"
-    if stage_result:
-      ev_name = f"finished:{stage_result}"
     try:
       self._pub.send_multipart(
         [
-          b"pipeline.event",
+          b"step.update",
           json.dumps({
+            "step_id": step_id,
+            "status": status,
             "time": time.strftime("%H:%M:%S"),
-            "stage": info.agent_id,
-            "repos": "",
-            "event": ev_name,
           }).encode(),
         ],
         flags=zmq.NOBLOCK,
       )
     except zmq.ZMQError:
       pass
-
-  async def _publish_agent_update(self, info):
-    """Publish an agent.update event.
-
-    Args:
-      info: AgentInfo instance.
-    """
-    await self._publish("agent.update", {
-      "agent_id": info.agent_id,
-      "state": info.state.value,
-      "total_cost_usd": info.total_cost_usd,
-      "num_turns": info.num_turns,
-      "started_at": info.started_at,
-      "finished_at": info.finished_at,
-      "error": info.error,
-    })
 
   async def _publish(self, topic, data):
     """Publish a message on the PUB socket.
@@ -504,181 +561,145 @@ class TaktService:
   async def _poll_once(self):
     """Run a single poll cycle.
 
-    Scans markers, triggers agents, snapshots refs.
+    1. Fetch root repos from GitHub.
+    2. Snapshot refs, detect changes.
+    3. Create runs for workspace branch pushes.
+    4. Launch queued runs.
 
     Returns:
       List of event dicts.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     events = await loop.run_in_executor(
       None, self._poll_sync
     )
+    # Launch any queued runs.
+    while True:
+      queued = db.get_next_queued_run(
+        db_path=self._db_path,
+      )
+      if queued is None:
+        break
+      if queued["id"] in self._run_tasks:
+        break
+      self._launch_run(queued["id"])
     for ev in events:
       await self._publish("pipeline.event", ev)
     return events
 
   def _poll_sync(self):
-    """Synchronous poll — runs in executor.
+    """Synchronous poll — runs in executor thread.
+
+    Fetches root repos, snapshots refs, detects changes,
+    creates runs for workspace branches with pipelines.
 
     Returns:
       List of event dicts.
     """
-    from bin.pipeline_watch import (
-      build_sync_prompt,
-      build_trigger_prompt,
-      find_changes,
-      group_by_branch,
-      load_refs,
-      log_events,
-      save_refs,
-      scan_markers,
-      scan_sync_markers,
-      snapshot_all_refs,
-      write_sync_markers,
-    )
-    from lib.config import (
-      STAGES_DIR,
-      WORKSPACES_DIR,
-      get_default_branch,
-      get_repo_path,
-    )
-    from lib.run_log import (
-      get_active_run,
-      start_run,
-      update_stage,
-    )
-    from lib.workspace_ops import get_pipeline_stages
-
     repos_config = load_repos_config()
     events = []
     now = time.strftime("%H:%M:%S")
-
-    # Scan and trigger pipeline stages.
-    markers = scan_markers()
-    for (ws, role), repo_markers in markers.items():
-      repos = [r for r, _ in repo_markers]
-      agent_id = f"{ws}/{role}"
-      if agent_id in self._agents:
-        continue
-      stage_dir = STAGES_DIR / ws / role
-      prompt = build_trigger_prompt(
-        ws, role, repo_markers
-      )
-      # Schedule agent launch on the event loop.
-      asyncio.get_event_loop().call_soon_threadsafe(
-        self._schedule_agent_launch,
-        agent_id, prompt, str(stage_dir), ws, role,
-      )
-      # Delete markers.
-      for repo, _ in repo_markers:
-        marker = (
-          STAGES_DIR / ws / role / repo
-          / ".pipeline-push"
-        )
-        marker.unlink(missing_ok=True)
-      # Start run if first stage.
-      pipeline = get_pipeline_stages(ws)
-      if pipeline and role == pipeline[0]:
-        if get_active_run(ws) is None:
-          start_run(ws, repos, pipeline)
-      update_stage(ws, role, "running")
-      events.append({
-        "time": now,
-        "stage": agent_id,
-        "repos": ", ".join(repos),
-        "event": "triggered",
-      })
-
-    # Scan and trigger sync agents.
-    sync_markers = scan_sync_markers()
-    for ws, repo_markers in sync_markers.items():
-      repos = [r for r, _ in repo_markers]
-      agent_id = f"{ws}/sync"
-      if agent_id in self._agents:
-        continue
-      prompt = build_sync_prompt(ws, repo_markers)
-      ws_dir = WORKSPACES_DIR / ws
-      asyncio.get_event_loop().call_soon_threadsafe(
-        self._schedule_agent_launch,
-        agent_id, prompt, str(ws_dir), ws, "sync",
-      )
-      # Delete markers.
-      for repo, _ in repo_markers:
-        marker = (
-          WORKSPACES_DIR / ws / repo
-          / ".upstream-sync"
-        )
-        marker.unlink(missing_ok=True)
-      events.append({
-        "time": now,
-        "stage": agent_id,
-        "repos": ", ".join(repos),
-        "event": "triggered",
-      })
-
-    # Snapshot refs and detect upstream changes.
-    old_refs = load_refs()
+    # Fetch all root repos from GitHub.
+    self._fetch_all_root_repos(repos_config)
+    # Snapshot refs.
+    old_refs = db.load_refs(db_path=self._db_path)
     new_refs = snapshot_all_refs(repos_config)
     if not old_refs:
       log.info(
         "First run — snapshotted %d refs", len(new_refs)
       )
-      save_refs(new_refs)
-      log_events(events)
+      db.save_refs(new_refs, db_path=self._db_path)
       return events
     changes = find_changes(old_refs, new_refs)
-    if changes:
-      groups = group_by_branch(changes)
-      log.info(
-        "Detected changes in %d branch(es)",
-        len(groups),
+    if not changes:
+      db.save_refs(new_refs, db_path=self._db_path)
+      return events
+    groups = group_by_branch(changes)
+    log.info(
+      "Detected changes in %d branch(es)", len(groups),
+    )
+    # Find workspace branches with pipelines.
+    workspaces = list_workspaces()
+    ws_names = {w["name"] for w in workspaces}
+    for branch, branch_changes in groups.items():
+      if branch not in ws_names:
+        continue
+      pipeline = db.get_pipeline(
+        branch, db_path=self._db_path,
       )
-      default_changes = []
-      repos_cfg = repos_config.get("repos", {})
-      for branch, branch_changes in groups.items():
-        for c in branch_changes:
-          cfg = repos_cfg.get(c["repo"], {})
-          repo_path = get_repo_path(
-            cfg.get("path", c["repo"])
-          )
-          default_br = cfg.get(
-            "default_branch",
-            get_default_branch(repo_path),
-          )
-          if c["branch"] == default_br:
-            default_changes.append(c)
-      if default_changes:
-        write_sync_markers(default_changes, repos_config)
-    save_refs(new_refs)
-    log_events(events)
+      if not pipeline:
+        continue
+      repos = list({
+        c["repo"] for c in branch_changes
+        if c["type"] != "deleted"
+      })
+      if not repos:
+        continue
+      refs = {
+        c["repo"]: c["new_ref"]
+        for c in branch_changes
+        if c["new_ref"]
+      }
+      run_id = db.create_run(
+        branch, "push", repos, refs,
+        db_path=self._db_path,
+      )
+      if run_id is not None:
+        events.append({
+          "time": now,
+          "run_id": run_id,
+          "workspace": branch,
+          "repos": ", ".join(repos),
+          "event": "run_created",
+        })
+    db.save_refs(new_refs, db_path=self._db_path)
     return events
 
-  def _schedule_agent_launch(self, agent_id, prompt,
-                             cwd, workspace, role):
-    """Schedule an agent launch as an asyncio task.
-
-    Called from the executor thread via
-    call_soon_threadsafe.
+  def _fetch_all_root_repos(self, repos_config):
+    """Fetch all root repos from GitHub.
 
     Args:
-      agent_id: Agent ID string.
-      prompt: Prompt for the agent.
-      cwd: Working directory.
-      workspace: Workspace name.
-      role: Pipeline role.
+      repos_config: Full repos config dict.
     """
-    if agent_id in self._agents:
-      return
-    info = AgentInfo(
-      agent_id=agent_id,
-      workspace=workspace,
-      role=role,
-      cwd=cwd,
-    )
-    self._agent_infos[agent_id] = info
-    self._agent_line_counts[agent_id] = 0
-    self._store.save_info(info)
-    task = asyncio.create_task(
-      self._run_agent(info, prompt)
-    )
-    self._agents[agent_id] = task
+    all_repos = repos_config.get("repos", {})
+    for repo_name, cfg in all_repos.items():
+      disk_path = cfg.get("path", repo_name)
+      repo_path = get_repo_path(disk_path)
+      if not repo_path.exists():
+        bare = repo_path.parent / f"{repo_path.name}.git"
+        if bare.exists():
+          repo_path = bare
+      if not repo_path.exists():
+        continue
+      try:
+        subprocess.run(
+          ["git", "-C", str(repo_path),
+           "fetch", "--prune", "origin"],
+          capture_output=True, timeout=60,
+        )
+      except Exception:
+        log.debug(
+          "Fetch %s failed", repo_name, exc_info=True,
+        )
+
+  def _snapshot_workspace_refs(self, workspace, repos):
+    """Snapshot refs for workspace repos.
+
+    Args:
+      workspace: Workspace name (= branch).
+      repos: List of repo names.
+
+    Returns:
+      Dict mapping repo to commit hash.
+    """
+    from lib.git_utils import get_branch_ref
+    repos_config = load_repos_config().get("repos", {})
+    refs = {}
+    for repo in repos:
+      cfg = repos_config.get(repo, {})
+      repo_path = get_repo_path(cfg.get("path", repo))
+      try:
+        refs[repo] = get_branch_ref(repo_path, workspace)
+      except Exception:
+        pass
+    return refs

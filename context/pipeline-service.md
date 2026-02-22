@@ -81,6 +81,24 @@ agent.output.<id>  {"agent_id", "line_no", "kind",
 pipeline.event     {"time", "stage", "repos", "event"}
 ```
 
+## Per-Step Model Selection
+
+Each agent step stores its model in `config_json`:
+```json
+{"model": "sonnet"}
+```
+
+Valid values: `sonnet`, `opus`, `haiku`. Default: `sonnet`.
+
+Data flow:
+1. Pipeline tab writes model to `pipeline_steps.config_json`
+2. `db.create_run` copies `config_json` to `steps` table
+3. `PipelineExecutor.run_agent_step` reads `config.model`,
+   passes to `AgentInfo(model=...)`
+4. `AgentRunner` passes model to `ClaudeCodeOptions`
+5. `list_agents` maps short names to full IDs for display
+   (sonnet → claude-sonnet-4-6, etc.)
+
 ## Output Persistence
 
 Agent output persisted to `.state/agents/<id>/output.jsonl`
