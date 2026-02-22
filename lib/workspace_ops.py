@@ -446,11 +446,37 @@ def get_pipeline(workspace_name):
   }
 
 
+def _update_git_rules_section(claude_md_path, new_rules):
+  """Patch the ## Git Rules section in a CLAUDE.md in-place.
+
+  Replaces everything between the '## Git Rules' heading and
+  the next heading or '---' separator, preserving the rest
+  of the file (including session state).
+
+  Args:
+    claude_md_path: Path to the CLAUDE.md file.
+    new_rules: New git rules text (without heading).
+  """
+  if not claude_md_path.exists():
+    return
+  content = claude_md_path.read_text()
+  import re
+  # Match from "## Git Rules\n" up to (but not including)
+  # the next "## " heading or "---" separator line.
+  pattern = r'(## Git Rules\n).*?(?=\n## |\n---)'
+  replacement = rf'\g<1>{new_rules}\n'
+  updated = re.sub(pattern, replacement, content, flags=re.DOTALL)
+  if updated != content:
+    claude_md_path.write_text(updated)
+
+
 def _rechain_remotes(workspace_name):
   """Rebuild the full remote chain from pipeline.yaml order.
 
   Chain: workspace -> stage1 -> stage2 -> ... -> root.
   Each link's repos get origin set to the next link.
+  Also updates the workspace CLAUDE.md git rules to reflect
+  where origin actually points.
   """
   stages = _load_pipeline(workspace_name)
   repos_config = load_repos_config().get("repos", {})
@@ -504,6 +530,21 @@ def _rechain_remotes(workspace_name):
       if i > 0:
         prev = chain_dirs[i - 1] / repo_name
         rechain_submodule_remotes(repo_path, prev)
+
+  # Update workspace CLAUDE.md git rules to match actual
+  # origin target.
+  if stages:
+    first_role = stages[0]
+    origin_desc = (
+      f"the first pipeline stage (**{first_role}**) at"
+      f" ~/dev/stages/{workspace_name}/{first_role}/<repo>"
+    )
+  else:
+    origin_desc = "root repo at ~/dev/root/<repo>"
+  ws_rules = _build_git_rules(
+    workspace_name, origin_description=origin_desc,
+  )
+  _update_git_rules_section(ws_dir / "CLAUDE.md", ws_rules)
 
 
 def create_stage(workspace_name, role):
