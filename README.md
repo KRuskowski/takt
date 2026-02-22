@@ -1,4 +1,4 @@
-# Agent Orchestration
+# takt
 
 Multi-agent pipeline orchestration for running Claude CLI
 agents in parallel across multi-repo projects.
