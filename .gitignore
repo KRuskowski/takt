@@ -4,3 +4,27 @@ __pycache__/
 .locks/
 config/repos.yaml
 config/targets.yaml
+
+# Personal dotfiles
+.bash_profile
+.bashrc
+.profile
+.zprofile
+.zshrc
+.gitconfig
+.ripgreprc
+
+# IDE / tooling
+.idea
+.vscode
+.claude/
+.mcp.json
+
+# Stray git internals
+HEAD
+hooks
+objects
+refs
+
+# Temp files
+*.xml
