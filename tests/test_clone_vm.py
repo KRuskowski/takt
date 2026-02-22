@@ -1,6 +1,5 @@
 """Tests for bin/clone_vm.py."""
 
-import os
 import sys
 import tempfile
 import unittest
@@ -38,7 +37,7 @@ CLONE_CFG = {
   "host": "10.101.0.100",
   "user": "worker",
   "ssh_key": "~/.ssh/id_ed25519_targets",
-  "disk": "/home/karl/libvirt/images/deb-02.qcow2",
+  "disk": f"{Path.home()}/libvirt/images/deb-02.qcow2",
   "cloned_from": "deb-01",
   "description": "Clone of deb-01",
 }

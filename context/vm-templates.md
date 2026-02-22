@@ -14,7 +14,7 @@ space-efficient since they only store diffs from the template.
 | Name   | OS         | IP          | Disk location                          |
 |--------|------------|-------------|----------------------------------------|
 | deb-01 | Debian 12  | 10.101.0.20 | /var/lib/libvirt/images/deb-01.qcow2   |
-| win-01 | Windows 11 | 10.101.0.21 | /home/karl/libvirt/images/win-01.qcow2  |
+| win-01 | Windows 11 | 10.101.0.21 | ~/libvirt/images/win-01.qcow2  |
 
 Templates have `template: true` and `disk:` fields in
 `config/targets.yaml`. Template guards in `bin/target.py`
@@ -51,7 +51,7 @@ Windows), delete disk, remove from targets.yaml.
 
 ## Disk layout
 
-All clone disks go in `/home/karl/libvirt/images/`.
+All clone disks go in `~/libvirt/images/`.
 The deb-01 template disk stays in `/var/lib/libvirt/images/`
 (backing file reference uses absolute path).
 

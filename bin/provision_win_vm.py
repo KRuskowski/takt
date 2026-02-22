@@ -13,6 +13,7 @@ Default target: win-01
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import textwrap
@@ -27,9 +28,9 @@ from lib.config import load_targets_config
 
 # Samba config.
 SAMBA_SHARE_NAME = "dev"
-SAMBA_SHARE_PATH = "/home/karl/dev"
-SAMBA_USER = "karl"
-SAMBA_MARKER = "# agent-orchestration: dev share"
+SAMBA_SHARE_PATH = str(Path.home() / "dev")
+SAMBA_USER = os.getlogin()
+SAMBA_MARKER = "# takt: dev share"
 SMB_CONF = Path("/etc/samba/smb.conf")
 
 # Network.
@@ -363,7 +364,7 @@ def configure_vs_path(user, host, key):
     host: Remote hostname or IP.
     key: Path to SSH private key.
   """
-  marker = "# agent-orchestration: vcvars"
+  marker = "# takt: vcvars"
   if _check_remote(
     user, host, key,
     f"Select-String -Path $PROFILE.AllUsersAllHosts"
@@ -388,7 +389,8 @@ def configure_vs_path(user, host, key):
   import base64
   profile_script = textwrap.dedent(f"""\
     {marker}
-    $vcvars = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat"
+    $vcvars = "C:\\Program Files (x86)\\Microsoft Visual Studio" +
+      "\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat"
     if (Test-Path $vcvars) {{
       $out = cmd /c "`"$vcvars`" >nul 2>&1 && set"
       foreach ($line in $out) {{

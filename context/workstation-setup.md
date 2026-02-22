@@ -132,11 +132,11 @@ sudo mkdir -p /mnt/dev
 
 # Test mount
 sudo mount -t cifs //10.101.0.1/dev /mnt/dev \
-  -o user=karl,uid=$(id -u),gid=$(id -g)
+  -o user=$USER,uid=$(id -u),gid=$(id -g)
 
 # Persistent mount (add to /etc/fstab)
 echo '//10.101.0.1/dev /mnt/dev cifs' \
-  'user=karl,pass=<password>,uid=1000,gid=1000 0 0' \
+  'user=<samba_user>,pass=<password>,uid=1000,gid=1000 0 0' \
   | sudo tee -a /etc/fstab
 ```
 
@@ -145,7 +145,7 @@ echo '//10.101.0.1/dev /mnt/dev cifs' \
 The Windows provisioning script maps `W:` drive
 automatically. To do it manually:
 ```powershell
-cmdkey /add:10.101.0.1 /user:karl /pass:<password>
+cmdkey /add:10.101.0.1 /user:<samba_user> /pass:<password>
 net use W: \\10.101.0.1\dev /persistent:yes
 ```
 

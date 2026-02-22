@@ -145,14 +145,28 @@ class TaktService:
     import os
     loop = asyncio.get_running_loop()
     try:
-      await loop.run_in_executor(None, lambda: (
-        subprocess.run(
-          ["gpg", "--sign", "--default-key",
-           "AEEE0FE87FB8D58F", "-o", "/dev/null"],
-          input=b"warmup",
-          capture_output=True, timeout=60,
+      # Use the first secret key available.
+      result = await loop.run_in_executor(
+        None, lambda: subprocess.run(
+          ["gpg", "--list-secret-keys", "--keyid-format",
+           "long", "--with-colons"],
+          capture_output=True, text=True, timeout=10,
         )
-      ))
+      )
+      key_id = None
+      for line in result.stdout.splitlines():
+        if line.startswith("sec:"):
+          key_id = line.split(":")[4]
+          break
+      if key_id:
+        await loop.run_in_executor(None, lambda: (
+          subprocess.run(
+            ["gpg", "--sign", "--default-key",
+             key_id, "-o", "/dev/null"],
+            input=b"warmup",
+            capture_output=True, timeout=60,
+          )
+        ))
       log.info("GPG cache warmed")
     except Exception as e:
       log.warning("GPG cache warmup failed: %s", e)
