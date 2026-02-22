@@ -9,6 +9,7 @@ import asyncio
 import logging
 import subprocess
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
@@ -39,7 +40,54 @@ class TaktApp(App):
 
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
+    self.sub_title = "local"
     self._service_client = None
+    self._prev_agent_states = {}
+
+  def on_text_selected(self, event: events.TextSelected):
+    """Auto-copy to clipboard when text is selected."""
+    try:
+      text = self.screen.get_selected_text()
+      if text:
+        self.copy_to_clipboard(text)
+    except Exception:
+      log.debug(
+        "auto-copy failed", exc_info=True
+      )
+
+  def copy_to_clipboard(self, text):
+    """Copy text to system clipboard.
+
+    Tries system clipboard tools (wl-copy, xclip, xsel)
+    first, falls back to OSC 52 for terminal support.
+    Uses Popen to avoid blocking — xclip forks and stays
+    alive to serve clipboard requests.
+
+    Args:
+      text: Text to copy.
+    """
+    self._clipboard = text
+    for cmd in [
+      ["wl-copy"],
+      ["xclip", "-selection", "clipboard"],
+      ["xsel", "--clipboard", "--input"],
+    ]:
+      try:
+        proc = subprocess.Popen(
+          cmd,
+          stdin=subprocess.PIPE,
+          stdout=subprocess.DEVNULL,
+          stderr=subprocess.DEVNULL,
+        )
+        proc.stdin.write(text.encode("utf-8"))
+        proc.stdin.close()
+        self.notify("Copied")
+        return
+      except (FileNotFoundError, OSError):
+        continue
+    # Fall back to OSC 52.
+    super().copy_to_clipboard(text)
+    self.notify("Copied")
 
   def compose(self) -> ComposeResult:
     yield Header(show_clock=True)
@@ -79,6 +127,7 @@ class TaktApp(App):
       ok = await client.is_service_running()
       if ok:
         self._service_client = client
+        self.sub_title = "service"
         client.subscribe("agent.update")
         client.subscribe("pipeline.event")
         client.on(
@@ -93,6 +142,7 @@ class TaktApp(App):
       else:
         await client.disconnect()
         self._service_client = None
+        self.sub_title = "local"
         self.notify(
           "takt-service not running. "
           "Start with: systemctl --user start "
@@ -105,6 +155,7 @@ class TaktApp(App):
         exc_info=True,
       )
       self._service_client = None
+      self.sub_title = "local"
 
   def _connect_service(self) -> None:
     """Schedule service connection."""
@@ -114,6 +165,9 @@ class TaktApp(App):
 
   def _on_agent_update(self, topic, data) -> None:
     """Handle agent.update events from service.
+
+    Tracks state transitions and sends notifications on
+    completed/failed transitions.
 
     Args:
       topic: Topic string.
@@ -130,9 +184,44 @@ class TaktApp(App):
       log.debug(
         "agent update handler failed", exc_info=True
       )
+    # Track state transitions for notifications.
+    aid = data.get("agent_id", "")
+    new_state = data.get("state", "")
+    old_state = self._prev_agent_states.get(aid)
+    self._prev_agent_states[aid] = new_state
+    if old_state and old_state != new_state:
+      self._notify_agent_transition(
+        aid, old_state, new_state
+      )
+
+  def _notify_agent_transition(
+    self, agent_id, old_state, new_state,
+  ):
+    """Send TUI toast and desktop notification on finish.
+
+    Args:
+      agent_id: Agent ID string.
+      old_state: Previous state string.
+      new_state: New state string.
+    """
+    if new_state == "completed":
+      self.notify(f"{agent_id} completed")
+      from lib.notify import notify as desktop_notify
+      desktop_notify("takt", f"{agent_id} completed")
+    elif new_state == "failed":
+      self.notify(
+        f"{agent_id} failed", severity="error"
+      )
+      from lib.notify import notify as desktop_notify
+      desktop_notify(
+        "takt", f"{agent_id} failed",
+        urgency="critical",
+      )
 
   def _on_pipeline_event(self, topic, data) -> None:
     """Handle pipeline.event events from service.
+
+    Notifies on stage completion/failure events.
 
     Args:
       topic: Topic string.
@@ -149,6 +238,24 @@ class TaktApp(App):
     except Exception:
       log.debug(
         "pipeline event handler failed", exc_info=True
+      )
+    # Notify on stage finish events.
+    event_type = data.get("event")
+    ws = data.get("workspace", "")
+    role = data.get("role", "")
+    label = f"{ws}/{role}" if ws and role else ""
+    if event_type == "stage_completed" and label:
+      self.notify(f"Stage {label} completed")
+      from lib.notify import notify as desktop_notify
+      desktop_notify("takt", f"Stage {label} completed")
+    elif event_type == "stage_failed" and label:
+      self.notify(
+        f"Stage {label} failed", severity="error"
+      )
+      from lib.notify import notify as desktop_notify
+      desktop_notify(
+        "takt", f"Stage {label} failed",
+        urgency="critical",
       )
 
   # -- Agent management via service --
@@ -339,6 +446,7 @@ class TaktApp(App):
         check=True, capture_output=True,
       )
       self.notify("takt-service stopped")
+      self.sub_title = "local"
       if self._service_client:
         asyncio.ensure_future(
           self._service_client.disconnect()

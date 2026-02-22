@@ -5,8 +5,6 @@ for display in a RichLog widget. Also renders serialized
 output line dicts (from lib/protocol.py) back to Rich Text.
 """
 
-import json
-
 from rich.text import Text
 
 from claude_code_sdk import (
@@ -18,9 +16,52 @@ from claude_code_sdk import (
   ToolUseBlock,
 )
 
-# Max chars for truncated blocks.
+_TOOL_ICON = "\u25cf"
+_RESULT_INDENT = "  \u23bf  "
+_CONT_INDENT = "     "
+_DONE_ICON = "\u273b"
+_FAIL_ICON = "\u2717"
+_THINK_ICON = "\u2699"
+_WARN_ICON = "\u26a0"
+_RETRY_ICON = "\u27f3"
+_MAX_RESULT_LINES = 8
 _MAX_THINKING = 200
-_MAX_TOOL_RESULT = 500
+
+# Maps tool names to their primary argument key.
+_PRIMARY_ARG_KEYS = {
+  "Bash": "command",
+  "Read": "file_path",
+  "Edit": "file_path",
+  "Write": "file_path",
+  "Grep": "pattern",
+  "Glob": "pattern",
+  "WebFetch": "url",
+  "Task": "description",
+}
+
+
+def _extract_primary_arg(name, inp):
+  """Extract the primary argument for a tool invocation.
+
+  Args:
+    name: Tool name string.
+    inp: Input dict for the tool.
+
+  Returns:
+    Primary argument string, or empty string.
+  """
+  if not isinstance(inp, dict):
+    return ""
+  key = _PRIMARY_ARG_KEYS.get(name)
+  if key and key in inp:
+    return str(inp[key])
+  # Fallback: first string value, truncated.
+  for v in inp.values():
+    if isinstance(v, str):
+      if len(v) > 60:
+        return v[:57] + "..."
+      return v
+  return ""
 
 
 def render_message(msg):
@@ -99,40 +140,25 @@ def _render_text(block):
 
 
 def _render_tool_use(block):
-  """Render a ToolUseBlock.
+  """Render a ToolUseBlock as icon ToolName(arg).
 
   Args:
     block: ToolUseBlock with name and input.
 
   Returns:
-    Rich Text with tool name and summarized input.
+    Rich Text with tool icon, name, and primary arg.
   """
   text = Text()
-  text.append("[tool] ", style="bold #42a5f5")
+  text.append(f"{_TOOL_ICON} ", style="bold #42a5f5")
   text.append(block.name, style="#42a5f5")
-  # Show a brief summary of input.
-  inp = block.input
-  if isinstance(inp, dict):
-    if "command" in inp:
-      text.append(f" {inp['command']}", style="dim")
-    elif "file_path" in inp:
-      text.append(
-        f" {inp['file_path']}", style="dim"
-      )
-    elif "pattern" in inp:
-      text.append(
-        f" {inp['pattern']}", style="dim"
-      )
-    else:
-      summary = json.dumps(inp)
-      if len(summary) > 80:
-        summary = summary[:77] + "..."
-      text.append(f" {summary}", style="dim")
+  arg = _extract_primary_arg(block.name, block.input)
+  if arg:
+    text.append(f" ({arg})", style="dim")
   return text
 
 
 def _render_tool_result(block):
-  """Render a ToolResultBlock.
+  """Render a ToolResultBlock with connector indent.
 
   Args:
     block: ToolResultBlock with content and is_error.
@@ -140,33 +166,63 @@ def _render_tool_result(block):
   Returns:
     Rich Text.
   """
-  text = Text()
   is_err = block.is_error
-  if is_err:
-    text.append("[error] ", style="bold #ef5350")
-  else:
-    text.append("[result] ", style="bold #66bb6a")
   content = block.content
-  if isinstance(content, str):
-    if len(content) > _MAX_TOOL_RESULT:
-      content = content[:_MAX_TOOL_RESULT] + "..."
-    style = "#ef5350" if is_err else "#66bb6a"
-    text.append(content, style=style)
-  elif isinstance(content, list):
-    # Multi-part content — show first text.
+  if isinstance(content, list):
+    # Multi-part content — extract first text.
     for part in content:
       if isinstance(part, dict):
         t = part.get("text", "")
         if t:
-          if len(t) > _MAX_TOOL_RESULT:
-            t = t[:_MAX_TOOL_RESULT] + "..."
-          text.append(t, style="#66bb6a")
+          content = t
           break
+    else:
+      content = ""
+  if not isinstance(content, str):
+    content = str(content)
+  return _format_result_content(content, is_err)
+
+
+def _format_result_content(content, is_err):
+  """Format result content with indented lines.
+
+  Args:
+    content: Result content string.
+    is_err: Whether this is an error result.
+
+  Returns:
+    Rich Text with connector and indented lines.
+  """
+  text = Text()
+  if is_err:
+    text.append(_RESULT_INDENT, style="dim")
+    text.append(f"Error: {content}", style="#ef5350")
+    text.append("\n")
+    return text
+  lines = content.split("\n")
+  total = len(lines)
+  show = lines[:_MAX_RESULT_LINES]
+  for i, line in enumerate(show):
+    if i > 0:
+      text.append("\n")
+    if i == 0:
+      text.append(_RESULT_INDENT, style="dim")
+    else:
+      text.append(_CONT_INDENT)
+    text.append(line)
+  if total > _MAX_RESULT_LINES:
+    remaining = total - _MAX_RESULT_LINES
+    text.append("\n")
+    text.append(_CONT_INDENT)
+    text.append(
+      f"\u2026 +{remaining} lines", style="dim"
+    )
+  text.append("\n")
   return text
 
 
 def _render_thinking(block):
-  """Render a ThinkingBlock (truncated).
+  """Render a ThinkingBlock as collapsed summary.
 
   Args:
     block: ThinkingBlock with thinking attribute.
@@ -175,11 +231,12 @@ def _render_thinking(block):
     Rich Text.
   """
   text = Text()
-  text.append("[thinking] ", style="bold dim")
+  text.append(f"{_THINK_ICON} ", style="dim italic")
   content = block.thinking
-  if len(content) > _MAX_THINKING:
-    content = content[:_MAX_THINKING] + "..."
-  text.append(content, style="dim")
+  first_line = content.split("\n", 1)[0]
+  if len(first_line) > _MAX_THINKING:
+    first_line = first_line[:_MAX_THINKING] + "\u2026"
+  text.append(first_line, style="dim italic")
   return text
 
 
@@ -193,16 +250,24 @@ def _render_result(msg):
     Rich Text.
   """
   text = Text()
-  if msg.is_error:
-    text.append("[failed] ", style="bold #ef5350")
-  else:
-    text.append("[done] ", style="bold #66bb6a")
   duration_s = msg.duration_ms / 1000
   parts = [f"{msg.num_turns} turns"]
   parts.append(f"{duration_s:.1f}s")
   if msg.total_cost_usd is not None:
     parts.append(f"${msg.total_cost_usd:.4f}")
-  text.append(", ".join(parts))
+  summary = ", ".join(parts)
+  if msg.is_error:
+    text.append(
+      f"{_FAIL_ICON} ", style="bold #ef5350"
+    )
+    text.append(
+      f"Failed \u2014 {summary}", style="#ef5350"
+    )
+  else:
+    text.append(
+      f"{_DONE_ICON} ", style="bold #66bb6a"
+    )
+    text.append(summary, style="#66bb6a")
   return text
 
 
@@ -235,8 +300,8 @@ def render_output_line(line):
     return _render_system_line(content, meta)
   if kind == "error":
     text = Text()
-    text.append("[error] ", style="bold #ef5350")
-    text.append(content, style="#ef5350")
+    text.append(f"{_WARN_ICON} ", style="bold #ffa726")
+    text.append(content, style="#ffa726")
     return text
   return None
 
@@ -252,21 +317,12 @@ def _render_tool_use_line(content, meta):
     Rich Text.
   """
   text = Text()
-  text.append("[tool] ", style="bold #42a5f5")
+  text.append(f"{_TOOL_ICON} ", style="bold #42a5f5")
   text.append(content, style="#42a5f5")
   inp = meta.get("input", {})
-  if isinstance(inp, dict):
-    if "command" in inp:
-      text.append(f" {inp['command']}", style="dim")
-    elif "file_path" in inp:
-      text.append(f" {inp['file_path']}", style="dim")
-    elif "pattern" in inp:
-      text.append(f" {inp['pattern']}", style="dim")
-    else:
-      summary = json.dumps(inp)
-      if len(summary) > 80:
-        summary = summary[:77] + "..."
-      text.append(f" {summary}", style="dim")
+  arg = _extract_primary_arg(content, inp)
+  if arg:
+    text.append(f" ({arg})", style="dim")
   return text
 
 
@@ -280,18 +336,10 @@ def _render_tool_result_line(content, meta):
   Returns:
     Rich Text.
   """
-  text = Text()
   is_err = meta.get("is_error", False)
-  if is_err:
-    text.append("[error] ", style="bold #ef5350")
-  else:
-    text.append("[result] ", style="bold #66bb6a")
-  if isinstance(content, str):
-    if len(content) > _MAX_TOOL_RESULT:
-      content = content[:_MAX_TOOL_RESULT] + "..."
-    style = "#ef5350" if is_err else "#66bb6a"
-    text.append(content, style=style)
-  return text
+  if not isinstance(content, str):
+    content = str(content)
+  return _format_result_content(content, is_err)
 
 
 def _render_thinking_line(content):
@@ -304,10 +352,11 @@ def _render_thinking_line(content):
     Rich Text.
   """
   text = Text()
-  text.append("[thinking] ", style="bold dim")
-  if len(content) > _MAX_THINKING:
-    content = content[:_MAX_THINKING] + "..."
-  text.append(content, style="dim")
+  text.append(f"{_THINK_ICON} ", style="dim italic")
+  first_line = content.split("\n", 1)[0]
+  if len(first_line) > _MAX_THINKING:
+    first_line = first_line[:_MAX_THINKING] + "\u2026"
+  text.append(first_line, style="dim italic")
   return text
 
 
@@ -322,10 +371,6 @@ def _render_result_line(meta):
     Rich Text.
   """
   text = Text()
-  if meta.get("is_error"):
-    text.append("[failed] ", style="bold #ef5350")
-  else:
-    text.append("[done] ", style="bold #66bb6a")
   duration_ms = meta.get("duration_ms", 0)
   duration_s = (duration_ms or 0) / 1000
   parts = [f"{meta.get('num_turns', 0)} turns"]
@@ -333,7 +378,19 @@ def _render_result_line(meta):
   cost = meta.get("total_cost_usd")
   if cost is not None:
     parts.append(f"${cost:.4f}")
-  text.append(", ".join(parts))
+  summary = ", ".join(parts)
+  if meta.get("is_error"):
+    text.append(
+      f"{_FAIL_ICON} ", style="bold #ef5350"
+    )
+    text.append(
+      f"Failed \u2014 {summary}", style="#ef5350"
+    )
+  else:
+    text.append(
+      f"{_DONE_ICON} ", style="bold #66bb6a"
+    )
+    text.append(summary, style="#66bb6a")
   return text
 
 
@@ -349,6 +406,9 @@ def _render_system_line(content, meta):
   """
   text = Text()
   subtype = meta.get("subtype", "")
-  text.append(f"[{subtype}] ", style="bold dim")
-  text.append(content, style="dim")
+  if subtype == "retry":
+    text.append(f"{_RETRY_ICON} ", style="bold #ffa726")
+  else:
+    text.append(f"{_WARN_ICON} ", style="bold #ffa726")
+  text.append(content, style="#ffa726")
   return text
