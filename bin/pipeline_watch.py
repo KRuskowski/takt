@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Pipeline watcher — detect branch changes and trigger analysis.
+"""Pipeline watcher — reusable functions for branch change
+detection, marker scanning, and prompt building.
 
-Polls root repos for branch ref changes. When changes are detected,
-gathers diffs and logs, then pipes context to Claude CLI for
-analysis.
+Agent execution is handled by takt-service. This module
+provides the low-level functions used by the service.
+The --once flag runs a direct poll cycle; continuous mode
+is deprecated in favor of takt-service.
 """
 
 import argparse
-import glob
 import json
-import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -28,51 +28,28 @@ from lib.config import (
   load_repos_config,
   validate_repo,
 )
-from lib.workspace_ops import list_workspaces
 from lib.git_utils import (
   GitError,
   get_branch_ref,
   get_branches,
   get_log,
 )
+from lib.notify import notify
+from lib.run_log import (
+  finish_run,
+  get_active_run,
+  start_run,
+  update_stage,
+)
+from lib.workspace_ops import (
+  get_pipeline_stages,
+  list_workspaces,
+)
 
 REFS_FILE = STATE_DIR / "branch_refs.json"
 EVENTS_FILE = STATE_DIR / "events.json"
 DEFAULT_INTERVAL = 30
 MAX_EVENTS = 200
-KITTY_SOCKET_PATH = "/tmp/kitty-pipeline"
-
-# Muted background tones for kitty tab color-coding by role.
-ROLE_COLORS = {
-  "feature": "#2d5a27",
-  "test": "#5a4b27",
-  "review": "#27455a",
-  "docs": "#3d275a",
-  "refactor": "#275a5a",
-  "pr": "#5a2727",
-  "deploy_qa": "#5a4027",
-  "sync": "#3a3a5a",
-}
-
-
-def _find_kitty_socket():
-  """Find the kitty remote control socket.
-
-  Checks for the exact path first (CLI --listen-on), then
-  falls back to a glob for the -{pid} variant (kitty.conf
-  listen_on).
-
-  Returns:
-    Socket address string (e.g. "unix:/tmp/kitty-pipeline")
-    or None if no socket is found.
-  """
-  exact = Path(KITTY_SOCKET_PATH)
-  if exact.exists():
-    return f"unix:{exact}"
-  matches = sorted(glob.glob(f"{KITTY_SOCKET_PATH}-*"))
-  if matches:
-    return f"unix:{matches[-1]}"
-  return None
 
 
 def load_refs():
@@ -159,8 +136,9 @@ def find_changes(old_refs, new_refs):
   """Compare old and new refs, return changes.
 
   Returns:
-    List of dicts with keys: repo, branch, old_ref, new_ref, type.
-    type is one of: "new", "updated", "deleted".
+    List of dicts with keys: repo, branch, old_ref,
+    new_ref, type. type is one of: "new", "updated",
+    "deleted".
   """
   changes = []
   all_keys = set(old_refs.keys()) | set(new_refs.keys())
@@ -176,12 +154,14 @@ def find_changes(old_refs, new_refs):
     elif old is not None and new is None:
       changes.append({
         "repo": repo, "branch": branch,
-        "old_ref": old, "new_ref": None, "type": "deleted",
+        "old_ref": old, "new_ref": None,
+        "type": "deleted",
       })
     elif old != new:
       changes.append({
         "repo": repo, "branch": branch,
-        "old_ref": old, "new_ref": new, "type": "updated",
+        "old_ref": old, "new_ref": new,
+        "type": "updated",
       })
   return changes
 
@@ -202,7 +182,8 @@ def scan_markers():
   """Walk stages directory for .pipeline-push marker files.
 
   Returns:
-    Dict mapping (ws, role) to list of (repo_name, lines) tuples.
+    Dict mapping (ws, role) to list of (repo_name, lines)
+    tuples.
   """
   markers = defaultdict(list)
   if not STAGES_DIR.exists():
@@ -242,8 +223,6 @@ def build_trigger_prompt(ws, role, repo_markers):
   for repo, lines in repo_markers:
     parts.append(f"## {repo}")
     stage_repo = STAGES_DIR / ws / role / repo
-    # Use first non-zero old ref and last new ref to cover
-    # all pushes in one log range.
     first_old = None
     last_new = None
     for line in lines:
@@ -257,7 +236,9 @@ def build_trigger_prompt(ws, role, repo_markers):
     if last_new is None:
       continue
     if first_old is None:
-      parts.append(f"New branch created at {last_new[:8]}")
+      parts.append(
+        f"New branch created at {last_new[:8]}"
+      )
     else:
       try:
         log = get_log(
@@ -273,207 +254,88 @@ def build_trigger_prompt(ws, role, repo_markers):
           " (log unavailable)"
         )
     parts.append("")
-  parts.append("Process these changes according to your role.")
+  parts.append(
+    "Process these changes according to your role."
+  )
   parts.append("When done, push to origin.")
   return "\n".join(parts)
 
 
-def _kitty_tab_exists(title):
-  """Check if a kitty tab with the given title exists.
+def _detect_stage_result(ws, role):
+  """Detect whether a finished stage passed or failed.
 
-  Args:
-    title: Tab title to search for.
-
-  Returns:
-    True if a tab with that title exists in any OS window.
-  """
-  socket = _find_kitty_socket()
-  if socket is None:
-    return False
-  result = subprocess.run(
-    ["kitten", "@", "--to", socket, "ls"],
-    capture_output=True, text=True,
-  )
-  if result.returncode != 0:
-    return False
-  try:
-    windows = json.loads(result.stdout)
-  except (json.JSONDecodeError, ValueError):
-    return False
-  for os_window in windows:
-    for tab in os_window.get("tabs", []):
-      if tab.get("title") == title:
-        return True
-  return False
-
-
-def _prune_finished_tabs():
-  """Close kitty tabs whose agent process has finished.
-
-  Returns:
-    List of tab titles that were pruned.
-  """
-  socket = _find_kitty_socket()
-  if socket is None:
-    return []
-  result = subprocess.run(
-    ["kitten", "@", "--to", socket, "ls"],
-    capture_output=True, text=True,
-  )
-  if result.returncode != 0:
-    return []
-  try:
-    windows = json.loads(result.stdout)
-  except (json.JSONDecodeError, ValueError):
-    return []
-  pruned = []
-  for os_window in windows:
-    for tab in os_window.get("tabs", []):
-      title = tab.get("title", "")
-      if "/" not in title:
-        continue
-      ws, role = title.split("/", 1)
-      if role == "sync":
-        done = WORKSPACES_DIR / ws / ".agent-done"
-      else:
-        done = STAGES_DIR / ws / role / ".agent-done"
-      if not done.exists():
-        continue
-      subprocess.run(
-        [
-          "kitten", "@", "--to", socket,
-          "close-tab", "-m", f"title:{title}",
-        ],
-        capture_output=True, text=True,
-      )
-      done.unlink(missing_ok=True)
-      pruned.append(title)
-  return pruned
-
-
-def launch_in_kitty(ws, role, stage_dir, prompt):
-  """Launch a claude agent in a kitty tab.
-
-  Skips if a tab with the same title already exists.
+  Non-terminal stages pass if .pipeline-push markers exist
+  in the next stage's repo dirs (meaning the agent pushed).
+  Terminal stages (last in pipeline) pass on completion.
 
   Args:
     ws: Workspace name.
-    role: Stage role.
-    stage_dir: Path to the stage directory.
-    prompt: Trigger prompt for the agent.
-
-  Raises:
-    RuntimeError: If the kitty launch command fails or no
-      socket is found.
-  """
-  title = f"{ws}/{role}"
-  if _kitty_tab_exists(title):
-    print(f"  Tab '{title}' already exists, skipping.")
-    return
-  socket = _find_kitty_socket()
-  if socket is None:
-    raise RuntimeError(
-      "no kitty socket found at"
-      f" {KITTY_SOCKET_PATH}"
-    )
-  # Remove stale done marker from a previous run.
-  done_marker = stage_dir / ".agent-done"
-  done_marker.unlink(missing_ok=True)
-  # Use bash -i so shell aliases (e.g. claude) are loaded.
-  # Single quotes inside prompt are escaped for the shell.
-  # Append touch so a marker is written when claude exits.
-  escaped = prompt.replace("'", "'\\''")
-  shell_cmd = (
-    f"unset CLAUDECODE; claude --model sonnet '{escaped}';"
-    f" touch '{done_marker}'"
-  )
-  result = subprocess.run(
-    [
-      "kitten", "@", "--to", socket,
-      "launch", "--type", "tab",
-      "--tab-title", title,
-      "--cwd", str(stage_dir),
-      "--hold",
-      "zsh", "-ic", shell_cmd,
-    ],
-    capture_output=True, text=True,
-  )
-  if result.returncode != 0:
-    raise RuntimeError(
-      f"kitty launch failed: {result.stderr.strip()}"
-    )
-  print(f"  Launched agent in kitty tab '{title}'.")
-  # Color-code the tab by role (fire-and-forget).
-  color = ROLE_COLORS.get(role)
-  if color:
-    subprocess.run(
-      [
-        "kitten", "@", "--to", socket,
-        "set-tab-color",
-        "-m", f"title:{title}",
-        f"active_bg={color}",
-        f"inactive_bg={color}",
-      ],
-      capture_output=True, text=True,
-    )
-  # Auto-focus the newly launched tab.
-  subprocess.run(
-    [
-      "kitten", "@", "--to", socket,
-      "focus-tab",
-      "-m", f"title:{title}",
-    ],
-    capture_output=True, text=True,
-  )
-
-
-def _scan_and_trigger():
-  """Scan for pipeline push markers and trigger stage agents.
+    role: Stage role slug.
 
   Returns:
-    List of event dicts with keys: stage, repos, event.
-    event is one of: "triggered", "error".
+    'passed', 'failed', or None (for sync agents).
   """
-  markers = scan_markers()
-  if not markers:
-    return []
-  events = []
-  for (ws, role), repo_markers in markers.items():
-    repos = [r for r, _ in repo_markers]
-    title = f"{ws}/{role}"
-    if _kitty_tab_exists(title):
+  stages = get_pipeline_stages(ws)
+  if role not in stages:
+    return None
+  idx = stages.index(role)
+  if idx + 1 >= len(stages):
+    return "passed"
+  next_role = stages[idx + 1]
+  next_dir = STAGES_DIR / ws / next_role
+  if not next_dir.is_dir():
+    return "failed"
+  for repo_dir in next_dir.iterdir():
+    if not repo_dir.is_dir():
       continue
-    stage_dir = STAGES_DIR / ws / role
-    prompt = build_trigger_prompt(ws, role, repo_markers)
-    try:
-      launch_in_kitty(ws, role, stage_dir, prompt)
-      # Delete markers only after successful launch.
-      for repo, _ in repo_markers:
-        marker = (
-          STAGES_DIR / ws / role / repo / ".pipeline-push"
-        )
-        marker.unlink(missing_ok=True)
-      event_type = "triggered"
-    except RuntimeError:
-      event_type = "error"
-    events.append({
-      "stage": title,
-      "repos": ", ".join(repos),
-      "event": event_type,
-    })
-  return events
+    if (repo_dir / ".pipeline-push").exists():
+      return "passed"
+  return "failed"
+
+
+def _maybe_finish_run(ws):
+  """Finish the active run if all stages are terminal.
+
+  Sends a notification on completion.
+
+  Args:
+    ws: Workspace name.
+
+  Returns:
+    Completed run dict, or None.
+  """
+  run = finish_run(ws)
+  if run is None:
+    return None
+  status = run["status"]
+  if status == "passed":
+    notify(
+      f"Pipeline passed: {ws}",
+      "All stages completed successfully.",
+    )
+  else:
+    failed = [
+      r for r, s in run["stages"].items()
+      if s["status"] == "failed"
+    ]
+    notify(
+      f"Pipeline failed: {ws}",
+      f"Failed stages: {', '.join(failed)}",
+      urgency="critical",
+    )
+  return run
 
 
 def write_sync_markers(changes, repos_config):
-  """Write upstream sync markers for workspaces affected by changes.
+  """Write upstream sync markers for affected workspaces.
 
-  For each default-branch change, finds active workspaces that
-  contain the changed repo and writes a marker line to
-  WORKSPACES_DIR/<ws>/<repo>/.upstream-sync.
+  For each default-branch change, finds active workspaces
+  that contain the changed repo and writes a marker line
+  to WORKSPACES_DIR/<ws>/<repo>/.upstream-sync.
 
   Args:
     changes: List of change dicts (from find_changes) on
-      default branches. Only "new" and "updated" are processed.
+      default branches.
     repos_config: Full repos config dict.
   """
   workspaces = list_workspaces()
@@ -493,7 +355,9 @@ def write_sync_markers(changes, repos_config):
       ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
       old = c["old_ref"] or ("0" * 40)
       new = c["new_ref"] or ("0" * 40)
-      line = f"{ts} {old} {new} refs/heads/{c['branch']}\n"
+      line = (
+        f"{ts} {old} {new} refs/heads/{c['branch']}\n"
+      )
       with open(marker, "a") as f:
         f.write(line)
 
@@ -502,8 +366,8 @@ def scan_sync_markers():
   """Walk workspaces for .upstream-sync marker files.
 
   Returns:
-    Dict mapping workspace name to list of (repo_name, lines)
-    tuples.
+    Dict mapping workspace name to list of
+    (repo_name, lines) tuples.
   """
   markers = defaultdict(list)
   if not WORKSPACES_DIR.exists():
@@ -519,7 +383,9 @@ def scan_sync_markers():
         continue
       lines = marker.read_text().strip().splitlines()
       if lines:
-        markers[ws_dir.name].append((repo_dir.name, lines))
+        markers[ws_dir.name].append(
+          (repo_dir.name, lines)
+        )
   return dict(markers)
 
 
@@ -534,18 +400,19 @@ def build_sync_prompt(ws, repo_markers):
     Prompt string.
   """
   parts = [
-    "IMPORTANT: Ignore the CLAUDE.md in this directory — it is"
-    " for the workspace agent, not you. You are a **sync"
-    " agent**. Follow only the instructions in this prompt.\n",
+    "IMPORTANT: Ignore the CLAUDE.md in this directory"
+    " — it is for the workspace agent, not you. You are"
+    " a **sync agent**. Follow only the instructions in"
+    " this prompt.\n",
     f"Upstream changes detected for workspace `{ws}`.\n",
-    "Merge the following upstream changes into your branch"
-    " and push. Do NOT modify code beyond resolving merge"
-    " conflicts. Do not update session state in CLAUDE.md.\n",
+    "Merge the following upstream changes into your"
+    " branch and push. Do NOT modify code beyond"
+    " resolving merge conflicts. Do not update session"
+    " state in CLAUDE.md.\n",
   ]
   for repo, lines in repo_markers:
     parts.append(f"## {repo}")
     ws_repo = WORKSPACES_DIR / ws / repo
-    # Extract default branch from the ref line.
     default_br = None
     first_old = None
     last_new = None
@@ -553,8 +420,8 @@ def build_sync_prompt(ws, repo_markers):
       tokens = line.split(None, 3)
       if len(tokens) < 4:
         continue
-      old_ref, new_ref, ref_path = tokens[1], tokens[2], tokens[3]
-      # refs/heads/<branch> -> branch name
+      old_ref, new_ref = tokens[1], tokens[2]
+      ref_path = tokens[3]
       default_br = ref_path.rsplit("/", 1)[-1]
       if first_old is None and old_ref != "0" * 40:
         first_old = old_ref
@@ -580,7 +447,6 @@ def build_sync_prompt(ws, repo_markers):
     else:
       parts.append(f"New upstream at {last_new[:8]}")
     parts.append("")
-  # Collect unique default branches from markers.
   default_branches = set()
   for _, lines in repo_markers:
     for line in lines:
@@ -591,9 +457,9 @@ def build_sync_prompt(ws, repo_markers):
         )
   br = next(iter(default_branches), "main")
   parts.append(
-    "Important: origin points to the first pipeline stage,"
-    " not the root repo. Fetch upstream from the root repo"
-    " path directly.\n"
+    "Important: origin points to the first pipeline"
+    " stage, not the root repo. Fetch upstream from"
+    " the root repo path directly.\n"
   )
   parts.append("Steps:")
   repo_names = [r for r, _ in repo_markers]
@@ -616,49 +482,12 @@ def build_sync_prompt(ws, repo_markers):
   return "\n".join(parts)
 
 
-def _scan_and_sync():
-  """Scan for upstream sync markers and launch sync agents.
-
-  Returns:
-    List of event dicts with keys: stage, repos, event.
-    event is one of: "triggered", "skipped", "error".
-  """
-  markers = scan_sync_markers()
-  if not markers:
-    return []
-  events = []
-  for ws, repo_markers in markers.items():
-    repos = [r for r, _ in repo_markers]
-    title = f"{ws}/sync"
-    if _kitty_tab_exists(title):
-      continue
-    prompt = build_sync_prompt(ws, repo_markers)
-    ws_dir = WORKSPACES_DIR / ws
-    try:
-      launch_in_kitty(ws, "sync", ws_dir, prompt)
-      # Delete markers only after successful launch.
-      for repo, _ in repo_markers:
-        marker = (
-          WORKSPACES_DIR / ws / repo / ".upstream-sync"
-        )
-        marker.unlink(missing_ok=True)
-      event_type = "triggered"
-    except RuntimeError:
-      event_type = "error"
-    events.append({
-      "stage": title,
-      "repos": ", ".join(repos),
-      "event": event_type,
-    })
-  return events
-
-
 def _retrigger_pr_stage(ws):
   """Write pipeline-push markers to re-trigger a PR stage.
 
-  Called after a sync tab is pruned. If a PR stage exists for
-  the workspace, writes empty .pipeline-push markers in each
-  repo so the next _scan_and_trigger() cycle picks them up.
+  Called after a sync agent completes. If a PR stage exists
+  for the workspace, writes .pipeline-push markers in each
+  repo so the next poll cycle triggers it.
 
   Args:
     ws: Workspace name.
@@ -688,81 +517,11 @@ def _retrigger_pr_stage(ws):
       "repos": ", ".join(repos),
       "event": "retrigger",
     })
-    print(f"  Re-triggered PR stage for '{ws}'.")
-  return events
-
-
-def poll_once(repos_config):
-  """Run a single poll cycle.
-
-  Returns:
-    List of event dicts from pruning, triggering, and syncing.
-  """
-  events = []
-  for title in _prune_finished_tabs():
-    events.append({
-      "stage": title, "repos": "", "event": "pruned",
-    })
-    print(f"  Pruned finished tab '{title}'.")
-  # Re-trigger PR stages for pruned sync tabs.
-  for ev in events:
-    if ev["event"] == "pruned":
-      ws, role = ev["stage"].split("/", 1)
-      if role == "sync":
-        events.extend(_retrigger_pr_stage(ws))
-  for ev in _scan_and_trigger():
-    events.append(ev)
-    print(f"  {ev['stage']}: {ev['repos']} [{ev['event']}]")
-  for ev in _scan_and_sync():
-    events.append(ev)
-    print(f"  {ev['stage']}: {ev['repos']} [{ev['event']}]")
-
-  old_refs = load_refs()
-  new_refs = snapshot_all_refs(repos_config)
-
-  if not old_refs:
-    print("First run — snapshotting current branch refs.")
-    save_refs(new_refs)
-    print(f"Stored {len(new_refs)} branch refs.")
-    log_events(events)
-    return events
-
-  changes = find_changes(old_refs, new_refs)
-  if not changes:
-    log_events(events)
-    return events
-
-  groups = group_by_branch(changes)
-  print(f"\nDetected changes in {len(groups)} branch(es):")
-  for branch, branch_changes in groups.items():
-    repos_affected = [c["repo"] for c in branch_changes]
-    print(f"  {branch}: {', '.join(repos_affected)}")
-
-  default_changes = []
-  repos = repos_config.get("repos", {})
-  for branch, branch_changes in groups.items():
-    for c in branch_changes:
-      cfg = repos.get(c["repo"], {})
-      repo_path = get_repo_path(cfg.get("path", c["repo"]))
-      default_br = cfg.get(
-        "default_branch", get_default_branch(repo_path),
-      )
-      if c["branch"] == default_br:
-        default_changes.append(c)
-
-  if default_changes:
-    write_sync_markers(default_changes, repos_config)
-
-  save_refs(new_refs)
-  log_events(events)
   return events
 
 
 def cmd_watch(args):
-  """Main watch loop."""
-  repos_config = load_repos_config()
-  interval = args.interval
-
+  """CLI entry point for pipeline_watch."""
   if args.reset:
     if REFS_FILE.exists():
       REFS_FILE.unlink()
@@ -770,27 +529,65 @@ def cmd_watch(args):
     return
 
   if args.once:
-    poll_once(repos_config)
+    repos_config = load_repos_config()
+    old_refs = load_refs()
+    new_refs = snapshot_all_refs(repos_config)
+    if not old_refs:
+      print("First run — snapshotting current branch refs.")
+      save_refs(new_refs)
+      print(f"Stored {len(new_refs)} branch refs.")
+      return
+    changes = find_changes(old_refs, new_refs)
+    if changes:
+      groups = group_by_branch(changes)
+      print(
+        f"Detected changes in {len(groups)} branch(es):"
+      )
+      for branch, branch_changes in groups.items():
+        repos_affected = [
+          c["repo"] for c in branch_changes
+        ]
+        print(f"  {branch}: {', '.join(repos_affected)}")
+      repos = repos_config.get("repos", {})
+      default_changes = []
+      for branch, branch_changes in groups.items():
+        for c in branch_changes:
+          cfg = repos.get(c["repo"], {})
+          repo_path = get_repo_path(
+            cfg.get("path", c["repo"])
+          )
+          default_br = cfg.get(
+            "default_branch",
+            get_default_branch(repo_path),
+          )
+          if c["branch"] == default_br:
+            default_changes.append(c)
+      if default_changes:
+        write_sync_markers(default_changes, repos_config)
+    else:
+      print("No changes detected.")
+    save_refs(new_refs)
     return
 
-  print(f"Watching for branch changes (interval: {interval}s)")
-  print("Press Ctrl+C to stop.\n")
-
-  try:
-    while True:
-      poll_once(repos_config)
-      time.sleep(interval)
-  except KeyboardInterrupt:
-    print("\nStopped.")
+  # Continuous mode — deprecated.
+  print(
+    "Continuous watching is deprecated. Use takt-service:\n"
+    "  systemctl --user start takt-service\n"
+    "  journalctl --user -u takt-service -f"
+  )
 
 
 def main():
+  """Parse args and run."""
   parser = argparse.ArgumentParser(
-    description="Watch for branch changes across repos.",
+    description="Pipeline watcher utility functions.",
   )
   parser.add_argument(
     "--interval", type=int, default=DEFAULT_INTERVAL,
-    help=f"Poll interval in seconds (default: {DEFAULT_INTERVAL}).",
+    help=(
+      "Poll interval in seconds "
+      f"(default: {DEFAULT_INTERVAL}). Deprecated."
+    ),
   )
   parser.add_argument(
     "--once", action="store_true",

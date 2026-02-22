@@ -91,10 +91,11 @@ remotes.
 | Tool | Purpose |
 |------|---------|
 | `bin/workspace.py` | Create/delete workspaces, manage pipeline stages |
-| `bin/pipeline_watch.py` | Poll for branch changes, trigger pipeline stages |
+| `bin/takt_service.py` | Background service for pipeline watching + agents |
+| `bin/takt.py` | Textual TUI (connects to takt-service) |
+| `bin/pipeline_watch.py` | Reusable poll functions for branch changes |
 | `bin/target.py` | Claim/release targets, VM lifecycle, SSH commands |
 | `bin/clone_vm.py` | Create/delete qcow2-backed VM clones from templates |
-| `bin/dashboard.py` | Textual TUI for monitoring |
 | `bin/push_to_github.py` | Push branches from root repos to GitHub |
 | `bin/setup_win_vm.py` | Create Windows 11 VM with unattended install |
 | `bin/provision_win_vm.py` | Provision Windows VM (VS2022, Git, Samba) |
@@ -118,11 +119,11 @@ bin/target.py run deb-02 "cmake --build ."
 sudo python3 bin/clone_vm.py create deb-01 deb-02 \
   --ip 10.101.0.100
 
-# Watch for pipeline triggers
-bin/pipeline_watch.py
+# Start the background service
+systemctl --user start takt-service
 
-# Monitor everything from the dashboard
-bin/dashboard.py
+# Launch the TUI
+bin/takt.py
 
 # Push to GitHub when ready
 bin/push_to_github.py feature-auth
@@ -160,8 +161,8 @@ sudo python3 bin/clone_vm.py delete deb-02
 
 ## Dashboard
 
-The TUI dashboard (`bin/dashboard.py`) monitors the system
-in real time with auto-refreshing panels:
+The TUI (`bin/takt.py`) connects to takt-service and
+monitors the system in real time:
 
 ```
 +------------------------------------------------------------+
@@ -199,9 +200,8 @@ tests/                Unit tests
 ## Requirements
 
 - Python 3.11+
-- PyYAML
+- PyYAML, pyzmq, textual, claude-code-sdk
 - Git
 - libvirt + QEMU (for VM management)
 - virtinst, libguestfs-tools, qemu-utils (for VM cloning)
-- [Textual](https://textual.textualize.io/) (for dashboard)
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code)

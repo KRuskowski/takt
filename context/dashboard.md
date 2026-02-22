@@ -2,7 +2,7 @@
 
 ## Overview
 
-`bin/dashboard.py` launches a Textual TUI (`TaktApp`)
+`bin/takt.py` launches a Textual TUI (`TaktApp`)
 with tabbed layout: Dashboard, Trigger, Settings, plus dynamic
 agent tabs for inline Claude agents.
 
@@ -58,7 +58,7 @@ cost, turns. Tab title gets icon on completion (✓/✗).
 ## File Structure
 
 ```
-bin/dashboard.py              Entry point
+bin/takt.py              Entry point
 tui/
   app.py                      TaktApp — TabbedContent
   dashboard.tcss              Global CSS
