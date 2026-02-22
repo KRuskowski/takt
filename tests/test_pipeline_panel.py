@@ -2,7 +2,6 @@
 
 import sys
 import unittest
-from collections import deque
 from pathlib import Path
 from unittest import mock
 
@@ -22,36 +21,15 @@ for mod_name in (
 
 # Provide a real base class for Vertical so super().__init__
 # works.
-_vertical_cls = type("Vertical", (), {"__init__": lambda s, **kw: None})
+_vertical_cls = type(
+  "Vertical", (), {"__init__": lambda s, **kw: None},
+)
 sys.modules["textual.containers"].Vertical = _vertical_cls
 
 # Provide a passthrough @work decorator.
 sys.modules["textual"].work = lambda **kw: (lambda fn: fn)
 
 from tui.widgets.pipeline import MAX_EVENTS, PipelinePanel
-
-
-class TestPipelinePanelToggle(unittest.TestCase):
-  """Tests for toggle_watching behavior."""
-
-  def test_starts_paused(self):
-    """Panel starts with watching disabled."""
-    panel = PipelinePanel()
-    self.assertFalse(panel.watching)
-
-  def test_toggle_enables(self):
-    """First toggle enables watching."""
-    panel = PipelinePanel()
-    panel._watching = False
-    panel._watching = not panel._watching
-    self.assertTrue(panel._watching)
-
-  def test_toggle_disables(self):
-    """Second toggle disables watching."""
-    panel = PipelinePanel()
-    panel._watching = True
-    panel._watching = not panel._watching
-    self.assertFalse(panel._watching)
 
 
 class TestPipelinePanelEvents(unittest.TestCase):
@@ -104,153 +82,160 @@ class TestPipelinePanelEvents(unittest.TestCase):
 
 
 class TestPipelinePanelRefresh(unittest.TestCase):
-  """Tests for refresh_data scan/trigger integration."""
+  """Tests for refresh_data with mocked scan functions."""
 
-  @mock.patch("tui.widgets.pipeline.launch_in_kitty")
-  @mock.patch("tui.widgets.pipeline.build_trigger_prompt",
-              return_value="prompt")
-  @mock.patch("tui.widgets.pipeline.scan_markers")
-  def test_skips_when_paused(self, mock_scan, mock_build,
-                             mock_launch):
-    """Does not scan when watching is off."""
+  @mock.patch("tui.widgets.pipeline._scan_and_sync",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._scan_and_trigger",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._prune_finished_tabs",
+              return_value=[])
+  def test_noop_no_events(self, mock_prune, mock_trigger,
+                          mock_sync):
+    """No events logged when nothing happens."""
     panel = PipelinePanel()
-    panel._watching = False
     panel.refresh_data()
-    mock_scan.assert_not_called()
-
-  @mock.patch("tui.widgets.pipeline.launch_in_kitty")
-  @mock.patch("tui.widgets.pipeline.build_trigger_prompt",
-              return_value="prompt")
-  @mock.patch("tui.widgets.pipeline.scan_markers",
-              return_value={})
-  def test_noop_no_markers(self, mock_scan, mock_build,
-                           mock_launch):
-    """No events logged when no markers found."""
-    panel = PipelinePanel()
-    panel._watching = True
-    panel.refresh_data()
-    mock_scan.assert_called_once()
-    mock_launch.assert_not_called()
+    mock_prune.assert_called_once()
+    mock_trigger.assert_called_once()
+    mock_sync.assert_called_once()
     self.assertEqual(len(panel._events), 0)
 
-  @mock.patch("tui.widgets.pipeline.launch_in_kitty")
-  @mock.patch("tui.widgets.pipeline.build_trigger_prompt",
-              return_value="prompt")
-  @mock.patch("tui.widgets.pipeline.scan_markers")
-  def test_trigger_logs_event(self, mock_scan, mock_build,
-                              mock_launch):
-    """Successful trigger logs a 'triggered' event."""
-    mock_scan.return_value = {
-      ("ws", "test"): [("myrepo", ["line1"])],
-    }
+  @mock.patch("tui.widgets.pipeline._scan_and_sync",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._scan_and_trigger",
+              return_value=[{
+                "stage": "ws/test",
+                "repos": "myrepo",
+                "event": "triggered",
+              }])
+  @mock.patch("tui.widgets.pipeline._prune_finished_tabs",
+              return_value=[])
+  def test_trigger_logs_event(self, mock_prune, mock_trigger,
+                              mock_sync):
+    """Trigger events are logged."""
     panel = PipelinePanel()
-    panel._watching = True
     panel.app = mock.Mock()
-    with mock.patch(
-      "tui.widgets.pipeline.STAGES_DIR",
-      Path("/tmp/fake-stages"),
-    ):
-      panel.refresh_data()
+    panel.refresh_data()
     self.assertEqual(len(panel._events), 1)
-    self.assertEqual(panel._events[0]["event"], "triggered")
-    self.assertEqual(panel._events[0]["stage"], "ws/test")
-    self.assertEqual(panel._events[0]["repos"], "myrepo")
+    self.assertEqual(
+      panel._events[0]["event"], "triggered",
+    )
+    self.assertEqual(
+      panel._events[0]["stage"], "ws/test",
+    )
 
-  @mock.patch("tui.widgets.pipeline.launch_in_kitty",
-              side_effect=Exception("kitty failed"))
-  @mock.patch("tui.widgets.pipeline.build_trigger_prompt",
-              return_value="prompt")
-  @mock.patch("tui.widgets.pipeline.scan_markers")
-  def test_error_event_on_launch_failure(
-      self, mock_scan, mock_build, mock_launch):
-    """Failed kitty launch logs an 'error' event."""
-    mock_scan.return_value = {
-      ("ws", "test"): [("myrepo", ["line1"])],
-    }
+  @mock.patch("tui.widgets.pipeline._scan_and_sync",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._scan_and_trigger",
+              return_value=[
+                {"stage": "ws/test", "repos": "a",
+                 "event": "triggered"},
+                {"stage": "ws/review", "repos": "b",
+                 "event": "triggered"},
+              ])
+  @mock.patch("tui.widgets.pipeline._prune_finished_tabs",
+              return_value=[])
+  def test_multiple_events(self, mock_prune, mock_trigger,
+                           mock_sync):
+    """Multiple trigger events produce multiple log entries."""
     panel = PipelinePanel()
-    panel._watching = True
     panel.app = mock.Mock()
-    with mock.patch(
-      "tui.widgets.pipeline.STAGES_DIR",
-      Path("/tmp/fake-stages"),
-    ):
-      panel.refresh_data()
-    self.assertEqual(len(panel._events), 1)
-    self.assertEqual(panel._events[0]["event"], "error")
-
-  @mock.patch("tui.widgets.pipeline.launch_in_kitty")
-  @mock.patch("tui.widgets.pipeline.build_trigger_prompt",
-              return_value="prompt")
-  @mock.patch("tui.widgets.pipeline.scan_markers")
-  def test_multiple_stages_multiple_events(
-      self, mock_scan, mock_build, mock_launch):
-    """Multiple marker groups produce multiple events."""
-    mock_scan.return_value = {
-      ("ws", "test"): [("repo-a", ["line1"])],
-      ("ws", "review"): [("repo-b", ["line2"])],
-    }
-    panel = PipelinePanel()
-    panel._watching = True
-    panel.app = mock.Mock()
-    with mock.patch(
-      "tui.widgets.pipeline.STAGES_DIR",
-      Path("/tmp/fake-stages"),
-    ):
-      panel.refresh_data()
+    panel.refresh_data()
     self.assertEqual(len(panel._events), 2)
     stages = {ev["stage"] for ev in panel._events}
     self.assertEqual(stages, {"ws/test", "ws/review"})
 
-  @mock.patch("tui.widgets.pipeline.launch_in_kitty")
-  @mock.patch("tui.widgets.pipeline.build_trigger_prompt",
-              return_value="prompt")
-  @mock.patch("tui.widgets.pipeline.scan_markers")
-  def test_deletes_markers(self, mock_scan, mock_build,
-                           mock_launch):
-    """Marker files are deleted after processing."""
-    import shutil
-    import tempfile
-    tmpdir = tempfile.mkdtemp()
-    try:
-      stages = Path(tmpdir) / "stages"
-      repo = stages / "ws" / "test" / "myrepo"
-      repo.mkdir(parents=True)
-      marker = repo / ".pipeline-push"
-      marker.write_text("line1\n")
-      mock_scan.return_value = {
-        ("ws", "test"): [("myrepo", ["line1"])],
-      }
-      with mock.patch(
-        "tui.widgets.pipeline.STAGES_DIR", stages,
-      ):
-        panel = PipelinePanel()
-        panel._watching = True
-        panel.app = mock.Mock()
-        panel.refresh_data()
-      self.assertFalse(marker.exists())
-    finally:
-      shutil.rmtree(tmpdir)
-
-  @mock.patch("tui.widgets.pipeline.launch_in_kitty")
-  @mock.patch("tui.widgets.pipeline.build_trigger_prompt",
-              return_value="prompt")
-  @mock.patch("tui.widgets.pipeline.scan_markers")
-  def test_build_prompt_called_with_args(
-      self, mock_scan, mock_build, mock_launch):
-    """build_trigger_prompt receives correct arguments."""
-    mock_scan.return_value = {
-      ("ws", "test"): [("myrepo", ["line1"])],
-    }
+  @mock.patch("tui.widgets.pipeline._scan_and_sync",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._scan_and_trigger",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._prune_finished_tabs",
+              return_value=["ws/test"])
+  def test_prune_logs_event(self, mock_prune, mock_trigger,
+                            mock_sync):
+    """Pruned tabs are logged."""
     panel = PipelinePanel()
-    panel._watching = True
     panel.app = mock.Mock()
-    with mock.patch(
-      "tui.widgets.pipeline.STAGES_DIR", Path("/tmp/fake"),
-    ):
-      panel.refresh_data()
-    mock_build.assert_called_once_with(
-      "ws", "test", [("myrepo", ["line1"])],
+    panel.refresh_data()
+    self.assertEqual(len(panel._events), 1)
+    self.assertEqual(panel._events[0]["event"], "pruned")
+    self.assertEqual(panel._events[0]["stage"], "ws/test")
+
+  @mock.patch("tui.widgets.pipeline._scan_and_sync",
+              return_value=[{
+                "stage": "ws/sync",
+                "repos": "myrepo",
+                "event": "triggered",
+              }])
+  @mock.patch("tui.widgets.pipeline._scan_and_trigger",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._prune_finished_tabs",
+              return_value=[])
+  def test_sync_logs_event(self, mock_prune, mock_trigger,
+                           mock_sync):
+    """Sync events are logged."""
+    panel = PipelinePanel()
+    panel.app = mock.Mock()
+    panel.refresh_data()
+    self.assertEqual(len(panel._events), 1)
+    self.assertEqual(
+      panel._events[0]["event"], "triggered",
     )
+    self.assertEqual(
+      panel._events[0]["stage"], "ws/sync",
+    )
+
+
+class TestPipelinePanelErrors(unittest.TestCase):
+  """Tests for error visibility in refresh_data."""
+
+  @mock.patch("tui.widgets.pipeline._scan_and_sync",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._scan_and_trigger",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._prune_finished_tabs",
+              side_effect=RuntimeError("socket gone"))
+  def test_prune_error_logged(self, mock_prune, mock_trigger,
+                              mock_sync):
+    """Prune exception becomes a system error event."""
+    panel = PipelinePanel()
+    panel.app = mock.Mock()
+    panel.refresh_data()
+    self.assertEqual(len(panel._events), 1)
+    self.assertEqual(panel._events[0]["stage"], "system")
+    self.assertIn("socket gone", panel._events[0]["event"])
+
+  @mock.patch("tui.widgets.pipeline._scan_and_sync",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._scan_and_trigger",
+              side_effect=RuntimeError("trigger fail"))
+  @mock.patch("tui.widgets.pipeline._prune_finished_tabs",
+              return_value=[])
+  def test_trigger_error_logged(self, mock_prune,
+                                mock_trigger, mock_sync):
+    """Trigger exception becomes a system error event."""
+    panel = PipelinePanel()
+    panel.app = mock.Mock()
+    panel.refresh_data()
+    self.assertEqual(len(panel._events), 1)
+    self.assertEqual(panel._events[0]["stage"], "system")
+    self.assertIn("trigger fail", panel._events[0]["event"])
+
+  @mock.patch("tui.widgets.pipeline._scan_and_sync",
+              side_effect=RuntimeError("sync fail"))
+  @mock.patch("tui.widgets.pipeline._scan_and_trigger",
+              return_value=[])
+  @mock.patch("tui.widgets.pipeline._prune_finished_tabs",
+              return_value=[])
+  def test_sync_error_logged(self, mock_prune, mock_trigger,
+                             mock_sync):
+    """Sync exception becomes a system error event."""
+    panel = PipelinePanel()
+    panel.app = mock.Mock()
+    panel.refresh_data()
+    self.assertEqual(len(panel._events), 1)
+    self.assertEqual(panel._events[0]["stage"], "system")
+    self.assertIn("sync fail", panel._events[0]["event"])
 
 
 if __name__ == "__main__":

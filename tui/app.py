@@ -23,7 +23,6 @@ class DashboardApp(App):
     Binding("n", "new_workspace", "New WS"),
     Binding("c", "claim_target", "Claim"),
     Binding("x", "release_target", "Release"),
-    Binding("w", "toggle_watcher", "Watch"),
   ]
 
   def compose(self) -> ComposeResult:
@@ -77,11 +76,6 @@ class DashboardApp(App):
   def action_refresh(self) -> None:
     """Manual refresh all panels."""
     self._refresh_all()
-
-  def action_toggle_watcher(self) -> None:
-    """Toggle pipeline watcher on/off."""
-    panel = self.query_one("#pipeline-panel", PipelinePanel)
-    panel.toggle_watching()
 
   def action_new_workspace(self) -> None:
     """Open create workspace modal."""

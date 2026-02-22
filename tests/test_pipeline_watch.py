@@ -15,13 +15,18 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 from bin.pipeline_watch import (
+  MAX_EVENTS,
   _kitty_tab_exists,
   _prune_finished_tabs,
+  _retrigger_pr_stage,
   _scan_and_sync,
   _scan_and_trigger,
   build_sync_prompt,
   build_trigger_prompt,
   launch_in_kitty,
+  load_events,
+  log_events,
+  poll_once,
   scan_markers,
   scan_sync_markers,
   write_sync_markers,
@@ -1006,6 +1011,305 @@ class TestPruneFinishedTabs(unittest.TestCase):
     self.assertIn("close-tab", close_call)
     self.assertIn("title:ws/sync", close_call)
     self.assertFalse((ws / ".agent-done").exists())
+
+
+class TestMarkersPeristOnLaunchError(unittest.TestCase):
+  """Tests that markers survive when launch_in_kitty fails."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.stages_dir = Path(self.tmpdir) / "stages"
+    self.stages_dir.mkdir()
+    self.ws_dir = Path(self.tmpdir) / "workspaces"
+    self.ws_dir.mkdir()
+    self.patch_stages = mock.patch(
+      "bin.pipeline_watch.STAGES_DIR", self.stages_dir,
+    )
+    self.patch_ws = mock.patch(
+      "bin.pipeline_watch.WORKSPACES_DIR", self.ws_dir,
+    )
+    self.patch_stages.start()
+    self.patch_ws.start()
+
+  def tearDown(self):
+    self.patch_stages.stop()
+    self.patch_ws.stop()
+    shutil.rmtree(self.tmpdir)
+
+  @mock.patch(
+    "bin.pipeline_watch.launch_in_kitty",
+    side_effect=RuntimeError("no socket"),
+  )
+  def test_trigger_markers_persist(self, mock_launch):
+    """Pipeline-push markers survive when launch fails."""
+    repo = self.stages_dir / "ws" / "test" / "myrepo"
+    repo.mkdir(parents=True)
+    marker = repo / ".pipeline-push"
+    marker.write_text(
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/ws\n"
+    )
+    events = _scan_and_trigger()
+    self.assertTrue(marker.exists())
+    self.assertEqual(len(events), 1)
+    self.assertEqual(events[0]["event"], "error")
+
+  @mock.patch(
+    "bin.pipeline_watch.launch_in_kitty",
+    side_effect=RuntimeError("no socket"),
+  )
+  def test_sync_markers_persist(self, mock_launch):
+    """Upstream-sync markers survive when launch fails."""
+    repo = self.ws_dir / "ws" / "myrepo"
+    repo.mkdir(parents=True)
+    marker = repo / ".upstream-sync"
+    marker.write_text(
+      "2026-02-20T10:00:00+00:00 aaa bbb"
+      " refs/heads/master\n"
+    )
+    events = _scan_and_sync()
+    self.assertTrue(marker.exists())
+    self.assertEqual(len(events), 1)
+    self.assertEqual(events[0]["event"], "error")
+
+
+class TestPollOnce(unittest.TestCase):
+  """Tests for poll_once()."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.state_dir = Path(self.tmpdir) / "state"
+    self.state_dir.mkdir()
+    self.patch_state = mock.patch(
+      "bin.pipeline_watch.STATE_DIR", self.state_dir,
+    )
+    self.patch_refs = mock.patch(
+      "bin.pipeline_watch.REFS_FILE",
+      self.state_dir / "branch_refs.json",
+    )
+    self.patch_events = mock.patch(
+      "bin.pipeline_watch.EVENTS_FILE",
+      self.state_dir / "events.json",
+    )
+    self.patch_state.start()
+    self.patch_refs.start()
+    self.patch_events.start()
+
+  def tearDown(self):
+    self.patch_state.stop()
+    self.patch_refs.stop()
+    self.patch_events.stop()
+    shutil.rmtree(self.tmpdir)
+
+  @mock.patch("bin.pipeline_watch._scan_and_sync",
+              return_value=[])
+  @mock.patch("bin.pipeline_watch._scan_and_trigger",
+              return_value=[])
+  @mock.patch("bin.pipeline_watch._prune_finished_tabs",
+              return_value=[])
+  @mock.patch("bin.pipeline_watch.snapshot_all_refs",
+              return_value={"r:main": "abc"})
+  def test_no_input_call(self, mock_snap, mock_prune,
+                         mock_trigger, mock_sync):
+    """poll_once completes without blocking on input()."""
+    result = poll_once({"repos": {}})
+    self.assertIsInstance(result, list)
+
+  @mock.patch("bin.pipeline_watch._scan_and_sync",
+              return_value=[])
+  @mock.patch("bin.pipeline_watch._scan_and_trigger",
+              return_value=[])
+  @mock.patch("bin.pipeline_watch._prune_finished_tabs",
+              return_value=[])
+  @mock.patch("bin.pipeline_watch.snapshot_all_refs")
+  @mock.patch("bin.pipeline_watch.load_refs")
+  @mock.patch("bin.pipeline_watch.write_sync_markers")
+  @mock.patch("bin.pipeline_watch.get_default_branch",
+              return_value="main")
+  def test_writes_sync_markers_for_default_branch(
+    self, mock_default, mock_write, mock_load, mock_snap,
+    mock_prune, mock_trigger, mock_sync,
+  ):
+    """Default-branch changes trigger write_sync_markers."""
+    mock_load.return_value = {"repo:main": "old"}
+    mock_snap.return_value = {"repo:main": "new"}
+    repos_config = {
+      "repos": {
+        "repo": {"path": "repo"},
+      },
+    }
+    poll_once(repos_config)
+    mock_write.assert_called_once()
+    changes = mock_write.call_args[0][0]
+    self.assertEqual(len(changes), 1)
+    self.assertEqual(changes[0]["branch"], "main")
+
+  @mock.patch("bin.pipeline_watch._scan_and_sync",
+              return_value=[])
+  @mock.patch("bin.pipeline_watch._scan_and_trigger",
+              return_value=[{
+                "stage": "ws/test", "repos": "r",
+                "event": "triggered",
+              }])
+  @mock.patch("bin.pipeline_watch._prune_finished_tabs",
+              return_value=[])
+  @mock.patch("bin.pipeline_watch.snapshot_all_refs",
+              return_value={"r:main": "abc"})
+  def test_calls_log_events(self, mock_snap, mock_prune,
+                            mock_trigger, mock_sync):
+    """poll_once writes events to the persistent log."""
+    events = poll_once({"repos": {}})
+    self.assertTrue(len(events) > 0)
+    events_file = self.state_dir / "events.json"
+    self.assertTrue(events_file.exists())
+
+
+class TestEventLog(unittest.TestCase):
+  """Tests for log_events() and load_events()."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.state_dir = Path(self.tmpdir) / "state"
+    self.state_dir.mkdir()
+    self.events_file = self.state_dir / "events.json"
+    self.patch_state = mock.patch(
+      "bin.pipeline_watch.STATE_DIR", self.state_dir,
+    )
+    self.patch_events = mock.patch(
+      "bin.pipeline_watch.EVENTS_FILE", self.events_file,
+    )
+    self.patch_state.start()
+    self.patch_events.start()
+
+  def tearDown(self):
+    self.patch_state.stop()
+    self.patch_events.stop()
+    shutil.rmtree(self.tmpdir)
+
+  def test_log_and_load(self):
+    """Events round-trip through log/load."""
+    events = [
+      {"stage": "ws/test", "repos": "r",
+       "event": "triggered"},
+    ]
+    log_events(events)
+    loaded = load_events()
+    self.assertEqual(len(loaded), 1)
+    self.assertEqual(loaded[0]["stage"], "ws/test")
+
+  def test_cap_at_max(self):
+    """Event log is capped at MAX_EVENTS."""
+    events = [
+      {"stage": f"ws/s{i}", "repos": "r",
+       "event": "triggered", "time": "00:00:00"}
+      for i in range(MAX_EVENTS + 50)
+    ]
+    log_events(events)
+    loaded = load_events()
+    self.assertEqual(len(loaded), MAX_EVENTS)
+
+  def test_load_empty_file(self):
+    """Returns empty list when file doesn't exist."""
+    loaded = load_events()
+    self.assertEqual(loaded, [])
+
+  def test_corrupt_json(self):
+    """Returns empty list on corrupt JSON."""
+    self.events_file.write_text("not valid json{{{")
+    loaded = load_events()
+    self.assertEqual(loaded, [])
+
+  def test_non_list_json(self):
+    """Returns empty list when JSON is not a list."""
+    self.events_file.write_text('{"key": "value"}')
+    loaded = load_events()
+    self.assertEqual(loaded, [])
+
+  def test_appends_to_existing(self):
+    """New events are prepended to existing log."""
+    log_events([
+      {"stage": "ws/a", "repos": "r",
+       "event": "triggered"},
+    ])
+    log_events([
+      {"stage": "ws/b", "repos": "r",
+       "event": "triggered"},
+    ])
+    loaded = load_events()
+    self.assertEqual(len(loaded), 2)
+    # Newest first.
+    self.assertEqual(loaded[0]["stage"], "ws/b")
+    self.assertEqual(loaded[1]["stage"], "ws/a")
+
+  def test_noop_empty_events(self):
+    """No file written when events list is empty."""
+    log_events([])
+    self.assertFalse(self.events_file.exists())
+
+  def test_adds_timestamp(self):
+    """Events without time get a timestamp."""
+    log_events([
+      {"stage": "ws/a", "repos": "r",
+       "event": "triggered"},
+    ])
+    loaded = load_events()
+    self.assertIn("time", loaded[0])
+
+
+class TestRetriggerPrStage(unittest.TestCase):
+  """Tests for _retrigger_pr_stage()."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.stages_dir = Path(self.tmpdir) / "stages"
+    self.stages_dir.mkdir()
+    self.patch = mock.patch(
+      "bin.pipeline_watch.STAGES_DIR", self.stages_dir,
+    )
+    self.patch.start()
+
+  def tearDown(self):
+    self.patch.stop()
+    shutil.rmtree(self.tmpdir)
+
+  def test_writes_markers_when_pr_stage_exists(self):
+    """Writes .pipeline-push in each PR stage repo."""
+    pr_repo = self.stages_dir / "ws" / "pr" / "myrepo"
+    pr_repo.mkdir(parents=True)
+    events = _retrigger_pr_stage("ws")
+    self.assertEqual(len(events), 1)
+    self.assertEqual(events[0]["stage"], "ws/pr")
+    self.assertEqual(events[0]["event"], "retrigger")
+    marker = pr_repo / ".pipeline-push"
+    self.assertTrue(marker.exists())
+    content = marker.read_text()
+    self.assertIn("refs/heads/ws", content)
+
+  def test_noop_when_no_pr_stage(self):
+    """Returns empty when PR stage doesn't exist."""
+    # Only a test stage exists.
+    (self.stages_dir / "ws" / "test" / "myrepo").mkdir(
+      parents=True,
+    )
+    events = _retrigger_pr_stage("ws")
+    self.assertEqual(events, [])
+
+  def test_multiple_repos(self):
+    """Writes markers for all repos in PR stage."""
+    for name in ("repo-a", "repo-b"):
+      (self.stages_dir / "ws" / "pr" / name).mkdir(
+        parents=True,
+      )
+    events = _retrigger_pr_stage("ws")
+    self.assertEqual(len(events), 1)
+    self.assertIn("repo-a", events[0]["repos"])
+    self.assertIn("repo-b", events[0]["repos"])
+    for name in ("repo-a", "repo-b"):
+      marker = (
+        self.stages_dir / "ws" / "pr" / name
+        / ".pipeline-push"
+      )
+      self.assertTrue(marker.exists())
 
 
 if __name__ == "__main__":
