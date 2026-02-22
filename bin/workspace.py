@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Workspace management CLI.
 
-Create, list, delete, and inspect workspaces for multi-repo
-agent pipelines.
+Create, list, delete, and inspect workspaces. Define
+pipelines in SQLite and view run history.
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -13,22 +14,20 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
+from lib import db
+from lib.config import parse_pipeline_roles
 from lib.git_utils import GitError
+from lib.pipeline import SCRIPT_REGISTRY
 from lib.workspace_ops import (
-  create_stage,
   create_workspace,
-  delete_stage,
   delete_workspace,
-  get_pipeline,
   get_workspace_status,
-  list_stages,
   list_workspaces,
-  refresh_stage,
 )
 
 
 def cmd_create(args):
-  """Create a new workspace with local clones of specified repos."""
+  """Create a new workspace with local clones."""
   try:
     ws_dir = create_workspace(args.name, args.repos)
   except FileExistsError as e:
@@ -40,7 +39,6 @@ def cmd_create(args):
   except GitError as e:
     print(f"Error cloning: {e}")
     sys.exit(1)
-
   print(f"Workspace created: {ws_dir}")
   print(f"Branch: {args.name}")
 
@@ -51,10 +49,8 @@ def cmd_list(args):
   if not workspaces:
     print("No workspaces found.")
     return
-
   print(f"{'Workspace':<25} {'Repos':<40} {'Branch'}")
   print("-" * 80)
-
   for ws in workspaces:
     repos_str = (
       ", ".join(ws["repos"]) if ws["repos"] else "(empty)"
@@ -66,21 +62,18 @@ def cmd_list(args):
 
 def cmd_delete(args):
   """Delete a workspace."""
+  label = f"workspace '{args.name}'"
   if not args.force:
-    resp = input(
-      f"Delete workspace '{args.name}'? [y/N] "
-    )
+    resp = input(f"Delete {label}? [y/N] ")
     if resp.lower() != "y":
       print("Cancelled.")
       return
-
   try:
     delete_workspace(args.name)
   except FileNotFoundError as e:
     print(f"Error: {e}")
     sys.exit(1)
-
-  print(f"Deleted workspace '{args.name}'.")
+  print(f"Deleted {label}.")
 
 
 def cmd_status(args):
@@ -90,133 +83,90 @@ def cmd_status(args):
   except FileNotFoundError as e:
     print(f"Error: {e}")
     sys.exit(1)
-
   if not statuses:
     print(f"Workspace '{args.name}' has no repos.")
     return
-
   print(f"Workspace: {args.name}")
   print(f"{'Repo':<30} {'Branch':<25} {'Status'}")
   print("-" * 80)
-
   for s in statuses:
     print(
       f"{s['repo']:<30} {s['branch']:<25} {s['status']}"
     )
 
 
-def cmd_stage_add(args):
-  """Add a stage to a workspace's pipeline."""
-  try:
-    stage_dir = create_stage(args.name, args.role)
-  except (FileNotFoundError, FileExistsError,
-          ValueError) as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-  except GitError as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-
-  print(f"Stage '{args.role}' created: {stage_dir}")
-  pipeline = get_pipeline(args.name)
-  print(f"Pipeline: {pipeline['chain']}")
-
-
-def cmd_stage_remove(args):
-  """Remove a stage from a workspace's pipeline."""
-  if not args.force:
-    resp = input(
-      f"Remove stage '{args.role}' from "
-      f"'{args.name}'? [y/N] "
-    )
-    if resp.lower() != "y":
-      print("Cancelled.")
-      return
-
-  try:
-    delete_stage(args.name, args.role)
-  except FileNotFoundError as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-
-  print(
-    f"Removed stage '{args.role}' from '{args.name}'."
-  )
-
-
-def cmd_stage_list(args):
-  """List stages."""
-  workspace = getattr(args, "workspace", None)
-  stages = list_stages(workspace)
-  if not stages:
-    if workspace:
-      print(f"No stages for workspace '{workspace}'.")
+def cmd_pipeline_set(args):
+  """Define pipeline steps for a workspace."""
+  db.migrate()
+  roles = parse_pipeline_roles()
+  steps = []
+  for name in args.steps:
+    if name in SCRIPT_REGISTRY:
+      steps.append({
+        "name": name,
+        "step_type": "script",
+      })
+    elif name in roles:
+      steps.append({
+        "name": name,
+        "step_type": "agent",
+      })
     else:
-      print("No stages found.")
+      print(
+        f"Error: unknown step '{name}'. "
+        f"Known roles: {', '.join(sorted(roles))}. "
+        f"Known scripts: "
+        f"{', '.join(sorted(SCRIPT_REGISTRY))}."
+      )
+      sys.exit(1)
+  db.define_pipeline(args.name, steps)
+  print(f"Pipeline set for '{args.name}':")
+  for i, s in enumerate(steps):
+    print(f"  {i}: {s['name']} ({s['step_type']})")
+
+
+def cmd_pipeline_show(args):
+  """Show configured pipeline steps."""
+  db.migrate()
+  steps = db.get_pipeline(args.name)
+  if not steps:
+    print(f"No pipeline defined for '{args.name}'.")
     return
-
-  print(
-    f"{'Workspace':<20} {'Role':<15} "
-    f"{'Repos':<30} {'Branch'}"
-  )
-  print("-" * 80)
-
-  for s in stages:
-    repos_str = (
-      ", ".join(s["repos"]) if s["repos"] else "(empty)"
-    )
+  print(f"Pipeline for '{args.name}':")
+  print(f"{'Seq':<5} {'Name':<20} {'Type':<10} {'Timeout'}")
+  print("-" * 50)
+  for s in steps:
     print(
-      f"{s['workspace']:<20} {s['role']:<15} "
-      f"{repos_str:<30} {s['branch']}"
+      f"{s['seq']:<5} {s['name']:<20} "
+      f"{s['step_type']:<10} {s['timeout_secs']}s"
     )
 
 
-def cmd_pipeline(args):
-  """Show the full pipeline chain for a workspace."""
-  try:
-    pipeline = get_pipeline(args.name)
-  except FileNotFoundError as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-
-  print(f"Workspace: {args.name}")
-  print(f"Chain: {pipeline['chain']}")
-  if pipeline["stages"]:
-    print(f"Stages: {', '.join(pipeline['stages'])}")
-  else:
-    print("Stages: (none)")
-
-
-def cmd_stage_refresh(args):
-  """Re-generate CLAUDE.md and install hooks for existing stages."""
-  if not args.all and (not args.name or not args.role):
-    print("Error: provide <name> <role> or --all.")
-    sys.exit(1)
-  if args.all:
-    stages = list_stages()
-    if not stages:
-      print("No stages found.")
-      return
-    for s in stages:
-      try:
-        refresh_stage(s["workspace"], s["role"])
-        print(
-          f"Refreshed: {s['workspace']}/{s['role']}"
-        )
-      except (FileNotFoundError, ValueError) as e:
-        print(f"Skipped {s['workspace']}/{s['role']}: {e}")
+def cmd_runs(args):
+  """Show pipeline run history from SQLite."""
+  db.migrate()
+  runs = db.list_runs(args.name, limit=args.limit)
+  if not runs:
+    print(f"No pipeline runs for '{args.name}'.")
     return
-
-  try:
-    stage_dir = refresh_stage(args.name, args.role)
-  except (FileNotFoundError, ValueError) as e:
-    print(f"Error: {e}")
-    sys.exit(1)
-
-  print(f"Refreshed stage '{args.role}': {stage_dir}")
+  print(f"Pipeline runs for '{args.name}':")
+  print(
+    f"{'ID':<6} {'Created':<26} {'Status':<10} "
+    f"{'Trigger':<8} Repos"
+  )
+  print("-" * 70)
+  for run in runs:
+    repos = json.loads(run.get("repos_json", "[]"))
+    repos_str = ", ".join(repos) if repos else "-"
+    print(
+      f"{run['id']:<6} {run['created_at']:<26} "
+      f"{run['status']:<10} {run['trigger']:<8} "
+      f"{repos_str}"
+    )
 
 
 def main():
+  """Parse args and run."""
   parser = argparse.ArgumentParser(
     description=(
       "Workspace management for multi-repo pipelines."
@@ -256,68 +206,42 @@ def main():
   )
   p_status.add_argument("name", help="Workspace name.")
 
-  # stage-add
-  p_stage_add = sub.add_parser(
-    "stage-add",
-    help="Add a stage to a workspace's pipeline.",
+  # pipeline-set
+  p_pset = sub.add_parser(
+    "pipeline-set",
+    help="Define pipeline steps for a workspace.",
   )
-  p_stage_add.add_argument(
+  p_pset.add_argument(
     "name", help="Workspace name.",
   )
-  p_stage_add.add_argument(
-    "role", help="Role slug (e.g. test, review, deploy_qa).",
+  p_pset.add_argument(
+    "steps", nargs="+",
+    help=(
+      "Step names: role slugs (test, review) "
+      "or scripts (push_to_github, create_pr)."
+    ),
   )
 
-  # stage-remove
-  p_stage_remove = sub.add_parser(
-    "stage-remove",
-    help="Remove a stage from a workspace's pipeline.",
+  # pipeline-show
+  p_pshow = sub.add_parser(
+    "pipeline-show",
+    help="Show configured pipeline steps.",
   )
-  p_stage_remove.add_argument(
+  p_pshow.add_argument(
     "name", help="Workspace name.",
   )
-  p_stage_remove.add_argument(
-    "role", help="Role slug to remove.",
-  )
-  p_stage_remove.add_argument(
-    "-f", "--force", action="store_true",
-    help="Skip confirmation prompt.",
-  )
 
-  # stage-list
-  p_stage_list = sub.add_parser(
-    "stage-list", help="List all stages.",
+  # runs
+  p_runs = sub.add_parser(
+    "runs",
+    help="Show pipeline run history.",
   )
-  p_stage_list.add_argument(
-    "workspace", nargs="?", default=None,
-    help="Optional workspace name to filter by.",
-  )
-
-  # stage-refresh
-  p_stage_refresh = sub.add_parser(
-    "stage-refresh",
-    help="Re-generate CLAUDE.md and install hooks for stages.",
-  )
-  p_stage_refresh.add_argument(
-    "name", nargs="?", default=None,
-    help="Workspace name.",
-  )
-  p_stage_refresh.add_argument(
-    "role", nargs="?", default=None,
-    help="Role slug to refresh.",
-  )
-  p_stage_refresh.add_argument(
-    "--all", action="store_true",
-    help="Refresh all stages across all workspaces.",
-  )
-
-  # pipeline
-  p_pipeline = sub.add_parser(
-    "pipeline",
-    help="Show the full pipeline chain for a workspace.",
-  )
-  p_pipeline.add_argument(
+  p_runs.add_argument(
     "name", help="Workspace name.",
+  )
+  p_runs.add_argument(
+    "-n", "--limit", type=int, default=20,
+    help="Max runs to show (default: 20).",
   )
 
   args = parser.parse_args()
@@ -330,11 +254,9 @@ def main():
     "list": cmd_list,
     "delete": cmd_delete,
     "status": cmd_status,
-    "stage-add": cmd_stage_add,
-    "stage-remove": cmd_stage_remove,
-    "stage-list": cmd_stage_list,
-    "stage-refresh": cmd_stage_refresh,
-    "pipeline": cmd_pipeline,
+    "pipeline-set": cmd_pipeline_set,
+    "pipeline-show": cmd_pipeline_show,
+    "runs": cmd_runs,
   }
   commands[args.command](args)
 

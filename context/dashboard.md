@@ -12,7 +12,7 @@ agent tabs for inline Claude agents.
 +------------------------------------------------------------+
 | Header: takt                  [clock]        |
 +------------------------------------------------------------+
-| [Dashboard] [Agents] [Trigger] [Settings] [ws/test ✓]     |
+| [Dashboard] [Agents] [Targets] [Trigger] [Settings]       |
 +------------------------------------------------------------+
 |   (active tab content fills remaining space)                |
 +------------------------------------------------------------+
@@ -69,6 +69,18 @@ flows from `pipeline_steps.config_json` through
 
 Implemented in `tui/tabs/pipeline_tab.py`.
 
+### Targets tab
+
+Full target management. DataTable showing all non-template
+targets (Name, Type, Host, State, Claimed By) with auto-
+refresh every 10s. Action buttons: Claim (opens
+ClaimTargetScreen), Release (confirm + release_lock),
+Start/Stop (virsh start/shutdown via worker), Clone (opens
+CloneTargetScreen modal then runs clone_vm.py), Delete
+(confirm then runs clone_vm.py delete). Refuses to delete
+templates. Hardware targets get a notification instead of
+virsh commands. Implemented in `tui/tabs/targets_tab.py`.
+
 ### Trigger tab
 
 Workflow action buttons + stages table + run history.
@@ -101,6 +113,7 @@ tui/
     dashboard_tab.py           Grid of 6 monitoring panels
     agents_tab.py              Agent list + output viewer
     pipeline_tab.py            Inline pipeline editor
+    targets_tab.py             Full target management
     trigger_tab.py             Workflow action buttons
     settings_tab.py            Config display
     agent_tab.py               Streaming agent output
@@ -182,6 +195,8 @@ OS subprocesses.
   `.pipeline-push` markers, launches inline agent.
 - **PushGithubScreen**: Select workspace, runs
   push_to_github.py.
+- **CloneTargetScreen**: Select template, input name +
+  IP. Returns (template, name, ip) tuple.
 - **AddStageScreen**: Select workspace + role, calls
   create_stage().
 

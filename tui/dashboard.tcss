@@ -10,6 +10,29 @@ TabbedContent {
   height: 1fr;
 }
 
+/* Bigger tab headers — taller and wider for easier clicks. */
+Tabs {
+  min-height: 5;
+  background: #1a1a1a;
+}
+
+Tab {
+  height: 3;
+  padding: 0 3;
+  content-align: center middle;
+  background: #1a1a1a;
+  color: #999999;
+}
+
+Tab.-active {
+  background: #2a2a2a;
+  color: #cccccc;
+}
+
+Tab:hover {
+  background: #252525;
+}
+
 TabPane {
   height: 1fr;
   padding: 0;

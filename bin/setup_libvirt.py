@@ -223,7 +223,7 @@ def generate_ssh_key():
     "ssh-keygen", "-t", "ed25519",
     "-f", str(SSH_KEY_PATH),
     "-N", "",
-    "-C", "agent-orchestration-targets",
+    "-C", "takt-targets",
   ])
 
   # Fix ownership if running under sudo.
@@ -432,7 +432,7 @@ def wait_for_ssh(host, user, timeout=180):
 def configure_ssh_config():
   """Add an SSH config entry for the VM."""
   ssh_config = _REAL_HOME / ".ssh" / "config"
-  marker = f"# agent-orchestration: {VM_NAME}"
+  marker = f"# takt: {VM_NAME}"
 
   if ssh_config.exists():
     content = ssh_config.read_text()

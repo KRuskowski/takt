@@ -8,19 +8,70 @@ service is not running.
 import asyncio
 import logging
 import subprocess
+from datetime import datetime
 
+from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, RenderResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
-from textual.widgets import Footer, Header, TabbedContent, TabPane
+from textual.reactive import reactive
+from textual.widget import Widget
+from textual.widgets import (
+  Footer, Header, TabbedContent, TabPane,
+)
+from textual.widgets._header import (
+  HeaderIcon, HeaderTitle,
+)
 
 from tui.tabs.agents_tab import AgentsTab
 from tui.tabs.dashboard_tab import DashboardTab
+from tui.tabs.pipeline_tab import PipelineTab
 from tui.tabs.settings_tab import SettingsTab
+from tui.tabs.targets_tab import TargetsTab
 from tui.tabs.trigger_tab import TriggerTab
 
 log = logging.getLogger("takt.app")
+
+
+class ClockStatus(Widget):
+  """Clock with service status dot, replaces HeaderClock."""
+
+  DEFAULT_CSS = """
+  ClockStatus {
+    dock: right;
+    width: 12;
+    padding: 0 1;
+    background: $foreground-darken-1 5%;
+    color: $foreground;
+    text-opacity: 85%;
+    content-align: center middle;
+  }
+  """
+
+  connected = reactive(False)
+
+  def on_mount(self) -> None:
+    self.set_interval(1, self.refresh)
+
+  def render(self) -> RenderResult:
+    """Render status dot + clock."""
+    now = datetime.now().strftime("%X")
+    dot = "\u25cf" if self.connected else "\u25cb"
+    color = "#4caf50" if self.connected else "#9e9e9e"
+    result = Text()
+    result.append(dot, style=color)
+    result.append(f" {now}")
+    return result
+
+
+class TaktHeader(Header):
+  """Header with service status next to the clock."""
+
+  def compose(self) -> ComposeResult:
+    yield HeaderIcon().data_bind(Header.icon)
+    yield HeaderTitle()
+    yield ClockStatus(id="clock-status")
 
 
 class TaktApp(App):
@@ -40,7 +91,6 @@ class TaktApp(App):
 
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
-    self.sub_title = "local"
     self._service_client = None
     self._prev_agent_states = {}
 
@@ -90,12 +140,16 @@ class TaktApp(App):
     self.notify("Copied")
 
   def compose(self) -> ComposeResult:
-    yield Header(show_clock=True)
+    yield TaktHeader()
     with TabbedContent(id="tabs"):
       with TabPane("Dashboard", id="tab-dashboard"):
         yield DashboardTab(id="dashboard-tab")
+      with TabPane("Pipeline", id="tab-pipeline"):
+        yield PipelineTab(id="pipeline-tab")
       with TabPane("Agents", id="tab-agents"):
         yield AgentsTab(id="agents-tab")
+      with TabPane("Targets", id="tab-targets"):
+        yield TargetsTab(id="targets-tab")
       with TabPane("Trigger", id="tab-trigger"):
         yield TriggerTab(id="trigger-tab")
       with TabPane("Settings", id="tab-settings"):
@@ -106,6 +160,8 @@ class TaktApp(App):
     """Start dashboard polling, connect to service."""
     from lib.log_setup import setup_logging
     setup_logging()
+    from lib import db
+    db.migrate()
     dashboard = self.query_one(
       "#dashboard-tab", DashboardTab
     )
@@ -118,6 +174,20 @@ class TaktApp(App):
     """Return the service client, or None."""
     return self._service_client
 
+  def _set_service_status(self, connected):
+    """Update the header service indicator.
+
+    Args:
+      connected: True if connected to takt-service.
+    """
+    try:
+      clock = self.query_one(
+        "#clock-status", ClockStatus
+      )
+      clock.connected = connected
+    except NoMatches:
+      pass
+
   async def _do_connect_service(self) -> None:
     """Connect to takt-service via ZMQ."""
     from lib.service_client import ServiceClient
@@ -127,7 +197,7 @@ class TaktApp(App):
       ok = await client.is_service_running()
       if ok:
         self._service_client = client
-        self.sub_title = "service"
+        self._set_service_status(True)
         client.subscribe("agent.update")
         client.subscribe("pipeline.event")
         client.on(
@@ -142,7 +212,7 @@ class TaktApp(App):
       else:
         await client.disconnect()
         self._service_client = None
-        self.sub_title = "local"
+        self._set_service_status(False)
         self.notify(
           "takt-service not running. "
           "Start with: systemctl --user start "
@@ -155,7 +225,7 @@ class TaktApp(App):
         exc_info=True,
       )
       self._service_client = None
-      self.sub_title = "local"
+      self._set_service_status(False)
 
   def _connect_service(self) -> None:
     """Schedule service connection."""
@@ -221,7 +291,7 @@ class TaktApp(App):
   def _on_pipeline_event(self, topic, data) -> None:
     """Handle pipeline.event events from service.
 
-    Notifies on stage completion/failure events.
+    Notifies on run completion/failure events.
 
     Args:
       topic: Topic string.
@@ -239,22 +309,21 @@ class TaktApp(App):
       log.debug(
         "pipeline event handler failed", exc_info=True
       )
-    # Notify on stage finish events.
-    event_type = data.get("event")
-    ws = data.get("workspace", "")
-    role = data.get("role", "")
-    label = f"{ws}/{role}" if ws and role else ""
-    if event_type == "stage_completed" and label:
-      self.notify(f"Stage {label} completed")
+    # Notify on step/run finish events.
+    new_status = data.get("new_status", "")
+    entity = data.get("entity", "")
+    label = data.get("reason", entity)
+    if new_status == "passed" and entity == "run":
+      self.notify(f"Run {label} passed")
       from lib.notify import notify as desktop_notify
-      desktop_notify("takt", f"Stage {label} completed")
-    elif event_type == "stage_failed" and label:
+      desktop_notify("takt", f"Run {label} passed")
+    elif new_status == "failed" and entity == "run":
       self.notify(
-        f"Stage {label} failed", severity="error"
+        f"Run {label} failed", severity="error"
       )
       from lib.notify import notify as desktop_notify
       desktop_notify(
-        "takt", f"Stage {label} failed",
+        "takt", f"Run {label} failed",
         urgency="critical",
       )
 
@@ -446,7 +515,7 @@ class TaktApp(App):
         check=True, capture_output=True,
       )
       self.notify("takt-service stopped")
-      self.sub_title = "local"
+      self._set_service_status(False)
       if self._service_client:
         asyncio.ensure_future(
           self._service_client.disconnect()
@@ -488,6 +557,24 @@ class TaktApp(App):
       pass
     except Exception:
       log.debug("refresh dashboard failed", exc_info=True)
+    try:
+      pipeline = self.query_one(
+        "#pipeline-tab", PipelineTab
+      )
+      pipeline.refresh_data()
+    except NoMatches:
+      pass
+    except Exception:
+      log.debug("refresh pipeline failed", exc_info=True)
+    try:
+      targets = self.query_one(
+        "#targets-tab", TargetsTab
+      )
+      targets.refresh_data()
+    except NoMatches:
+      pass
+    except Exception:
+      log.debug("refresh targets failed", exc_info=True)
     try:
       trigger = self.query_one(
         "#trigger-tab", TriggerTab

@@ -283,7 +283,7 @@ class TestConfigureSshConfig(unittest.TestCase):
   def test_skips_when_present(self, mock_run):
     """Does not duplicate entry."""
     import tempfile
-    marker = "# agent-orchestration: win-01"
+    marker = "# takt: win-01"
     with tempfile.TemporaryDirectory() as tmpdir:
       ssh_dir = Path(tmpdir) / ".ssh"
       ssh_dir.mkdir()

@@ -85,6 +85,7 @@ class AgentsTab(Static):
     super().__init__(**kwargs)
     self._selected_id = None
     self._agent_data = {}  # agent_id -> state dict
+    self._step_ids = {}  # agent_id -> step_id
     self._viewer_line_count = 0
 
   def compose(self) -> ComposeResult:
@@ -165,6 +166,7 @@ class AgentsTab(Static):
       )
     # Sort workspaces: any running agent first, then
     # alphabetical.
+
     def ws_sort_key(ws):
       has_running = any(
         a["state"] == "running"
@@ -228,6 +230,8 @@ class AgentsTab(Static):
       for agent in agents:
         aid = agent["agent_id"]
         self._agent_data[aid] = agent
+        if "step_id" in agent:
+          self._step_ids[aid] = agent["step_id"]
         ws = agent.get("workspace", "")
         role = agent.get("role", "")
         if not ws and "/" in aid:
@@ -323,10 +327,14 @@ class AgentsTab(Static):
     # Unsubscribe from previous agent output.
     client = getattr(self.app, 'service', None)
     if client and self._selected_id:
-      client.unsubscribe(
-        f"agent.output.{self._selected_id}"
+      old_step = self._step_ids.get(self._selected_id)
+      old_topic = (
+        f"agent.output.step-{old_step}"
+        if old_step
+        else f"agent.output.{self._selected_id}"
       )
-      client.off(f"agent.output.")
+      client.unsubscribe(old_topic)
+      client.off("agent.output.")
     self._selected_id = agent_id
     self._viewer_line_count = 0
     log_widget = self.query_one(
@@ -337,16 +345,22 @@ class AgentsTab(Static):
       "#agent-viewer-status", Static
     )
     if client:
-      # Subscribe to live output.
-      client.subscribe(f"agent.output.{agent_id}")
+      # Subscribe to live output via step_id.
+      step_id = self._step_ids.get(agent_id)
+      sub_topic = (
+        f"agent.output.step-{step_id}"
+        if step_id else f"agent.output.{agent_id}"
+      )
+      client.subscribe(sub_topic)
       client.on(
-        f"agent.output.",
+        "agent.output.",
         self._on_output_line,
       )
       # Replay stored output.
-      asyncio.ensure_future(
-        self._replay_output(agent_id)
-      )
+      if step_id:
+        asyncio.ensure_future(
+          self._replay_output(step_id)
+        )
       # Update status from cached data.
       data = self._agent_data.get(agent_id, {})
       state = data.get("state", "?")
@@ -358,11 +372,11 @@ class AgentsTab(Static):
     else:
       self._show_local_output(agent_id)
 
-  async def _replay_output(self, agent_id) -> None:
+  async def _replay_output(self, step_id) -> None:
     """Replay stored output from service.
 
     Args:
-      agent_id: Agent ID to replay.
+      step_id: Step row ID to replay.
     """
     client = self.app.service
     if not client:
@@ -370,14 +384,12 @@ class AgentsTab(Static):
     try:
       reply = await client.send_cmd(
         "replay_output",
-        agent_id=agent_id,
+        step_id=step_id,
         from_line=0,
       )
       if reply.get("status") != "ok":
         return
       lines = reply["data"]["lines"]
-      if agent_id != self._selected_id:
-        return
       log_widget = self.query_one(
         "#agent-viewer-log", SelectableLog
       )
@@ -642,21 +654,21 @@ class AgentsTab(Static):
       self._retry_local(ws, role)
 
   async def _retry_via_service(self, ws, role):
-    """Send trigger_stage command to service to retry.
+    """Send trigger_run command to service to retry.
 
     Args:
       ws: Workspace name.
-      role: Stage role.
+      role: Stage role (unused, kept for interface).
     """
     try:
       reply = await self.app.service.send_cmd(
-        "trigger_stage", workspace=ws, role=role,
+        "trigger_run", workspace=ws,
       )
       if reply.get("status") == "ok":
-        self.app.notify(f"Retrying {ws}/{role}")
+        self.app.notify(f"Triggered run for {ws}")
       else:
         self.app.notify(
-          reply.get("message", "Retry failed"),
+          reply.get("message", "Trigger failed"),
           severity="error",
         )
     except Exception as e:
@@ -668,37 +680,33 @@ class AgentsTab(Static):
       )
 
   def _retry_local(self, ws, role):
-    """Local fallback: retrigger via markers.
+    """Local fallback: create a run in SQLite.
 
     Args:
       ws: Workspace name.
-      role: Stage role.
+      role: Stage role (unused, kept for interface).
     """
-    from bin.pipeline_watch import (
-      build_trigger_prompt,
-      scan_markers,
+    from lib import db
+    from lib.workspace_ops import list_workspaces
+    workspaces = list_workspaces()
+    ws_info = next(
+      (w for w in workspaces if w["name"] == ws),
+      None,
     )
-    from lib.config import STAGES_DIR
-    agent_id = f"{ws}/{role}"
-    stage_dir = STAGES_DIR / ws / role
-    markers = scan_markers()
-    repo_markers = markers.get((ws, role), [])
-    if repo_markers:
-      prompt = build_trigger_prompt(
-        ws, role, repo_markers
+    if not ws_info:
+      self.app.notify(
+        f"Workspace '{ws}' not found.",
+        severity="warning",
       )
-      self.app.launch_agent(
-        agent_id, prompt, str(stage_dir),
-        workspace=ws, role=role,
+      return
+    repos = ws_info.get("repos", [])
+    run_id = db.create_run(ws, "manual", repos, {})
+    if run_id:
+      self.app.notify(
+        f"Created run {run_id} for {ws}"
       )
-      for repo, _ in repo_markers:
-        marker = (
-          stage_dir / repo / ".pipeline-push"
-        )
-        marker.unlink(missing_ok=True)
     else:
       self.app.notify(
-        f"No markers found for {ws}/{role}. "
-        f"Use Trigger to re-trigger.",
+        f"Duplicate run for {ws}",
         severity="warning",
       )
