@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,23 +17,16 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 from bin.pipeline_watch import (
   MAX_EVENTS,
-  _kitty_tab_exists,
-  _prune_finished_tabs,
+  _detect_stage_result,
   _retrigger_pr_stage,
-  _scan_and_sync,
-  _scan_and_trigger,
   build_sync_prompt,
   build_trigger_prompt,
-  launch_in_kitty,
   load_events,
   log_events,
-  poll_once,
   scan_markers,
   scan_sync_markers,
   write_sync_markers,
 )
-
-FAKE_SOCKET = "unix:/tmp/kitty-pipeline-99999"
 
 
 class TestScanMarkers(unittest.TestCase):
@@ -270,220 +264,6 @@ class TestBuildTriggerPrompt(unittest.TestCase):
     # Should include both commits.
     self.assertIn("second", prompt)
     self.assertIn("third", prompt)
-
-
-class TestKittyHelpers(unittest.TestCase):
-  """Tests for kitty tab detection."""
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_tab_exists(self, mock_run, _mock_sock):
-    """Detects existing kitty tab by title."""
-    ls_data = [{"tabs": [{"title": "ws/test"}]}]
-    mock_run.return_value = mock.Mock(
-      returncode=0, stdout=json.dumps(ls_data),
-    )
-    self.assertTrue(_kitty_tab_exists("ws/test"))
-    mock_run.assert_called_once_with(
-      ["kitten", "@", "--to", FAKE_SOCKET, "ls"],
-      capture_output=True, text=True,
-    )
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_tab_not_exists(self, mock_run, _mock_sock):
-    """Returns False when tab title is absent."""
-    ls_data = [{"tabs": [{"title": "ws/review"}]}]
-    mock_run.return_value = mock.Mock(
-      returncode=0, stdout=json.dumps(ls_data),
-    )
-    self.assertFalse(_kitty_tab_exists("ws/test"))
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_ls_fails(self, mock_run, _mock_sock):
-    """Returns False when kitten ls fails."""
-    mock_run.return_value = mock.Mock(
-      returncode=1, stdout="", stderr="no socket",
-    )
-    self.assertFalse(_kitty_tab_exists("ws/test"))
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_invalid_json(self, mock_run, _mock_sock):
-    """Returns False when ls output is not valid JSON."""
-    mock_run.return_value = mock.Mock(
-      returncode=0, stdout="not json",
-    )
-    self.assertFalse(_kitty_tab_exists("ws/test"))
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_multiple_os_windows(self, mock_run, _mock_sock):
-    """Finds tab across multiple OS windows."""
-    ls_data = [
-      {"tabs": [{"title": "shell"}]},
-      {"tabs": [{"title": "ws/test"}]},
-    ]
-    mock_run.return_value = mock.Mock(
-      returncode=0, stdout=json.dumps(ls_data),
-    )
-    self.assertTrue(_kitty_tab_exists("ws/test"))
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=None)
-  def test_no_socket(self, _mock_sock):
-    """Returns False when no kitty socket is found."""
-    self.assertFalse(_kitty_tab_exists("ws/test"))
-
-
-class TestLaunchInKitty(unittest.TestCase):
-  """Tests for launch_in_kitty()."""
-
-  def setUp(self):
-    self.tmpdir = tempfile.mkdtemp()
-
-  def tearDown(self):
-    shutil.rmtree(self.tmpdir)
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_launches_tab(self, mock_run, _mock_sock):
-    """Launches claude in a new kitty tab."""
-    # _kitty_tab_exists (no match), launch, set-tab-color,
-    # focus-tab.
-    ls_data = [{"tabs": [{"title": "shell"}]}]
-    ok = mock.Mock(returncode=0, stdout="", stderr="")
-    mock_run.side_effect = [
-      mock.Mock(returncode=0, stdout=json.dumps(ls_data)),
-      ok, ok, ok,
-    ]
-    stage = Path(self.tmpdir) / "stage"
-    stage.mkdir()
-    # Place a stale done marker to verify it gets cleaned.
-    stale = stage / ".agent-done"
-    stale.touch()
-    launch_in_kitty("ws", "test", stage, "do stuff")
-    # Stale marker should be removed before launch.
-    self.assertFalse(stale.exists())
-    launch_call = mock_run.call_args_list[1][0][0]
-    self.assertEqual(launch_call[:4], [
-      "kitten", "@", "--to", FAKE_SOCKET,
-    ])
-    self.assertIn("--tab-title", launch_call)
-    idx = launch_call.index("--tab-title")
-    self.assertEqual(launch_call[idx + 1], "ws/test")
-    # Verify zsh -ic with unset + claude + touch.
-    self.assertEqual(launch_call[-3], "zsh")
-    self.assertEqual(launch_call[-2], "-ic")
-    shell_cmd = launch_call[-1]
-    self.assertIn("unset CLAUDECODE", shell_cmd)
-    self.assertIn("claude", shell_cmd)
-    self.assertIn("do stuff", shell_cmd)
-    self.assertIn("touch", shell_cmd)
-    self.assertIn(".agent-done", shell_cmd)
-    # Verify set-tab-color call (role "test" has a color).
-    color_call = mock_run.call_args_list[2][0][0]
-    self.assertIn("set-tab-color", color_call)
-    self.assertIn("active_bg=#5a4b27", color_call)
-    # Verify focus-tab call.
-    focus_call = mock_run.call_args_list[3][0][0]
-    self.assertIn("focus-tab", focus_call)
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_skips_duplicate_tab(self, mock_run, _mock_sock):
-    """Skips launch when tab already exists."""
-    ls_data = [{"tabs": [{"title": "ws/test"}]}]
-    mock_run.return_value = mock.Mock(
-      returncode=0, stdout=json.dumps(ls_data),
-    )
-    launch_in_kitty("ws", "test", Path("/tmp/stage"), "hi")
-    # Only the ls call, no launch.
-    self.assertEqual(mock_run.call_count, 1)
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_raises_on_failure(self, mock_run, _mock_sock):
-    """Raises RuntimeError when kitty launch fails."""
-    ls_data = [{"tabs": []}]
-    mock_run.side_effect = [
-      mock.Mock(returncode=0, stdout=json.dumps(ls_data)),
-      mock.Mock(returncode=1, stdout="", stderr="no socket"),
-    ]
-    with self.assertRaises(RuntimeError):
-      launch_in_kitty(
-        "ws", "test", Path("/tmp/stage"), "hi",
-      )
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=None)
-  def test_raises_no_socket(self, _mock_sock):
-    """Raises RuntimeError when no kitty socket is found."""
-    with self.assertRaises(RuntimeError):
-      launch_in_kitty(
-        "ws", "test", Path("/tmp/stage"), "hi",
-      )
-
-
-class TestScanAndTrigger(unittest.TestCase):
-  """Tests for _scan_and_trigger()."""
-
-  def setUp(self):
-    self.tmpdir = tempfile.mkdtemp()
-    self.stages_dir = Path(self.tmpdir) / "stages"
-    self.stages_dir.mkdir()
-    self.patch = mock.patch(
-      "bin.pipeline_watch.STAGES_DIR", self.stages_dir,
-    )
-    self.patch.start()
-
-  def tearDown(self):
-    self.patch.stop()
-    shutil.rmtree(self.tmpdir)
-
-  @mock.patch("bin.pipeline_watch.launch_in_kitty")
-  def test_deletes_markers_after_trigger(self, mock_launch):
-    """Marker files are deleted after triggering."""
-    repo = self.stages_dir / "ws" / "test" / "myrepo"
-    repo.mkdir(parents=True)
-    marker = repo / ".pipeline-push"
-    marker.write_text(
-      "2026-02-20T10:00:00+00:00 aaa bbb refs/heads/ws\n"
-    )
-    _scan_and_trigger()
-    self.assertFalse(marker.exists())
-    mock_launch.assert_called_once()
-
-  @mock.patch("bin.pipeline_watch.launch_in_kitty")
-  def test_noop_without_markers(self, mock_launch):
-    """Does nothing when no markers exist."""
-    _scan_and_trigger()
-    mock_launch.assert_not_called()
-
-  @mock.patch("bin.pipeline_watch.launch_in_kitty")
-  def test_passes_stage_dir(self, mock_launch):
-    """Passes correct stage dir to launch_in_kitty."""
-    repo = self.stages_dir / "ws" / "test" / "myrepo"
-    repo.mkdir(parents=True)
-    (repo / ".pipeline-push").write_text(
-      "2026-02-20T10:00:00+00:00 aaa bbb refs/heads/ws\n"
-    )
-    _scan_and_trigger()
-    call_args = mock_launch.call_args
-    self.assertEqual(call_args[0][0], "ws")
-    self.assertEqual(call_args[0][1], "test")
-    self.assertEqual(
-      call_args[0][2], self.stages_dir / "ws" / "test",
-    )
 
 
 class TestScanSyncMarkers(unittest.TestCase):
@@ -828,342 +608,6 @@ class TestWriteSyncMarkers(unittest.TestCase):
     self.assertTrue(m2.exists())
 
 
-class TestScanAndSync(unittest.TestCase):
-  """Tests for _scan_and_sync()."""
-
-  def setUp(self):
-    self.tmpdir = tempfile.mkdtemp()
-    self.ws_dir = Path(self.tmpdir) / "workspaces"
-    self.ws_dir.mkdir()
-    self.patch = mock.patch(
-      "bin.pipeline_watch.WORKSPACES_DIR", self.ws_dir,
-    )
-    self.patch.start()
-
-  def tearDown(self):
-    self.patch.stop()
-    shutil.rmtree(self.tmpdir)
-
-  @mock.patch("bin.pipeline_watch.launch_in_kitty")
-  def test_deletes_markers_and_launches(self, mock_launch):
-    """Markers deleted and agent launched on trigger."""
-    repo = self.ws_dir / "ws" / "myrepo"
-    repo.mkdir(parents=True)
-    marker = repo / ".upstream-sync"
-    marker.write_text(
-      "2026-02-20T10:00:00+00:00 aaa bbb"
-      " refs/heads/master\n"
-    )
-    _scan_and_sync()
-    self.assertFalse(marker.exists())
-    mock_launch.assert_called_once()
-
-  @mock.patch("bin.pipeline_watch.launch_in_kitty")
-  def test_noop_without_markers(self, mock_launch):
-    """Does nothing when no markers exist."""
-    _scan_and_sync()
-    mock_launch.assert_not_called()
-
-  @mock.patch("bin.pipeline_watch.launch_in_kitty")
-  def test_passes_workspace_dir_and_sync_role(
-    self, mock_launch,
-  ):
-    """Passes workspace dir and role='sync'."""
-    repo = self.ws_dir / "ws" / "myrepo"
-    repo.mkdir(parents=True)
-    (repo / ".upstream-sync").write_text(
-      "2026-02-20T10:00:00+00:00 aaa bbb"
-      " refs/heads/master\n"
-    )
-    _scan_and_sync()
-    call_args = mock_launch.call_args
-    self.assertEqual(call_args[0][0], "ws")
-    self.assertEqual(call_args[0][1], "sync")
-    self.assertEqual(call_args[0][2], self.ws_dir / "ws")
-
-  @mock.patch("bin.pipeline_watch._kitty_tab_exists")
-  @mock.patch("bin.pipeline_watch.launch_in_kitty")
-  def test_markers_persist_when_tab_exists(
-    self, mock_launch, mock_tab_exists,
-  ):
-    """Markers preserved when sync tab already running."""
-    mock_tab_exists.return_value = True
-    repo = self.ws_dir / "ws" / "myrepo"
-    repo.mkdir(parents=True)
-    marker = repo / ".upstream-sync"
-    marker.write_text(
-      "2026-02-20T10:00:00+00:00 aaa bbb"
-      " refs/heads/master\n"
-    )
-    _scan_and_sync()
-    self.assertTrue(marker.exists())
-    mock_launch.assert_not_called()
-
-
-class TestPruneFinishedTabs(unittest.TestCase):
-  """Tests for _prune_finished_tabs()."""
-
-  def setUp(self):
-    self.tmpdir = tempfile.mkdtemp()
-    self.stages_dir = Path(self.tmpdir) / "stages"
-    self.stages_dir.mkdir()
-    self.ws_dir = Path(self.tmpdir) / "workspaces"
-    self.ws_dir.mkdir()
-    self.patch_stages = mock.patch(
-      "bin.pipeline_watch.STAGES_DIR", self.stages_dir,
-    )
-    self.patch_ws = mock.patch(
-      "bin.pipeline_watch.WORKSPACES_DIR", self.ws_dir,
-    )
-    self.patch_stages.start()
-    self.patch_ws.start()
-
-  def tearDown(self):
-    self.patch_stages.stop()
-    self.patch_ws.stop()
-    shutil.rmtree(self.tmpdir)
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_prunes_tab_with_done_marker(
-    self, mock_run, _mock_sock,
-  ):
-    """Closes tab and deletes marker when .agent-done exists."""
-    stage = self.stages_dir / "ws" / "test"
-    stage.mkdir(parents=True)
-    (stage / ".agent-done").touch()
-    ls_data = [{"tabs": [{"title": "ws/test"}]}]
-    ok = mock.Mock(returncode=0, stdout="", stderr="")
-    mock_run.side_effect = [
-      mock.Mock(returncode=0, stdout=json.dumps(ls_data)),
-      ok,
-    ]
-    pruned = _prune_finished_tabs()
-    self.assertEqual(pruned, ["ws/test"])
-    # close-tab should have been called.
-    close_call = mock_run.call_args_list[1][0][0]
-    self.assertIn("close-tab", close_call)
-    self.assertIn("title:ws/test", close_call)
-    # Marker should be deleted.
-    self.assertFalse((stage / ".agent-done").exists())
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_skips_tab_without_marker(
-    self, mock_run, _mock_sock,
-  ):
-    """No close-tab when .agent-done is absent."""
-    stage = self.stages_dir / "ws" / "test"
-    stage.mkdir(parents=True)
-    ls_data = [{"tabs": [{"title": "ws/test"}]}]
-    mock_run.return_value = mock.Mock(
-      returncode=0, stdout=json.dumps(ls_data),
-    )
-    pruned = _prune_finished_tabs()
-    self.assertEqual(pruned, [])
-    # Only the ls call, no close-tab.
-    self.assertEqual(mock_run.call_count, 1)
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_skips_non_pipeline_tabs(
-    self, mock_run, _mock_sock,
-  ):
-    """Tabs without '/' in title are ignored."""
-    ls_data = [{"tabs": [{"title": "shell"}]}]
-    mock_run.return_value = mock.Mock(
-      returncode=0, stdout=json.dumps(ls_data),
-    )
-    pruned = _prune_finished_tabs()
-    self.assertEqual(pruned, [])
-    # Only the ls call.
-    self.assertEqual(mock_run.call_count, 1)
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=None)
-  def test_noop_without_socket(self, _mock_sock):
-    """Returns empty list when no socket found."""
-    pruned = _prune_finished_tabs()
-    self.assertEqual(pruned, [])
-
-  @mock.patch("bin.pipeline_watch._find_kitty_socket",
-              return_value=FAKE_SOCKET)
-  @mock.patch("bin.pipeline_watch.subprocess.run")
-  def test_sync_role_checks_workspace_dir(
-    self, mock_run, _mock_sock,
-  ):
-    """Sync tab checks WORKSPACES_DIR for .agent-done."""
-    ws = self.ws_dir / "ws"
-    ws.mkdir(parents=True)
-    (ws / ".agent-done").touch()
-    ls_data = [{"tabs": [{"title": "ws/sync"}]}]
-    ok = mock.Mock(returncode=0, stdout="", stderr="")
-    mock_run.side_effect = [
-      mock.Mock(returncode=0, stdout=json.dumps(ls_data)),
-      ok,
-    ]
-    pruned = _prune_finished_tabs()
-    self.assertEqual(pruned, ["ws/sync"])
-    close_call = mock_run.call_args_list[1][0][0]
-    self.assertIn("close-tab", close_call)
-    self.assertIn("title:ws/sync", close_call)
-    self.assertFalse((ws / ".agent-done").exists())
-
-
-class TestMarkersPeristOnLaunchError(unittest.TestCase):
-  """Tests that markers survive when launch_in_kitty fails."""
-
-  def setUp(self):
-    self.tmpdir = tempfile.mkdtemp()
-    self.stages_dir = Path(self.tmpdir) / "stages"
-    self.stages_dir.mkdir()
-    self.ws_dir = Path(self.tmpdir) / "workspaces"
-    self.ws_dir.mkdir()
-    self.patch_stages = mock.patch(
-      "bin.pipeline_watch.STAGES_DIR", self.stages_dir,
-    )
-    self.patch_ws = mock.patch(
-      "bin.pipeline_watch.WORKSPACES_DIR", self.ws_dir,
-    )
-    self.patch_stages.start()
-    self.patch_ws.start()
-
-  def tearDown(self):
-    self.patch_stages.stop()
-    self.patch_ws.stop()
-    shutil.rmtree(self.tmpdir)
-
-  @mock.patch(
-    "bin.pipeline_watch.launch_in_kitty",
-    side_effect=RuntimeError("no socket"),
-  )
-  def test_trigger_markers_persist(self, mock_launch):
-    """Pipeline-push markers survive when launch fails."""
-    repo = self.stages_dir / "ws" / "test" / "myrepo"
-    repo.mkdir(parents=True)
-    marker = repo / ".pipeline-push"
-    marker.write_text(
-      "2026-02-20T10:00:00+00:00 aaa bbb"
-      " refs/heads/ws\n"
-    )
-    events = _scan_and_trigger()
-    self.assertTrue(marker.exists())
-    self.assertEqual(len(events), 1)
-    self.assertEqual(events[0]["event"], "error")
-
-  @mock.patch(
-    "bin.pipeline_watch.launch_in_kitty",
-    side_effect=RuntimeError("no socket"),
-  )
-  def test_sync_markers_persist(self, mock_launch):
-    """Upstream-sync markers survive when launch fails."""
-    repo = self.ws_dir / "ws" / "myrepo"
-    repo.mkdir(parents=True)
-    marker = repo / ".upstream-sync"
-    marker.write_text(
-      "2026-02-20T10:00:00+00:00 aaa bbb"
-      " refs/heads/master\n"
-    )
-    events = _scan_and_sync()
-    self.assertTrue(marker.exists())
-    self.assertEqual(len(events), 1)
-    self.assertEqual(events[0]["event"], "error")
-
-
-class TestPollOnce(unittest.TestCase):
-  """Tests for poll_once()."""
-
-  def setUp(self):
-    self.tmpdir = tempfile.mkdtemp()
-    self.state_dir = Path(self.tmpdir) / "state"
-    self.state_dir.mkdir()
-    self.patch_state = mock.patch(
-      "bin.pipeline_watch.STATE_DIR", self.state_dir,
-    )
-    self.patch_refs = mock.patch(
-      "bin.pipeline_watch.REFS_FILE",
-      self.state_dir / "branch_refs.json",
-    )
-    self.patch_events = mock.patch(
-      "bin.pipeline_watch.EVENTS_FILE",
-      self.state_dir / "events.json",
-    )
-    self.patch_state.start()
-    self.patch_refs.start()
-    self.patch_events.start()
-
-  def tearDown(self):
-    self.patch_state.stop()
-    self.patch_refs.stop()
-    self.patch_events.stop()
-    shutil.rmtree(self.tmpdir)
-
-  @mock.patch("bin.pipeline_watch._scan_and_sync",
-              return_value=[])
-  @mock.patch("bin.pipeline_watch._scan_and_trigger",
-              return_value=[])
-  @mock.patch("bin.pipeline_watch._prune_finished_tabs",
-              return_value=[])
-  @mock.patch("bin.pipeline_watch.snapshot_all_refs",
-              return_value={"r:main": "abc"})
-  def test_no_input_call(self, mock_snap, mock_prune,
-                         mock_trigger, mock_sync):
-    """poll_once completes without blocking on input()."""
-    result = poll_once({"repos": {}})
-    self.assertIsInstance(result, list)
-
-  @mock.patch("bin.pipeline_watch._scan_and_sync",
-              return_value=[])
-  @mock.patch("bin.pipeline_watch._scan_and_trigger",
-              return_value=[])
-  @mock.patch("bin.pipeline_watch._prune_finished_tabs",
-              return_value=[])
-  @mock.patch("bin.pipeline_watch.snapshot_all_refs")
-  @mock.patch("bin.pipeline_watch.load_refs")
-  @mock.patch("bin.pipeline_watch.write_sync_markers")
-  @mock.patch("bin.pipeline_watch.get_default_branch",
-              return_value="main")
-  def test_writes_sync_markers_for_default_branch(
-    self, mock_default, mock_write, mock_load, mock_snap,
-    mock_prune, mock_trigger, mock_sync,
-  ):
-    """Default-branch changes trigger write_sync_markers."""
-    mock_load.return_value = {"repo:main": "old"}
-    mock_snap.return_value = {"repo:main": "new"}
-    repos_config = {
-      "repos": {
-        "repo": {"path": "repo"},
-      },
-    }
-    poll_once(repos_config)
-    mock_write.assert_called_once()
-    changes = mock_write.call_args[0][0]
-    self.assertEqual(len(changes), 1)
-    self.assertEqual(changes[0]["branch"], "main")
-
-  @mock.patch("bin.pipeline_watch._scan_and_sync",
-              return_value=[])
-  @mock.patch("bin.pipeline_watch._scan_and_trigger",
-              return_value=[{
-                "stage": "ws/test", "repos": "r",
-                "event": "triggered",
-              }])
-  @mock.patch("bin.pipeline_watch._prune_finished_tabs",
-              return_value=[])
-  @mock.patch("bin.pipeline_watch.snapshot_all_refs",
-              return_value={"r:main": "abc"})
-  def test_calls_log_events(self, mock_snap, mock_prune,
-                            mock_trigger, mock_sync):
-    """poll_once writes events to the persistent log."""
-    events = poll_once({"repos": {}})
-    self.assertTrue(len(events) > 0)
-    events_file = self.state_dir / "events.json"
-    self.assertTrue(events_file.exists())
-
-
 class TestEventLog(unittest.TestCase):
   """Tests for log_events() and load_events()."""
 
@@ -1310,6 +754,83 @@ class TestRetriggerPrStage(unittest.TestCase):
         / ".pipeline-push"
       )
       self.assertTrue(marker.exists())
+
+
+class TestDetectStageResult(unittest.TestCase):
+  """Tests for _detect_stage_result()."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.stages_dir = Path(self.tmpdir) / "stages"
+    self.stages_dir.mkdir()
+    self.patch = mock.patch(
+      "bin.pipeline_watch.STAGES_DIR", self.stages_dir,
+    )
+    self.patch.start()
+
+  def tearDown(self):
+    self.patch.stop()
+    shutil.rmtree(self.tmpdir)
+
+  @mock.patch(
+    "bin.pipeline_watch.get_pipeline_stages",
+    return_value=["test", "review"],
+  )
+  def test_non_terminal_passed(self, _mock_pipeline):
+    """Non-terminal stage with markers in next = passed."""
+    # Create next stage with a pipeline-push marker.
+    next_repo = (
+      self.stages_dir / "ws" / "review" / "myrepo"
+    )
+    next_repo.mkdir(parents=True)
+    (next_repo / ".pipeline-push").write_text("data")
+    result = _detect_stage_result("ws", "test")
+    self.assertEqual(result, "passed")
+
+  @mock.patch(
+    "bin.pipeline_watch.get_pipeline_stages",
+    return_value=["test", "review"],
+  )
+  def test_non_terminal_failed(self, _mock_pipeline):
+    """Non-terminal stage without markers in next = failed."""
+    # Create next stage but no marker.
+    next_repo = (
+      self.stages_dir / "ws" / "review" / "myrepo"
+    )
+    next_repo.mkdir(parents=True)
+    result = _detect_stage_result("ws", "test")
+    self.assertEqual(result, "failed")
+
+  @mock.patch(
+    "bin.pipeline_watch.get_pipeline_stages",
+    return_value=["test", "review"],
+  )
+  def test_terminal_stage_passed(self, _mock_pipeline):
+    """Terminal stage (last in chain) = passed."""
+    result = _detect_stage_result("ws", "review")
+    self.assertEqual(result, "passed")
+
+  @mock.patch(
+    "bin.pipeline_watch.get_pipeline_stages",
+    return_value=[],
+  )
+  def test_unknown_role_returns_none(
+    self, _mock_pipeline,
+  ):
+    """Role not in pipeline returns None."""
+    result = _detect_stage_result("ws", "test")
+    self.assertIsNone(result)
+
+  @mock.patch(
+    "bin.pipeline_watch.get_pipeline_stages",
+    return_value=["test", "review"],
+  )
+  def test_next_stage_dir_missing_is_failed(
+    self, _mock_pipeline,
+  ):
+    """Non-terminal with missing next stage dir = failed."""
+    result = _detect_stage_result("ws", "test")
+    self.assertEqual(result, "failed")
 
 
 if __name__ == "__main__":

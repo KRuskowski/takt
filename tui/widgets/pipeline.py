@@ -1,4 +1,9 @@
-"""Pipeline panel widget for monitoring stage triggers."""
+"""Pipeline panel widget for monitoring stage triggers.
+
+Receives pipeline events from takt-service via PUB/SUB
+when connected. Falls back to polling markers directly
+when running without the service.
+"""
 
 from collections import deque
 from datetime import datetime
@@ -6,14 +11,8 @@ from datetime import datetime
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DataTable, Static
-from textual import work
 
-from bin.pipeline_watch import (
-  _prune_finished_tabs,
-  _scan_and_sync,
-  _scan_and_trigger,
-  load_events,
-)
+from bin.pipeline_watch import load_events
 
 MAX_EVENTS = 50
 
@@ -32,8 +31,10 @@ class PipelinePanel(Vertical):
     self._events = deque(maxlen=MAX_EVENTS)
 
   def compose(self) -> ComposeResult:
-    yield Static("Pipeline (watching)", classes="panel-title",
-                 id="pipeline-title")
+    yield Static(
+      "Pipeline (watching)", classes="panel-title",
+      id="pipeline-title",
+    )
     yield DataTable(id="pipeline-table")
 
   def on_mount(self) -> None:
@@ -46,48 +47,24 @@ class PipelinePanel(Vertical):
     if self._events:
       self._update_table()
 
-  @work(thread=True)
+  def on_service_event(self, data) -> None:
+    """Handle a pipeline.event from the service.
+
+    Args:
+      data: Event dict with time, stage, repos, event.
+    """
+    if "time" not in data:
+      data["time"] = datetime.now().strftime("%H:%M:%S")
+    self._events.appendleft(data)
+    self._update_table()
+
   def refresh_data(self) -> None:
-    """Poll for markers and trigger agents."""
-    now = datetime.now().strftime("%H:%M:%S")
-    changed = False
-    try:
-      for title in _prune_finished_tabs():
-        self._events.appendleft({
-          "time": now, "stage": title,
-          "repos": "", "event": "pruned",
-        })
-        changed = True
-    except Exception as e:
-      self._events.appendleft({
-        "time": now, "stage": "system",
-        "repos": "", "event": f"error: {e}",
-      })
-      changed = True
-    try:
-      for ev in _scan_and_trigger():
-        ev["time"] = now
-        self._events.appendleft(ev)
-        changed = True
-    except Exception as e:
-      self._events.appendleft({
-        "time": now, "stage": "system",
-        "repos": "", "event": f"error: {e}",
-      })
-      changed = True
-    try:
-      for ev in _scan_and_sync():
-        ev["time"] = now
-        self._events.appendleft(ev)
-        changed = True
-    except Exception as e:
-      self._events.appendleft({
-        "time": now, "stage": "system",
-        "repos": "", "event": f"error: {e}",
-      })
-      changed = True
-    if changed:
-      self.app.call_from_thread(self._update_table)
+    """Reload events from disk (no-service fallback)."""
+    events = load_events()[:MAX_EVENTS]
+    self._events.clear()
+    for ev in events:
+      self._events.append(ev)
+    self._update_table()
 
   def _update_table(self) -> None:
     """Render event log to the table."""

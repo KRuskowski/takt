@@ -52,27 +52,37 @@ bin/workspace.py pipeline feature-auth
 bin/workspace.py runs feature-auth
 ```
 
-## Pipeline Watcher (`bin/pipeline_watch.py`)
+## takt-service (`bin/takt_service.py`)
 
-Polls root repos for branch changes, gathers diffs/logs, pipes
-to Claude CLI for analysis. Triggered agents launch as kitty
-tabs. Also detects default-branch movement and writes
-`.upstream-sync` markers in affected workspaces, launching
-sync agents to merge upstream.
-Details: `context/pipeline-kitty.md`
+Persistent background service for pipeline watching and agent
+execution. Agents survive TUI disconnects; output is persisted
+and replayed on reconnect. Uses ZMQ for IPC (ROUTER/DEALER
+for commands, PUB/SUB for broadcasts).
+Details: `context/pipeline-service.md`
 
 ```bash
-# Launch the pipeline kitty terminal
-kittenpipeline
+# Start the service
+systemctl --user start takt-service
 
-# Start watching (polls every 30s)
-bin/pipeline_watch.py
+# View logs
+journalctl --user -u takt-service -f
 
-# Single poll cycle
+# Single poll cycle (no service needed)
 bin/pipeline_watch.py --once
 
-# Custom interval
-bin/pipeline_watch.py --interval 60
+# Clear stored state
+bin/pipeline_watch.py --reset
+```
+
+## Pipeline Watcher (`bin/pipeline_watch.py`)
+
+Reusable functions for branch change detection, marker
+scanning, and prompt building. Used by takt-service for
+polling. The `--once` flag runs a direct poll cycle.
+
+```bash
+# Single poll cycle
+bin/pipeline_watch.py --once
 
 # Clear stored state
 bin/pipeline_watch.py --reset
@@ -117,12 +127,12 @@ sudo python3 bin/clone_vm.py create deb-01 deb-02 \
 sudo python3 bin/clone_vm.py delete deb-02
 ```
 
-## Dashboard (`bin/dashboard.py`)
+## Dashboard (`bin/takt.py`)
 
 Tabbed TUI: Dashboard (monitoring panels), Trigger
-(workflow actions), Settings, plus dynamic agent tabs
-for inline Claude agents via `claude-code-sdk`. Pipeline
-agents run inline instead of in kitty tabs.
+(workflow actions), Settings, plus dynamic agent tabs.
+Connects to takt-service for agent execution and pipeline
+events. Falls back to local execution without service.
 Details: `context/dashboard.md`
 
 ## Push to GitHub (`bin/push_to_github.py`)
