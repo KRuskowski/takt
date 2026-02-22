@@ -1,0 +1,13 @@
+[flake8]
+max-line-length = 80
+# Google style: 2-space indent, single blank line between
+# top-level definitions.
+# E111: indentation is not a multiple of 4
+# E114: indentation is not a multiple of 4 (comment)
+# E117: over-indented
+# E121: continuation line under-indented for hanging indent
+# E131: continuation line unaligned for hanging indent
+# E305: expected 2 blank lines after class or function definition
+# E402: module level import not at top (sys.path.insert in tests)
+# W191: indentation contains tabs
+extend-ignore = E111,E114,E117,E121,E131,E305,E402,W191

@@ -73,10 +73,11 @@ def cmd_push(args):
     print("\n(dry run — nothing pushed)")
     return
 
-  resp = input(f"\nPush '{branch}' to GitHub? [y/N] ").lower()
-  if resp != "y":
-    print("Cancelled.")
-    return
+  if not args.yes:
+    resp = input(f"\nPush '{branch}' to GitHub? [y/N] ").lower()
+    if resp != "y":
+      print("Cancelled.")
+      return
 
   # Push in order.
   errors = []
@@ -87,7 +88,7 @@ def cmd_push(args):
       push_branch(repo_path, branch)
       print("OK")
     except GitError as e:
-      print(f"FAILED")
+      print("FAILED")
       print(f"  {e}")
       errors.append(repo_name)
 
@@ -95,7 +96,7 @@ def cmd_push(args):
     print(f"\nFailed to push: {', '.join(errors)}")
     sys.exit(1)
   else:
-    print(f"\nAll repos pushed successfully.")
+    print("\nAll repos pushed successfully.")
 
 
 def main():
@@ -112,6 +113,10 @@ def main():
   parser.add_argument(
     "--repos", nargs="+",
     help="Limit to specific repos.",
+  )
+  parser.add_argument(
+    "-y", "--yes", action="store_true",
+    help="Skip confirmation prompt.",
   )
 
   args = parser.parse_args()

@@ -1,0 +1,2 @@
+model: sonnet
+poll_interval: 30

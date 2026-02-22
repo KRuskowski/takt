@@ -41,9 +41,8 @@ class TestPipelinePanelEvents(unittest.TestCase):
     for i in range(MAX_EVENTS + 10):
       panel._events.appendleft({
         "time": f"{i:02d}:00:00",
-        "stage": "ws/test",
-        "repos": "repo",
-        "event": "triggered",
+        "entity": "step 1",
+        "transition": "queued -> running",
       })
     self.assertEqual(len(panel._events), MAX_EVENTS)
 
@@ -52,33 +51,35 @@ class TestPipelinePanelEvents(unittest.TestCase):
     panel = PipelinePanel()
     panel._events.appendleft({
       "time": "10:00:00",
-      "stage": "ws/test",
-      "repos": "repo-a",
-      "event": "triggered",
+      "entity": "step 1",
+      "transition": "pending -> queued",
     })
     panel._events.appendleft({
       "time": "10:01:00",
-      "stage": "ws/review",
-      "repos": "repo-b",
-      "event": "error",
+      "entity": "step 2",
+      "transition": "queued -> running",
     })
-    self.assertEqual(panel._events[0]["time"], "10:01:00")
-    self.assertEqual(panel._events[1]["time"], "10:00:00")
+    self.assertEqual(
+      panel._events[0]["time"], "10:01:00"
+    )
+    self.assertEqual(
+      panel._events[1]["time"], "10:00:00"
+    )
 
   def test_event_fields(self):
     """Events contain expected fields."""
     panel = PipelinePanel()
     panel._events.appendleft({
       "time": "12:00:00",
-      "stage": "feat/test",
-      "repos": "core, ui",
-      "event": "triggered",
+      "entity": "run 1",
+      "transition": "queued -> running",
     })
     ev = panel._events[0]
     self.assertEqual(ev["time"], "12:00:00")
-    self.assertEqual(ev["stage"], "feat/test")
-    self.assertEqual(ev["repos"], "core, ui")
-    self.assertEqual(ev["event"], "triggered")
+    self.assertEqual(ev["entity"], "run 1")
+    self.assertEqual(
+      ev["transition"], "queued -> running"
+    )
 
 
 class TestPipelinePanelServiceEvents(unittest.TestCase):
@@ -95,27 +96,24 @@ class TestPipelinePanelServiceEvents(unittest.TestCase):
     panel = self._make_panel()
     panel._events.appendleft({
       "time": "10:00:00",
-      "stage": "ws/test",
-      "repos": "old",
-      "event": "triggered",
+      "entity": "ws1",
+      "transition": "old",
     })
     panel.on_service_event({
       "time": "10:01:00",
-      "stage": "ws/review",
-      "repos": "new",
-      "event": "finished:passed",
+      "workspace": "ws2",
+      "event": "run_created",
     })
     self.assertEqual(len(panel._events), 2)
     self.assertEqual(
-      panel._events[0]["stage"], "ws/review"
+      panel._events[0]["entity"], "ws2"
     )
 
   def test_service_event_adds_time(self):
     """Events without time get one added."""
     panel = self._make_panel()
     panel.on_service_event({
-      "stage": "ws/test",
-      "repos": "repo",
+      "workspace": "ws1",
       "event": "triggered",
     })
     self.assertIn("time", panel._events[0])
@@ -125,8 +123,7 @@ class TestPipelinePanelServiceEvents(unittest.TestCase):
     panel = self._make_panel()
     panel.on_service_event({
       "time": "12:34:56",
-      "stage": "ws/test",
-      "repos": "repo",
+      "workspace": "ws1",
       "event": "triggered",
     })
     self.assertEqual(
@@ -139,14 +136,12 @@ class TestPipelinePanelServiceEvents(unittest.TestCase):
     for i in range(5):
       panel.on_service_event({
         "time": f"10:{i:02d}:00",
-        "stage": f"ws/stage-{i}",
-        "repos": "repo",
+        "workspace": f"ws-{i}",
         "event": "triggered",
       })
     self.assertEqual(len(panel._events), 5)
-    # Most recent first.
     self.assertEqual(
-      panel._events[0]["stage"], "ws/stage-4"
+      panel._events[0]["entity"], "ws-4"
     )
 
   def test_service_events_respect_max(self):
@@ -155,51 +150,10 @@ class TestPipelinePanelServiceEvents(unittest.TestCase):
     for i in range(MAX_EVENTS + 5):
       panel.on_service_event({
         "time": f"{i:02d}:00:00",
-        "stage": f"ws/s-{i}",
-        "repos": "r",
+        "workspace": f"ws-{i}",
         "event": "triggered",
       })
     self.assertEqual(len(panel._events), MAX_EVENTS)
-
-
-class TestPipelinePanelRefreshData(unittest.TestCase):
-  """Tests for refresh_data (disk reload fallback)."""
-
-  @mock.patch("tui.widgets.pipeline.load_events")
-  def test_refresh_data_loads_events(self, mock_load):
-    """refresh_data reloads events from disk."""
-    mock_load.return_value = [
-      {"time": "10:00:00", "stage": "ws/test",
-       "repos": "r", "event": "triggered"},
-    ]
-    panel = PipelinePanel()
-    panel.query_one = mock.Mock()
-    table = mock.Mock()
-    panel.query_one.return_value = table
-    panel.refresh_data()
-    self.assertEqual(len(panel._events), 1)
-    mock_load.assert_called_once()
-
-  @mock.patch("tui.widgets.pipeline.load_events")
-  def test_refresh_data_clears_old(self, mock_load):
-    """refresh_data replaces old events."""
-    panel = PipelinePanel()
-    panel._events.appendleft({
-      "time": "old", "stage": "old/s",
-      "repos": "", "event": "old",
-    })
-    mock_load.return_value = [
-      {"time": "new", "stage": "new/s",
-       "repos": "", "event": "new"},
-    ]
-    panel.query_one = mock.Mock()
-    table = mock.Mock()
-    panel.query_one.return_value = table
-    panel.refresh_data()
-    self.assertEqual(len(panel._events), 1)
-    self.assertEqual(
-      panel._events[0]["stage"], "new/s"
-    )
 
 
 if __name__ == "__main__":

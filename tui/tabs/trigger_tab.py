@@ -1,7 +1,7 @@
 """Trigger tab — manual workflow actions.
 
-Sends trigger_stage commands to takt-service when
-connected. Falls back to local marker scanning otherwise.
+Reads pipeline definitions and run history from SQLite.
+Sends trigger_run commands to takt-service when connected.
 """
 
 import asyncio
@@ -16,7 +16,7 @@ log = logging.getLogger("takt.trigger_tab")
 
 
 class TriggerTab(Static):
-  """Workflow action buttons and stage/run overview."""
+  """Workflow action buttons and pipeline/run overview."""
 
   DEFAULT_CSS = """
   TriggerTab {
@@ -53,8 +53,8 @@ class TriggerTab(Static):
   def compose(self) -> ComposeResult:
     with Horizontal(id="trigger-buttons"):
       yield Button(
-        "Trigger Stage", variant="primary",
-        id="btn-trigger-stage",
+        "Trigger Run", variant="primary",
+        id="btn-trigger-run",
       )
       yield Button(
         "Push to GitHub", variant="warning",
@@ -65,24 +65,24 @@ class TriggerTab(Static):
         id="btn-new-ws",
       )
       yield Button(
-        "Add Stage", variant="default",
-        id="btn-add-stage",
+        "Setup Pipeline", variant="default",
+        id="btn-setup-pipeline",
       )
     with Vertical(classes="trigger-section"):
-      yield Static("Stages", classes="trigger-label")
-      yield DataTable(id="trigger-stages-table")
+      yield Static("Pipelines", classes="trigger-label")
+      yield DataTable(id="trigger-pipelines-table")
     with Vertical(classes="trigger-section"):
       yield Static("Recent Runs", classes="trigger-label")
       yield DataTable(id="trigger-runs-table")
 
   def on_mount(self) -> None:
     """Set up tables and load data."""
-    stages_t = self.query_one(
-      "#trigger-stages-table", DataTable
+    pipelines_t = self.query_one(
+      "#trigger-pipelines-table", DataTable
     )
-    stages_t.cursor_type = "row"
-    stages_t.add_columns(
-      "Workspace", "Role", "Repos", "Status"
+    pipelines_t.cursor_type = "row"
+    pipelines_t.add_columns(
+      "Workspace", "Steps", "Type"
     )
 
     runs_t = self.query_one(
@@ -90,34 +90,43 @@ class TriggerTab(Static):
     )
     runs_t.cursor_type = "row"
     runs_t.add_columns(
-      "Workspace", "Status", "Stages", "Started"
+      "ID", "Workspace", "Status", "Trigger", "Created"
     )
     self.refresh_data()
 
   @work(thread=True)
   def refresh_data(self) -> None:
-    """Load stages and runs in worker thread."""
-    from lib.workspace_ops import list_stages
-    from lib.run_log import list_all_runs
-    stages = list_stages()
-    runs = list_all_runs(limit=20)
+    """Load pipelines and runs from SQLite."""
+    from lib import db
+    from lib.workspace_ops import list_workspaces
+    workspaces = list_workspaces()
+    pipelines = []
+    for ws in workspaces:
+      steps = db.get_pipeline(ws["name"])
+      if steps:
+        pipelines.append({
+          "workspace": ws["name"],
+          "steps": ", ".join(s["name"] for s in steps),
+          "types": ", ".join(
+            s["step_type"] for s in steps
+          ),
+        })
+    runs = db.list_runs(limit=20)
     self.app.call_from_thread(
-      self._populate, stages, runs
+      self._populate, pipelines, runs
     )
 
-  def _populate(self, stages, runs) -> None:
+  def _populate(self, pipelines, runs) -> None:
     """Populate tables."""
-    stages_t = self.query_one(
-      "#trigger-stages-table", DataTable
+    pipelines_t = self.query_one(
+      "#trigger-pipelines-table", DataTable
     )
-    stages_t.clear()
-    for s in stages:
-      repos = ", ".join(s.get("repos", [])[:3])
-      stages_t.add_row(
-        s.get("workspace", ""),
-        s.get("role", ""),
-        repos,
-        s.get("status", "idle"),
+    pipelines_t.clear()
+    for p in pipelines:
+      pipelines_t.add_row(
+        p["workspace"],
+        p["steps"],
+        p["types"],
       )
 
     runs_t = self.query_one(
@@ -125,25 +134,24 @@ class TriggerTab(Static):
     )
     runs_t.clear()
     for r in runs:
-      stage_names = ", ".join(
-        r.get("stages", {}).keys()
-      )
+      created = r.get("created_at", "")[:19]
       runs_t.add_row(
+        str(r.get("id", "")),
         r.get("workspace", ""),
         r.get("status", "?"),
-        stage_names,
-        r.get("started", ""),
+        r.get("trigger", ""),
+        created,
       )
 
   def on_button_pressed(
     self, event: Button.Pressed
   ) -> None:
     """Handle action button presses."""
-    if event.button.id == "btn-trigger-stage":
-      from tui.screens import TriggerStageScreen
+    if event.button.id == "btn-trigger-run":
+      from tui.screens import TriggerRunScreen
       self.app.push_screen(
-        TriggerStageScreen(),
-        callback=self._on_stage_triggered,
+        TriggerRunScreen(),
+        callback=self._on_run_triggered,
       )
     elif event.button.id == "btn-push-github":
       from tui.screens import PushGithubScreen
@@ -151,44 +159,48 @@ class TriggerTab(Static):
     elif event.button.id == "btn-new-ws":
       from tui.screens import CreateWorkspaceScreen
       self.app.push_screen(CreateWorkspaceScreen())
-    elif event.button.id == "btn-add-stage":
-      from tui.screens import AddStageScreen
-      self.app.push_screen(AddStageScreen())
+    elif event.button.id == "btn-setup-pipeline":
+      from tui.screens import PipelineSetupScreen
+      self.app.push_screen(
+        PipelineSetupScreen(),
+        callback=self._on_pipeline_saved,
+      )
 
-  def _on_stage_triggered(self, result) -> None:
-    """Handle trigger stage callback.
+  def _on_pipeline_saved(self, result) -> None:
+    """Refresh data after pipeline setup."""
+    if result:
+      self.refresh_data()
 
-    Sends trigger_stage command to the service if
-    connected, otherwise falls back to local triggering.
+  def _on_run_triggered(self, result) -> None:
+    """Handle trigger run callback.
+
+    Sends trigger_run command to the service if
+    connected.
     """
     if not result:
       return
     self.refresh_data()
     ws = result.get("workspace")
-    role = result.get("role")
-    if not ws or not role:
+    if not ws:
       return
     client = getattr(self.app, 'service', None)
     if client:
       asyncio.ensure_future(
-        self._trigger_via_service(ws, role)
+        self._trigger_via_service(ws)
       )
-    else:
-      self._trigger_local(ws, role)
 
-  async def _trigger_via_service(self, ws, role):
-    """Send trigger_stage command to service.
+  async def _trigger_via_service(self, ws):
+    """Send trigger_run command to service.
 
     Args:
       ws: Workspace name.
-      role: Stage role.
     """
     try:
       reply = await self.app.service.send_cmd(
-        "trigger_stage", workspace=ws, role=role,
+        "trigger_run", workspace=ws,
       )
       if reply.get("status") == "ok":
-        self.app.notify(f"Triggered {ws}/{role}")
+        self.app.notify(f"Triggered run for {ws}")
       else:
         self.app.notify(
           reply.get("message", "Trigger failed"),
@@ -196,38 +208,8 @@ class TriggerTab(Static):
         )
     except Exception as e:
       log.error(
-        "trigger_stage failed: %s", e, exc_info=True
+        "trigger_run failed: %s", e, exc_info=True
       )
       self.app.notify(
         f"Trigger failed: {e}", severity="error"
       )
-
-  def _trigger_local(self, ws, role):
-    """Local fallback: scan markers and launch agent.
-
-    Args:
-      ws: Workspace name.
-      role: Stage role.
-    """
-    from bin.pipeline_watch import (
-      build_trigger_prompt,
-      scan_markers,
-    )
-    from lib.config import STAGES_DIR
-    agent_id = f"{ws}/{role}"
-    stage_dir = STAGES_DIR / ws / role
-    markers = scan_markers()
-    repo_markers = markers.get((ws, role), [])
-    if repo_markers:
-      prompt = build_trigger_prompt(
-        ws, role, repo_markers
-      )
-      self.app.launch_agent(
-        agent_id, prompt, str(stage_dir),
-        workspace=ws, role=role,
-      )
-      for repo, _ in repo_markers:
-        marker = (
-          stage_dir / repo / ".pipeline-push"
-        )
-        marker.unlink(missing_ok=True)

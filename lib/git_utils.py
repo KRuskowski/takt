@@ -360,6 +360,36 @@ def set_receive_update(repo_path):
   )
 
 
+def disable_origin_fetch(repo_path):
+  """Make origin push-only by splitting fetch/push URLs.
+
+  Sets the fetch URL to /dev/null so git fetch/pull origin
+  fails. The push URL is preserved so git push origin still
+  works. Stage repos receive incoming changes via push hooks
+  (updateInstead), not fetch.
+
+  Args:
+    repo_path: Path to the repo.
+  """
+  # Read the current origin URL (used for push).
+  push_url = run_git(
+    ["remote", "get-url", "origin"],
+    cwd=repo_path, check=False,
+  )
+  if not push_url:
+    return
+  # Set explicit pushurl to preserve push capability,
+  # then set the main URL to /dev/null to break fetch.
+  run_git(
+    ["remote", "set-url", "--push", "origin", push_url],
+    cwd=repo_path,
+  )
+  run_git(
+    ["remote", "set-url", "origin", "/dev/null"],
+    cwd=repo_path,
+  )
+
+
 def install_push_hook(repo_path):
   """Install a post-receive hook that writes a .pipeline-push marker.
 
