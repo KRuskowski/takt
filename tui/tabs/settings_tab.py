@@ -2,9 +2,9 @@
 
 import yaml
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.binding import Binding
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import (
-  Button,
   DataTable,
   Select,
   Static,
@@ -57,6 +57,12 @@ def save_settings(settings):
 class SettingsTab(Static):
   """Configuration display and service controls."""
 
+  BINDINGS = [
+    Binding("s", "service_start", "Start"),
+    Binding("x", "service_stop", "Stop"),
+    Binding("r", "service_restart", "Restart"),
+  ]
+
   DEFAULT_CSS = """
   SettingsTab {
     height: 1fr;
@@ -83,15 +89,6 @@ class SettingsTab(Static):
     max-height: 15;
     background: #101010;
   }
-
-  SettingsTab #service-buttons {
-    height: auto;
-    margin: 0 0 1 0;
-  }
-
-  SettingsTab #service-buttons Button {
-    margin: 0 1 0 0;
-  }
   """
 
   def compose(self) -> ComposeResult:
@@ -101,19 +98,6 @@ class SettingsTab(Static):
           "takt-service", classes="settings-label"
         )
         yield Static("", id="service-status-label")
-        with Horizontal(id="service-buttons"):
-          yield Button(
-            "Start", variant="success",
-            id="btn-service-start",
-          )
-          yield Button(
-            "Stop", variant="error",
-            id="btn-service-stop",
-          )
-          yield Button(
-            "Restart", variant="warning",
-            id="btn-service-restart",
-          )
       yield Static("Default Model", classes="settings-label")
       yield Select(
         MODELS, id="model-select", allow_blank=False,
@@ -207,16 +191,17 @@ class SettingsTab(Static):
       settings["model"] = event.value
       save_settings(settings)
 
-  def on_button_pressed(
-    self, event: Button.Pressed
-  ) -> None:
-    """Handle service control buttons."""
-    if event.button.id == "btn-service-start":
-      self.app.action_service_start()
-      self.set_timer(2, self._update_service_status)
-    elif event.button.id == "btn-service-stop":
-      self.app.action_service_stop()
-      self.set_timer(2, self._update_service_status)
-    elif event.button.id == "btn-service-restart":
-      self.app.action_service_restart()
-      self.set_timer(2, self._update_service_status)
+  def action_service_start(self) -> None:
+    """Start takt-service."""
+    self.app.action_service_start()
+    self.set_timer(2, self._update_service_status)
+
+  def action_service_stop(self) -> None:
+    """Stop takt-service."""
+    self.app.action_service_stop()
+    self.set_timer(2, self._update_service_status)
+
+  def action_service_restart(self) -> None:
+    """Restart takt-service."""
+    self.app.action_service_restart()
+    self.set_timer(2, self._update_service_status)

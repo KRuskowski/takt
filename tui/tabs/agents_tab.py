@@ -14,6 +14,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import DataTable, Static
 
+from tui.mixins import TabBase
 from tui.widgets.agent_output import render_output_line
 from tui.widgets.selectable_log import SelectableLog
 
@@ -38,8 +39,10 @@ _STATE_ICONS = {
 }
 
 
-class AgentsTab(Static):
+class AgentsTab(TabBase, Static):
   """Agent list + output viewer in a vertical split."""
+
+  _status_id = "agents-status"
 
   BINDINGS = [
     Binding("k", "cancel_agent", "Cancel"),
@@ -63,6 +66,11 @@ class AgentsTab(Static):
     background: #101010;
   }
 
+  AgentsTab #agents-status {
+    height: auto;
+    color: $warning;
+  }
+
   AgentsTab #agent-output-section {
     height: 1fr;
   }
@@ -84,14 +92,15 @@ class AgentsTab(Static):
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
     self._selected_id = None
-    self._agent_data = {}  # agent_id -> state dict
-    self._step_ids = {}  # agent_id -> step_id
+    self._agent_data = {}
+    self._step_ids = {}
     self._viewer_line_count = 0
 
   def compose(self) -> ComposeResult:
     with Vertical(id="agents-list-section"):
       yield Static("Agents", classes="panel-title")
       yield DataTable(id="agents-list-table")
+      yield Static("", id="agents-status")
     with Vertical(id="agent-output-section"):
       yield Static(
         "Select an agent to view output",
@@ -464,7 +473,7 @@ class AgentsTab(Static):
       return
     client = getattr(self.app, 'service', None)
     if client:
-      return  # Live output via SUB socket.
+      return
     self._append_local_lines(self._selected_id)
 
   def _append_local_lines(self, agent_id) -> None:
@@ -544,19 +553,17 @@ class AgentsTab(Static):
         severity="warning",
       )
       return
-    from tui.screens import ConfirmScreen
-    self.app.push_screen(
-      ConfirmScreen(
-        f"Cancel agent '{aid}'?", aid
-      ),
-      callback=self._on_cancel_confirmed,
+    self._confirm(
+      f"Cancel agent '{aid}'?",
+      self._on_cancel_confirmed,
+      aid,
     )
 
   def _on_cancel_confirmed(self, result) -> None:
     """Handle cancel confirmation.
 
     Args:
-      result: Agent ID string if confirmed, None otherwise.
+      result: Agent ID string.
     """
     if not result:
       return
@@ -626,19 +633,17 @@ class AgentsTab(Static):
         severity="warning",
       )
       return
-    from tui.screens import ConfirmScreen
-    self.app.push_screen(
-      ConfirmScreen(
-        f"Retry agent '{aid}'?", aid
-      ),
-      callback=self._on_retry_confirmed,
+    self._confirm(
+      f"Retry agent '{aid}'?",
+      self._on_retry_confirmed,
+      aid,
     )
 
   def _on_retry_confirmed(self, result) -> None:
     """Handle retry confirmation.
 
     Args:
-      result: Agent ID string if confirmed, None otherwise.
+      result: Agent ID string.
     """
     if not result:
       return

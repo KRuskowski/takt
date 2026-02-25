@@ -13,7 +13,6 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal
 from textual.widgets import (
-  Button,
   DataTable,
   Input,
   Label,
@@ -23,6 +22,7 @@ from textual.widgets import (
 )
 from textual import work
 
+from tui.mixins import TabBase
 from tui.widgets.agent_output import render_output_line
 from tui.widgets.selectable_log import SelectableLog
 
@@ -45,14 +45,20 @@ _STATE_ICONS = {
 }
 
 
-class MetaTab(Static):
+class MetaTab(TabBase, Static):
   """Meta agents list with inline editor, run history,
   and output viewer."""
+
+  _status_id = "meta-status"
 
   BINDINGS = [
     Binding("n", "new_agent", "New"),
     Binding("d", "delete_agent", "Delete"),
     Binding("r", "run_agent", "Run"),
+    Binding("c", "cancel_run", "Cancel Run"),
+    Binding(
+      "ctrl+s", "save_agent", "Save", show=True
+    ),
   ]
 
   DEFAULT_CSS = """
@@ -60,24 +66,33 @@ class MetaTab(Static):
     height: 1fr;
   }
 
-  MetaTab #meta-agents-section {
+  MetaTab #meta-top-row {
     height: auto;
-    max-height: 30%;
+    max-height: 40%;
     border-bottom: solid #2a2a2a;
+  }
+
+  MetaTab #meta-agents-section {
+    width: 1fr;
+    height: auto;
+    border-right: solid #2a2a2a;
   }
 
   MetaTab #meta-agents-table {
     height: auto;
-    max-height: 10;
+    max-height: 12;
     background: #101010;
   }
 
-  MetaTab #meta-agent-buttons {
+  MetaTab #meta-runs-section {
+    width: 1fr;
     height: auto;
   }
 
-  MetaTab #meta-agent-buttons Button {
-    margin: 0 1 0 0;
+  MetaTab #meta-runs-table {
+    height: auto;
+    max-height: 12;
+    background: #101010;
   }
 
   MetaTab #meta-editor-section {
@@ -119,30 +134,9 @@ class MetaTab(Static):
     margin: 0 0 1 0;
   }
 
-  MetaTab #meta-editor-actions {
-    height: auto;
-    margin: 0 0 1 0;
-  }
-
-  MetaTab #meta-editor-actions Button {
-    margin: 0 1 0 0;
-  }
-
   MetaTab #meta-status {
     height: auto;
     color: $warning;
-  }
-
-  MetaTab #meta-runs-section {
-    height: auto;
-    max-height: 25%;
-    border-bottom: solid #2a2a2a;
-  }
-
-  MetaTab #meta-runs-table {
-    height: auto;
-    max-height: 8;
-    background: #101010;
   }
 
   MetaTab #meta-output-section {
@@ -166,30 +160,21 @@ class MetaTab(Static):
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
     self._agents = []
-    self._editing_id = None  # None = new, int = editing
+    self._editing_id = None
     self._selected_agent_id = None
     self._selected_run_id = None
     self._runs = []
 
   def compose(self) -> ComposeResult:
-    with Vertical(id="meta-agents-section"):
-      yield Static("Meta Agents", classes="panel-title")
-      yield DataTable(id="meta-agents-table")
-      with Horizontal(id="meta-agent-buttons"):
-        yield Button(
-          "New", variant="primary", id="meta-btn-new"
+    with Horizontal(id="meta-top-row"):
+      with Vertical(id="meta-agents-section"):
+        yield Static("Meta Agents", classes="panel-title")
+        yield DataTable(id="meta-agents-table")
+      with Vertical(id="meta-runs-section"):
+        yield Static(
+          "Run History", classes="panel-title"
         )
-        yield Button(
-          "Delete", variant="error",
-          id="meta-btn-delete",
-        )
-        yield Button(
-          "Run", variant="warning", id="meta-btn-run"
-        )
-        yield Button(
-          "Cancel Run", variant="default",
-          id="meta-btn-cancel",
-        )
+        yield DataTable(id="meta-runs-table")
     with Vertical(id="meta-editor-section"):
       with Horizontal(id="meta-editor-row"):
         yield Label("Name:")
@@ -219,16 +204,6 @@ class MetaTab(Static):
       yield Static("Prompt:", id="meta-prompt-label")
       yield TextArea("", id="meta-prompt-area")
       yield Static("", id="meta-status")
-      with Horizontal(id="meta-editor-actions"):
-        yield Button(
-          "Save", variant="primary",
-          id="meta-btn-save",
-        )
-    with Vertical(id="meta-runs-section"):
-      yield Static(
-        "Run History", classes="panel-title"
-      )
-      yield DataTable(id="meta-runs-table")
     with Vertical(id="meta-output-section"):
       yield Static(
         "Select an agent to view runs",
@@ -530,30 +505,14 @@ class MetaTab(Static):
     )
     status.update("Select a run to view output")
 
-  # -- Button handlers --
-
-  def on_button_pressed(
-    self, event: Button.Pressed
-  ) -> None:
-    """Handle button presses."""
-    bid = event.button.id
-    if bid == "meta-btn-new":
-      self.action_new_agent()
-    elif bid == "meta-btn-delete":
-      self.action_delete_agent()
-    elif bid == "meta-btn-run":
-      self.action_run_agent()
-    elif bid == "meta-btn-cancel":
-      self._do_cancel_run()
-    elif bid == "meta-btn-save":
-      self._do_save()
+  # -- Keybinding actions --
 
   def action_new_agent(self) -> None:
     """Clear the editor for a new agent."""
     self._clear_editor()
     self.query_one("#meta-name-input", Input).focus()
 
-  def _do_save(self) -> None:
+  def action_save_agent(self) -> None:
     """Save the editor contents (create or update)."""
     data = self._read_editor()
     if data is None:
@@ -630,13 +589,10 @@ class MetaTab(Static):
         "No agent selected", severity="warning"
       )
       return
-    from tui.screens import ConfirmScreen
-    self.app.push_screen(
-      ConfirmScreen(
-        f"Delete meta agent '{agent['name']}'?",
-        str(agent["id"]),
-      ),
-      callback=self._on_delete_confirmed,
+    self._confirm(
+      f"Delete meta agent '{agent['name']}'?",
+      self._on_delete_confirmed,
+      str(agent["id"]),
     )
 
   def _on_delete_confirmed(self, result) -> None:
@@ -752,7 +708,7 @@ class MetaTab(Static):
       self._load_runs, agent_id
     )
 
-  def _do_cancel_run(self) -> None:
+  def action_cancel_run(self) -> None:
     """Cancel the selected run."""
     if self._selected_run_id is None:
       self.app.notify(
@@ -840,15 +796,6 @@ class MetaTab(Static):
       )
     except Exception:
       return None
-
-  def _set_status(self, text: str) -> None:
-    """Update the inline status label.
-
-    Args:
-      text: Status message.
-    """
-    status = self.query_one("#meta-status", Static)
-    status.update(text)
 
   def on_meta_update(self, data) -> None:
     """Handle meta.update events from service.

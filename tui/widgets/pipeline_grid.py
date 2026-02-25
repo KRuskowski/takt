@@ -9,7 +9,8 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Static
+from textual.css.query import NoMatches
+from textual.widgets import Static, TabbedContent
 from textual import work
 
 # Display state constants.
@@ -274,6 +275,11 @@ class PipelineGridPanel(Vertical):
     static.update(flow_text)
 
   def action_trigger_run(self) -> None:
-    """Open the trigger run modal."""
-    from tui.screens import TriggerRunScreen
-    self.app.push_screen(TriggerRunScreen())
+    """Switch to the Trigger tab."""
+    try:
+      tabs = self.app.query_one(
+        "#tabs", TabbedContent
+      )
+      tabs.active = "tab-trigger"
+    except NoMatches:
+      pass

@@ -17,8 +17,9 @@ from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widget import Widget
+from textual.containers import Horizontal
 from textual.widgets import (
-  Footer, Header, TabbedContent, TabPane,
+  Footer, Header, Input, Label, TabbedContent, TabPane,
 )
 from textual.widgets._header import (
   HeaderIcon, HeaderTitle,
@@ -83,11 +84,11 @@ class TaktApp(App):
 
   BINDINGS = [
     Binding("q", "quit", "Quit"),
-    Binding("r", "refresh", "Refresh"),
-    Binding("n", "new_workspace", "New WS"),
-    Binding("c", "claim_target", "Claim"),
-    Binding("x", "release_target", "Release"),
+    Binding("ctrl+r", "refresh", "Refresh"),
     Binding("ctrl+w", "close_tab", "Close Tab"),
+    Binding(
+      "colon", "show_command_bar", ":", show=False
+    ),
   ]
 
   def __init__(self, **kwargs):
@@ -157,7 +158,30 @@ class TaktApp(App):
         yield TriggerTab(id="trigger-tab")
       with TabPane("Settings", id="tab-settings"):
         yield SettingsTab(id="settings-tab")
+    with Horizontal(id="command-bar"):
+      yield Label(":")
+      yield Input(
+        id="command-input",
+        placeholder="command (tab to help)",
+      )
     yield Footer()
+
+  # Tab name aliases for :command dispatch.
+  _TAB_ALIASES = {
+    "dashboard": "tab-dashboard",
+    "dash": "tab-dashboard",
+    "pipeline": "tab-pipeline",
+    "pl": "tab-pipeline",
+    "meta": "tab-meta",
+    "agents": "tab-agents",
+    "ag": "tab-agents",
+    "targets": "tab-targets",
+    "tgt": "tab-targets",
+    "trigger": "tab-trigger",
+    "trig": "tab-trigger",
+    "settings": "tab-settings",
+    "set": "tab-settings",
+  }
 
   def on_mount(self) -> None:
     """Start dashboard polling, connect to service."""
@@ -165,6 +189,7 @@ class TaktApp(App):
     setup_logging()
     from lib import db
     db.migrate()
+    self.query_one("#command-bar").display = False
     dashboard = self.query_one(
       "#dashboard-tab", DashboardTab
     )
@@ -351,6 +376,91 @@ class TaktApp(App):
       log.debug(
         "meta update handler failed", exc_info=True
       )
+
+  # -- Command bar --
+
+  def action_show_command_bar(self) -> None:
+    """Show the vim-style command bar."""
+    bar = self.query_one("#command-bar")
+    bar.display = True
+    cmd_input = self.query_one("#command-input", Input)
+    cmd_input.value = ""
+    cmd_input.focus()
+
+  def _hide_command_bar(self) -> None:
+    """Hide the command bar and restore focus."""
+    bar = self.query_one("#command-bar")
+    bar.display = False
+    try:
+      tabs = self.query_one("#tabs", TabbedContent)
+      tabs.focus()
+    except NoMatches:
+      pass
+
+  def on_input_submitted(
+    self, event: Input.Submitted
+  ) -> None:
+    """Dispatch :commands on Enter."""
+    if event.input.id != "command-input":
+      return
+    cmd = event.input.value.strip().lower()
+    self._hide_command_bar()
+    if not cmd:
+      return
+    self._dispatch_command(cmd)
+
+  def on_key(self, event: events.Key) -> None:
+    """Handle Escape to dismiss command bar."""
+    bar = self.query_one("#command-bar")
+    if bar.display and event.key == "escape":
+      event.stop()
+      event.prevent_default()
+      self._hide_command_bar()
+
+  def _dispatch_command(self, cmd) -> None:
+    """Parse and execute a command string.
+
+    Args:
+      cmd: Command string from the command bar.
+    """
+    # Tab switching.
+    tab_id = self._TAB_ALIASES.get(cmd)
+    if tab_id:
+      try:
+        tabs = self.query_one("#tabs", TabbedContent)
+        tabs.active = tab_id
+      except NoMatches:
+        pass
+      return
+    # Built-in commands.
+    if cmd in ("q", "quit"):
+      self.exit()
+    elif cmd in ("r", "refresh"):
+      self.action_refresh()
+    elif cmd in ("h", "help", "?"):
+      self._show_help()
+    elif cmd in ("start",):
+      self.action_service_start()
+    elif cmd in ("stop",):
+      self.action_service_stop()
+    elif cmd in ("restart",):
+      self.action_service_restart()
+    else:
+      self.notify(
+        f"Unknown command: {cmd}", severity="warning"
+      )
+
+  def _show_help(self) -> None:
+    """Display available commands as a notification."""
+    lines = [
+      "Commands:",
+      "  dashboard, pipeline, meta, agents,",
+      "  targets, trigger, settings — switch tab",
+      "  refresh — reload all data",
+      "  start/stop/restart — service control",
+      "  quit — exit takt",
+    ]
+    self.notify("\n".join(lines), timeout=8)
 
   # -- Agent management via service --
 
@@ -572,7 +682,7 @@ class TaktApp(App):
   # -- Delegated actions --
 
   def action_refresh(self) -> None:
-    """Refresh dashboard panels."""
+    """Refresh all tab data."""
     try:
       dashboard = self.query_one(
         "#dashboard-tab", DashboardTab
@@ -616,56 +726,6 @@ class TaktApp(App):
       pass
     except Exception:
       log.debug("refresh trigger failed", exc_info=True)
-
-  def action_new_workspace(self) -> None:
-    """Open create workspace modal."""
-    from tui.screens import CreateWorkspaceScreen
-    self.push_screen(CreateWorkspaceScreen())
-
-  def action_claim_target(self) -> None:
-    """Open claim target modal."""
-    try:
-      from tui.widgets.targets import TargetsPanel
-      targets_panel = self.query_one(
-        "#targets-panel", TargetsPanel
-      )
-      row_key = targets_panel.get_selected_target()
-      if row_key:
-        from tui.screens import ClaimTargetScreen
-        self.push_screen(ClaimTargetScreen(row_key))
-    except NoMatches:
-      pass
-    except Exception:
-      log.debug("claim target failed", exc_info=True)
-
-  def action_release_target(self) -> None:
-    """Release the selected target."""
-    try:
-      from tui.widgets.targets import TargetsPanel
-      targets_panel = self.query_one(
-        "#targets-panel", TargetsPanel
-      )
-      row_key = targets_panel.get_selected_target()
-      if row_key:
-        from tui.screens import ConfirmScreen
-        self.push_screen(
-          ConfirmScreen(
-            f"Release target '{row_key}'?",
-            row_key,
-          ),
-          callback=self._on_release_confirmed,
-        )
-    except NoMatches:
-      pass
-    except Exception:
-      log.debug("release target failed", exc_info=True)
-
-  def _on_release_confirmed(self, result) -> None:
-    """Handle release confirmation."""
-    if result:
-      from lib.target_ops import release_lock
-      release_lock(result)
-      self.action_refresh()
 
   async def on_unmount(self) -> None:
     """Disconnect from service and cancel local agents."""
