@@ -1,8 +1,9 @@
 """Targets tab — full target management.
 
-DataTable of all non-template targets with action buttons
-for claim, release, start, stop, clone, and delete. Polls
-target state every 10s.
+DataTable of all non-template targets with keybinding
+actions for claim, release, start, stop, clone, and
+delete. Inline forms replace modals. Polls target state
+every 10s.
 """
 
 import logging
@@ -10,15 +11,33 @@ import shutil
 import subprocess
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal
-from textual.widgets import Button, DataTable, Static
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.widgets import (
+  DataTable, Input, Label, Select, Static,
+)
 from textual import work
+
+from tui.mixins import TabBase
 
 log = logging.getLogger("takt.targets_tab")
 
 
-class TargetsTab(Static):
+class TargetsTab(TabBase, Static):
   """Full target management tab."""
+
+  _status_id = "targets-tab-status"
+
+  BINDINGS = [
+    Binding("c", "claim_target", "Claim"),
+    Binding("x", "release_target", "Release"),
+    Binding("u", "start_target", "Up"),
+    Binding("o", "stop_target", "Down"),
+    Binding("l", "clone_target", "Clone"),
+    Binding("d", "delete_target", "Delete"),
+    Binding("escape", "hide_forms", "Cancel",
+            show=False),
+  ]
 
   DEFAULT_CSS = """
   TargetsTab {
@@ -31,19 +50,46 @@ class TargetsTab(Static):
     background: #101010;
   }
 
-  TargetsTab #targets-tab-buttons {
-    height: auto;
-    margin: 1 0;
-  }
-
-  TargetsTab #targets-tab-buttons Button {
-    margin: 0 1 0 0;
-  }
-
   TargetsTab #targets-tab-status {
     height: auto;
     margin: 1 0 0 0;
     color: #cccccc;
+  }
+
+  TargetsTab #claim-form {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    border: solid #2a2a2a;
+  }
+
+  TargetsTab #claim-form Label {
+    margin: 0 1 0 0;
+    padding: 1 0 0 0;
+  }
+
+  TargetsTab #claim-form Input {
+    width: 40;
+  }
+
+  TargetsTab #clone-form {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    border: solid #2a2a2a;
+  }
+
+  TargetsTab #clone-form Label {
+    margin: 0 1 0 0;
+    padding: 1 0 0 0;
+  }
+
+  TargetsTab #clone-form Select {
+    width: 30;
+  }
+
+  TargetsTab #clone-form Input {
+    width: 30;
   }
   """
 
@@ -54,31 +100,29 @@ class TargetsTab(Static):
   def compose(self) -> ComposeResult:
     yield Static("Targets", classes="panel-title")
     yield DataTable(id="targets-tab-table")
-    with Horizontal(id="targets-tab-buttons"):
-      yield Button(
-        "Claim", variant="primary",
-        id="btn-claim",
-      )
-      yield Button(
-        "Release", variant="default",
-        id="btn-release",
-      )
-      yield Button(
-        "Start", variant="success",
-        id="btn-start",
-      )
-      yield Button(
-        "Stop", variant="warning",
-        id="btn-stop",
-      )
-      yield Button(
-        "Clone", variant="default",
-        id="btn-clone",
-      )
-      yield Button(
-        "Delete", variant="error",
-        id="btn-delete",
-      )
+    with Vertical(id="claim-form"):
+      with Horizontal():
+        yield Label("Workspace:")
+        yield Input(
+          placeholder="workspace-name",
+          id="claim-ws-input",
+        )
+    with Vertical(id="clone-form"):
+      with Horizontal():
+        yield Label("Template:")
+        yield Select([], id="clone-tpl-select")
+      with Horizontal():
+        yield Label("Name:")
+        yield Input(
+          placeholder="deb-02",
+          id="clone-name-input",
+        )
+      with Horizontal():
+        yield Label("IP:")
+        yield Input(
+          placeholder="10.101.0.100",
+          id="clone-ip-input",
+        )
     yield Static("", id="targets-tab-status")
 
   def on_mount(self) -> None:
@@ -90,6 +134,8 @@ class TargetsTab(Static):
     table.add_columns(
       "Name", "Type", "Host", "State", "Claimed By",
     )
+    self.query_one("#claim-form").display = False
+    self.query_one("#clone-form").display = False
     self.refresh_data()
     self.set_interval(10, self.refresh_data)
 
@@ -122,7 +168,6 @@ class TargetsTab(Static):
     table = self.query_one(
       "#targets-tab-table", DataTable
     )
-    # Preserve cursor position.
     old_row = 0
     if table.row_count > 0:
       old_row = table.cursor_row
@@ -172,58 +217,63 @@ class TargetsTab(Static):
         return t
     return None
 
-  def _set_status(self, text: str) -> None:
-    """Update the status line.
-
-    Args:
-      text: Status message.
-    """
-    status = self.query_one(
-      "#targets-tab-status", Static
-    )
-    status.update(text)
-
-  def on_button_pressed(
-    self, event: Button.Pressed
-  ) -> None:
-    """Handle action button presses."""
-    bid = event.button.id
-    if bid == "btn-claim":
-      self._do_claim()
-    elif bid == "btn-release":
-      self._do_release()
-    elif bid == "btn-start":
-      self._do_start()
-    elif bid == "btn-stop":
-      self._do_stop()
-    elif bid == "btn-clone":
-      self._do_clone()
-    elif bid == "btn-delete":
-      self._do_delete()
+  def action_hide_forms(self) -> None:
+    """Hide inline forms on Escape."""
+    self.query_one("#claim-form").display = False
+    self.query_one("#clone-form").display = False
 
   # -- Claim --
 
-  def _do_claim(self) -> None:
-    """Open claim modal for the selected target."""
+  def action_claim_target(self) -> None:
+    """Show inline claim form for the selected target."""
     name = self._get_selected()
     if not name:
       self._set_status("No target selected.")
       return
-    from tui.screens import ClaimTargetScreen
-    self.app.push_screen(
-      ClaimTargetScreen(name),
-      callback=self._on_claimed,
-    )
+    self.query_one("#clone-form").display = False
+    self.query_one("#claim-form").display = True
+    ws_input = self.query_one("#claim-ws-input", Input)
+    ws_input.value = ""
+    ws_input.focus()
 
-  def _on_claimed(self, result) -> None:
-    """Handle claim callback."""
-    if result:
-      self._set_status(f"Claimed {result}.")
+  def on_input_submitted(
+    self, event: Input.Submitted
+  ) -> None:
+    """Handle Enter in inline form inputs."""
+    if event.input.id == "claim-ws-input":
+      self._submit_claim()
+    elif event.input.id == "clone-ip-input":
+      self._submit_clone()
+
+  def _submit_claim(self) -> None:
+    """Process the inline claim form."""
+    name = self._get_selected()
+    if not name:
+      self._set_status("No target selected.")
+      return
+    ws_input = self.query_one("#claim-ws-input", Input)
+    workspace = ws_input.value.strip()
+    if not workspace:
+      self._set_status("Workspace name is required.")
+      return
+    from lib.target_ops import read_lock, write_lock
+    lock = read_lock(name)
+    if lock:
+      self._set_status(
+        f"Already claimed by '{lock['workspace']}'."
+      )
+      return
+    try:
+      write_lock(name, workspace)
+      self.query_one("#claim-form").display = False
+      self._set_status(f"Claimed {name}.")
       self.refresh_data()
+    except Exception as e:
+      self._set_status(f"Error: {e}")
 
   # -- Release --
 
-  def _do_release(self) -> None:
+  def action_release_target(self) -> None:
     """Release the selected target after confirmation."""
     name = self._get_selected()
     if not name:
@@ -233,12 +283,10 @@ class TargetsTab(Static):
     if info and not info["lock"]:
       self._set_status(f"{name} is not claimed.")
       return
-    from tui.screens import ConfirmScreen
-    self.app.push_screen(
-      ConfirmScreen(
-        f"Release target '{name}'?", name,
-      ),
-      callback=self._on_release_confirmed,
+    self._confirm(
+      f"Release target '{name}'?",
+      self._on_release_confirmed,
+      name,
     )
 
   def _on_release_confirmed(self, result) -> None:
@@ -251,7 +299,7 @@ class TargetsTab(Static):
 
   # -- Start --
 
-  def _do_start(self) -> None:
+  def action_start_target(self) -> None:
     """Start the selected target."""
     name = self._get_selected()
     if not name:
@@ -309,8 +357,8 @@ class TargetsTab(Static):
 
   # -- Stop --
 
-  def _do_stop(self) -> None:
-    """Stop the selected target."""
+  def action_stop_target(self) -> None:
+    """Stop the selected target after confirmation."""
     name = self._get_selected()
     if not name:
       self._set_status("No target selected.")
@@ -323,12 +371,10 @@ class TargetsTab(Static):
         f"{name} is hardware — stop manually."
       )
       return
-    from tui.screens import ConfirmScreen
-    self.app.push_screen(
-      ConfirmScreen(
-        f"Shut down VM '{name}'?", name,
-      ),
-      callback=self._on_stop_confirmed,
+    self._confirm(
+      f"Shut down VM '{name}'?",
+      self._on_stop_confirmed,
+      name,
     )
 
   def _on_stop_confirmed(self, result) -> None:
@@ -378,23 +424,72 @@ class TargetsTab(Static):
 
   # -- Clone --
 
-  def _do_clone(self) -> None:
-    """Open clone modal."""
-    from tui.screens import CloneTargetScreen
-    self.app.push_screen(
-      CloneTargetScreen(),
-      callback=self._on_clone_result,
+  def action_clone_target(self) -> None:
+    """Show inline clone form."""
+    self.query_one("#claim-form").display = False
+    clone_form = self.query_one("#clone-form")
+    clone_form.display = True
+    self._load_templates()
+    name_input = self.query_one(
+      "#clone-name-input", Input
+    )
+    name_input.value = ""
+    self.query_one("#clone-ip-input", Input).value = ""
+    name_input.focus()
+
+  @work(thread=True)
+  def _load_templates(self) -> None:
+    """Load template targets in worker."""
+    from lib.target_ops import get_all_targets
+    templates = [
+      t for t in get_all_targets()
+      if t.get("template")
+    ]
+    self.app.call_from_thread(
+      self._populate_templates, templates
     )
 
-  def _on_clone_result(self, result) -> None:
-    """Handle clone modal result."""
-    if not result:
+  def _populate_templates(self, templates) -> None:
+    """Populate template select.
+
+    Args:
+      templates: List of template target dicts.
+    """
+    tpl_select = self.query_one(
+      "#clone-tpl-select", Select
+    )
+    tpl_select.set_options(
+      [(t["name"], t["name"]) for t in templates]
+    )
+
+  def _submit_clone(self) -> None:
+    """Process the inline clone form."""
+    tpl_select = self.query_one(
+      "#clone-tpl-select", Select
+    )
+    name_input = self.query_one(
+      "#clone-name-input", Input
+    )
+    ip_input = self.query_one(
+      "#clone-ip-input", Input
+    )
+    template = tpl_select.value
+    if template is Select.BLANK:
+      self._set_status("Select a template.")
       return
-    template, name, ip = result
+    name = name_input.value.strip()
+    if not name:
+      self._set_status("Clone name is required.")
+      return
+    ip = ip_input.value.strip()
+    if not ip:
+      self._set_status("IP address is required.")
+      return
+    self.query_one("#clone-form").display = False
     self._set_status(
       f"Cloning {template} -> {name} ({ip})..."
     )
-    self._run_clone(template, name, ip)
+    self._run_clone(str(template), name, ip)
 
   @work(thread=True)
   def _run_clone(self, template, name, ip) -> None:
@@ -445,7 +540,7 @@ class TargetsTab(Static):
 
   # -- Delete --
 
-  def _do_delete(self) -> None:
+  def action_delete_target(self) -> None:
     """Delete the selected target after confirmation."""
     name = self._get_selected()
     if not name:
@@ -457,13 +552,10 @@ class TargetsTab(Static):
         f"{name} is a template — cannot delete."
       )
       return
-    from tui.screens import ConfirmScreen
-    self.app.push_screen(
-      ConfirmScreen(
-        f"Delete clone '{name}'? This is irreversible.",
-        name,
-      ),
-      callback=self._on_delete_confirmed,
+    self._confirm(
+      f"Delete clone '{name}'? This is irreversible.",
+      self._on_delete_confirmed,
+      name,
     )
 
   def _on_delete_confirmed(self, result) -> None:

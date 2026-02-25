@@ -6,7 +6,8 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.widgets import DataTable, Static
+from textual.css.query import NoMatches
+from textual.widgets import DataTable, Static, TabbedContent
 from textual.containers import Vertical
 from textual import work
 
@@ -113,14 +114,22 @@ class WorkspacesPanel(Vertical):
       )
 
   def action_trigger_workspace(self) -> None:
-    """Open trigger modal for the selected workspace."""
+    """Switch to Trigger tab and preselect workspace."""
     ws_name = self._get_selected_workspace()
     if not ws_name:
       return
-    from tui.screens import TriggerRunScreen
-    self.app.push_screen(TriggerRunScreen(
-      workspace=ws_name,
-    ))
+    try:
+      tabs = self.app.query_one(
+        "#tabs", TabbedContent
+      )
+      tabs.active = "tab-trigger"
+      from tui.tabs.trigger_tab import TriggerTab
+      trigger = self.app.query_one(
+        "#trigger-tab", TriggerTab
+      )
+      trigger.trigger_for_workspace(ws_name)
+    except NoMatches:
+      pass
 
   def _get_selected_workspace(self) -> str | None:
     """Return the name of the currently selected row."""
@@ -139,11 +148,19 @@ class WorkspacesPanel(Vertical):
       return None
 
   def action_setup_pipeline(self) -> None:
-    """Open pipeline setup for the selected workspace."""
+    """Switch to Pipeline tab and preselect workspace."""
     ws_name = self._get_selected_workspace()
     if not ws_name:
       return
-    from tui.screens import PipelineSetupScreen
-    self.app.push_screen(PipelineSetupScreen(
-      workspace=ws_name,
-    ))
+    try:
+      tabs = self.app.query_one(
+        "#tabs", TabbedContent
+      )
+      tabs.active = "tab-pipeline"
+      from tui.tabs.pipeline_tab import PipelineTab
+      pipeline = self.app.query_one(
+        "#pipeline-tab", PipelineTab
+      )
+      pipeline.select_workspace(ws_name)
+    except NoMatches:
+      pass

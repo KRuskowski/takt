@@ -102,3 +102,48 @@ Header {
 Footer {
   background: #1a1a1a;
 }
+
+/* Visible focus indicator for keyboard navigation. */
+DataTable:focus {
+  background-tint: #42a5f5 15%;
+  border: heavy #42a5f5;
+}
+
+Input:focus {
+  border: heavy #42a5f5;
+}
+
+TextArea:focus {
+  border: heavy #42a5f5;
+}
+
+Select:focus {
+  border: heavy #42a5f5;
+}
+
+SelectionList:focus {
+  border: heavy #42a5f5;
+}
+
+/* Command bar — vim-style :command input. */
+#command-bar {
+  dock: bottom;
+  height: auto;
+  background: #1a1a1a;
+  padding: 0;
+}
+
+#command-bar Label {
+  width: 1;
+  color: #42a5f5;
+  padding: 0;
+}
+
+#command-input {
+  width: 1fr;
+  border: none;
+  background: #1a1a1a;
+  color: #cccccc;
+  padding: 0;
+  height: 1;
+}

@@ -12,7 +12,6 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import (
-  Button,
   DataTable,
   Label,
   Select,
@@ -21,11 +20,15 @@ from textual.widgets import (
 )
 from textual import work
 
+from tui.mixins import TabBase
+
 log = logging.getLogger("takt.pipeline_tab")
 
 
-class PipelineTab(Static):
+class PipelineTab(TabBase, Static):
   """Inline pipeline editor with step table and role area."""
+
+  _status_id = "pl-status"
 
   DEFAULT_CSS = """
   PipelineTab {
@@ -53,17 +56,13 @@ class PipelineTab(Static):
     margin: 0 0 1 0;
   }
 
-  PipelineTab #pl-step-buttons {
+  PipelineTab #pl-step-row {
     height: auto;
     margin: 0 0 1 0;
   }
 
-  PipelineTab #pl-step-buttons Select {
+  PipelineTab #pl-step-row Select {
     width: 40;
-  }
-
-  PipelineTab #pl-step-buttons Button {
-    margin: 0 1 0 0;
   }
 
   PipelineTab #pl-model-row {
@@ -91,15 +90,6 @@ class PipelineTab(Static):
     margin: 0 0 1 0;
   }
 
-  PipelineTab #pl-action-buttons {
-    height: auto;
-    dock: bottom;
-  }
-
-  PipelineTab #pl-action-buttons Button {
-    margin: 0 1 0 0;
-  }
-
   PipelineTab #pl-status {
     height: auto;
     margin: 1 0 0 0;
@@ -108,8 +98,14 @@ class PipelineTab(Static):
   """
 
   BINDINGS = [
+    Binding("a", "add_step", "Add"),
+    Binding("x", "remove_step", "Remove"),
     Binding("j", "move_down", "Move Down", show=False),
     Binding("k", "move_up", "Move Up", show=False),
+    Binding(
+      "ctrl+s", "save_pipeline", "Save", show=True
+    ),
+    Binding("d", "delete_pipeline", "Delete"),
   ]
 
   def __init__(self, **kwargs) -> None:
@@ -126,15 +122,9 @@ class PipelineTab(Static):
     yield DataTable(
       id="pl-steps-table", cursor_type="row"
     )
-    with Horizontal(id="pl-step-buttons"):
+    with Horizontal(id="pl-step-row"):
       yield Select(
         [], id="pl-add-select", prompt="step..."
-      )
-      yield Button(
-        "Add", variant="primary", id="pl-btn-add"
-      )
-      yield Button(
-        "Remove", variant="error", id="pl-btn-remove"
       )
     with Horizontal(id="pl-model-row"):
       yield Label("Model:")
@@ -147,14 +137,6 @@ class PipelineTab(Static):
     yield Static("", id="pl-role-heading")
     yield TextArea("", id="pl-role-area")
     yield Static("", id="pl-status")
-    with Horizontal(id="pl-action-buttons"):
-      yield Button(
-        "Save", variant="primary", id="pl-btn-save"
-      )
-      yield Button(
-        "Delete Pipeline", variant="error",
-        id="pl-btn-delete",
-      )
 
   def on_mount(self) -> None:
     """Set up table columns and load data."""
@@ -195,6 +177,15 @@ class PipelineTab(Static):
   def refresh_data(self) -> None:
     """Reload workspace list and roles."""
     self._load_data()
+
+  def select_workspace(self, ws_name) -> None:
+    """Programmatically select a workspace.
+
+    Args:
+      ws_name: Workspace name to select.
+    """
+    ws_select = self.query_one("#pl-ws-select", Select)
+    ws_select.value = ws_name
 
   # -- Add-step Select --
 
@@ -237,7 +228,7 @@ class PipelineTab(Static):
     self._load_pipeline(str(event.value))
 
   def _on_model_changed(self, value) -> None:
-    """Write model selection back to the current step config."""
+    """Write model selection back to current step config."""
     if value is Select.BLANK:
       return
     table = self.query_one(
@@ -337,6 +328,9 @@ class PipelineTab(Static):
 
   def action_move_up(self) -> None:
     """Move the selected step up."""
+    area = self.query_one("#pl-role-area", TextArea)
+    if area.has_focus:
+      return
     table = self.query_one(
       "#pl-steps-table", DataTable
     )
@@ -351,6 +345,9 @@ class PipelineTab(Static):
 
   def action_move_down(self) -> None:
     """Move the selected step down."""
+    area = self.query_one("#pl-role-area", TextArea)
+    if area.has_focus:
+      return
     table = self.query_one(
       "#pl-steps-table", DataTable
     )
@@ -363,23 +360,9 @@ class PipelineTab(Static):
     self._rebuild_table()
     table.move_cursor(row=idx + 1)
 
-  # -- Buttons --
+  # -- Keybinding actions --
 
-  def on_button_pressed(
-    self, event: Button.Pressed
-  ) -> None:
-    """Handle button presses."""
-    bid = event.button.id
-    if bid == "pl-btn-add":
-      self._do_add()
-    elif bid == "pl-btn-remove":
-      self._do_remove()
-    elif bid == "pl-btn-save":
-      self._do_save()
-    elif bid == "pl-btn-delete":
-      self._do_delete()
-
-  def _do_add(self) -> None:
+  def action_add_step(self) -> None:
     """Add the step selected in the inline dropdown."""
     from lib.pipeline import SCRIPT_REGISTRY
     add_select = self.query_one(
@@ -390,7 +373,6 @@ class PipelineTab(Static):
       self._set_status("Select a step to add.")
       return
     name = str(val)
-    # Determine step type.
     role = next(
       (r for r in self._roles
        if r["slug"] == name),
@@ -417,7 +399,7 @@ class PipelineTab(Static):
     self._refresh_add_select()
     self._set_status(f"Added {name}.")
 
-  def _do_remove(self) -> None:
+  def action_remove_step(self) -> None:
     """Remove the selected step."""
     table = self.query_one(
       "#pl-steps-table", DataTable
@@ -429,7 +411,6 @@ class PipelineTab(Static):
       removed = self._steps.pop(idx)
       self._rebuild_table()
       self._refresh_add_select()
-      # If editing this role, close editor.
       editing = self._editing_role
       if editing and editing["slug"] == removed["name"]:
         self._hide_role_editor()
@@ -439,7 +420,6 @@ class PipelineTab(Static):
 
   def _show_role_editor(self, role) -> None:
     """Display the role text in the inline TextArea."""
-    # Save any previous edits first.
     self._save_role_edits()
     if self._editing_role is role:
       return
@@ -478,6 +458,10 @@ class PipelineTab(Static):
 
   # -- Save / Delete --
 
+  def action_save_pipeline(self) -> None:
+    """Save pipeline definition and roles."""
+    self._do_save()
+
   @work(thread=True)
   def _do_save(self) -> None:
     """Save pipeline definition and roles."""
@@ -495,7 +479,6 @@ class PipelineTab(Static):
       )
       return
 
-    # Capture role edits before saving.
     self.app.call_from_thread(self._save_role_edits)
 
     from lib import db
@@ -515,15 +498,29 @@ class PipelineTab(Static):
         self._set_status, f"Error: {e}"
       )
 
-  def _do_delete(self) -> None:
-    """Delete pipeline directly (no confirmation modal)."""
+  def action_delete_pipeline(self) -> None:
+    """Delete pipeline after inline confirmation."""
     ws_select = self.query_one("#pl-ws-select", Select)
     ws = ws_select.value
     if ws is Select.BLANK:
       self._set_status("Select a workspace.")
       return
+    self._confirm(
+      f"Delete pipeline for '{ws}'?",
+      self._on_delete_confirmed,
+      str(ws),
+    )
+
+  def _on_delete_confirmed(self, result) -> None:
+    """Handle delete confirmation.
+
+    Args:
+      result: Workspace name string.
+    """
+    if result is None:
+      return
     self._hide_role_editor()
-    self._delete_pipeline(str(ws))
+    self._delete_pipeline(result)
 
   @work(thread=True)
   def _delete_pipeline(self, ws) -> None:
@@ -540,7 +537,3 @@ class PipelineTab(Static):
       self.app.call_from_thread(
         self._set_status, f"Error: {e}"
       )
-
-  def _set_status(self, text: str) -> None:
-    status = self.query_one("#pl-status", Static)
-    status.update(text)
