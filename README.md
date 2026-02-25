@@ -18,6 +18,8 @@ agents across multi-repo projects.
 - Provides a **TUI dashboard** for monitoring workspaces,
   agents, pipelines, and targets in real time
 
+![takt dashboard](screenshots/takt.png)
+
 ## Architecture
 
 ```
