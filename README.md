@@ -123,30 +123,6 @@ Agent steps run with a configurable model
 `templates/pipeline_roles.md`. Results are written to
 `.stage-result.json` in the worktree.
 
-## Dashboard
-
-The TUI (`bin/takt.py`) connects to takt-service via
-ZMQ IPC:
-
-```
-+------------------------------------------------------------+
-| [Dashboard] [Agents] [Pipeline] [Trigger] [Settings]       |
-+------------------------------------------------------------+
-| Agents         | Workspaces      | Pipeline Grid            |
-|   role  model  |   name  repos   |   ws → step → step       |
-|   state cost   |   status        |                          |
-+----------------+-----------------+--------------------------+
-| Pipeline Events               | Targets                    |
-|   time  ws  event             |   name  os  status         |
-+-------------------------------+----------------------------+
-```
-
-### Pipeline tab
-
-Inline editor for pipeline definitions. Select a
-workspace, add/remove/reorder steps, choose model per
-agent step, edit role text. Changes persist to SQLite.
-
 ## Build targets
 
 Targets are VMs and hardware registered in
