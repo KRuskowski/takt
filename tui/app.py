@@ -26,6 +26,7 @@ from textual.widgets._header import (
 
 from tui.tabs.agents_tab import AgentsTab
 from tui.tabs.dashboard_tab import DashboardTab
+from tui.tabs.meta_tab import MetaTab
 from tui.tabs.pipeline_tab import PipelineTab
 from tui.tabs.settings_tab import SettingsTab
 from tui.tabs.targets_tab import TargetsTab
@@ -146,6 +147,8 @@ class TaktApp(App):
         yield DashboardTab(id="dashboard-tab")
       with TabPane("Pipeline", id="tab-pipeline"):
         yield PipelineTab(id="pipeline-tab")
+      with TabPane("Meta", id="tab-meta"):
+        yield MetaTab(id="meta-tab")
       with TabPane("Agents", id="tab-agents"):
         yield AgentsTab(id="agents-tab")
       with TabPane("Targets", id="tab-targets"):
@@ -200,6 +203,7 @@ class TaktApp(App):
         self._set_service_status(True)
         client.subscribe("agent.update")
         client.subscribe("pipeline.event")
+        client.subscribe("meta.update")
         client.on(
           "agent.update",
           self._on_agent_update,
@@ -207,6 +211,10 @@ class TaktApp(App):
         client.on(
           "pipeline.event",
           self._on_pipeline_event,
+        )
+        client.on(
+          "meta.update",
+          self._on_meta_update,
         )
         log.info("Connected to takt-service")
       else:
@@ -325,6 +333,23 @@ class TaktApp(App):
       desktop_notify(
         "takt", f"Run {label} failed",
         urgency="critical",
+      )
+
+  def _on_meta_update(self, topic, data) -> None:
+    """Handle meta.update events from service.
+
+    Args:
+      topic: Topic string.
+      data: Dict with run_id and status.
+    """
+    try:
+      meta_tab = self.query_one("#meta-tab", MetaTab)
+      meta_tab.on_meta_update(data)
+    except NoMatches:
+      pass
+    except Exception:
+      log.debug(
+        "meta update handler failed", exc_info=True
       )
 
   # -- Agent management via service --
@@ -566,6 +591,13 @@ class TaktApp(App):
       pass
     except Exception:
       log.debug("refresh pipeline failed", exc_info=True)
+    try:
+      meta = self.query_one("#meta-tab", MetaTab)
+      meta.refresh_data()
+    except NoMatches:
+      pass
+    except Exception:
+      log.debug("refresh meta failed", exc_info=True)
     try:
       targets = self.query_one(
         "#targets-tab", TargetsTab
