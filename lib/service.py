@@ -78,6 +78,7 @@ class TaktService:
     self._db_path = db_path
     self._semaphore = asyncio.Semaphore(max_agents)
     self._run_tasks = {}  # run_id -> asyncio.Task
+    self._meta_run_tasks = {}  # run_id -> asyncio.Task
     self._router = None
     self._pub = None
     self._running = False
@@ -124,10 +125,17 @@ class TaktService:
     self._running = False
     for run_id, task in list(self._run_tasks.items()):
       task.cancel()
-    if self._run_tasks:
+    for run_id, task in list(
+      self._meta_run_tasks.items()
+    ):
+      task.cancel()
+    all_tasks = (
+      list(self._run_tasks.values())
+      + list(self._meta_run_tasks.values())
+    )
+    if all_tasks:
       await asyncio.gather(
-        *self._run_tasks.values(),
-        return_exceptions=True,
+        *all_tasks, return_exceptions=True,
       )
     if self._poll_task:
       self._poll_task.cancel()
@@ -451,6 +459,111 @@ class TaktService:
     events = await self._poll_once()
     return {"events": events}
 
+  # -- Meta agent command handlers --
+
+  async def _handle_list_meta_agents(self, payload):
+    """Handle list_meta_agents command."""
+    agents = db.list_meta_agents(
+      db_path=self._db_path,
+    )
+    return {"agents": agents}
+
+  async def _handle_get_meta_agent(self, payload):
+    """Handle get_meta_agent command."""
+    agent_id = payload["meta_agent_id"]
+    agent = db.get_meta_agent(
+      agent_id, db_path=self._db_path,
+    )
+    if agent is None:
+      raise ValueError(
+        f"Meta agent {agent_id} not found"
+      )
+    return {"agent": agent}
+
+  async def _handle_create_meta_agent(self, payload):
+    """Handle create_meta_agent command."""
+    aid = db.create_meta_agent(
+      name=payload["name"],
+      description=payload.get("description", ""),
+      prompt=payload.get("prompt", ""),
+      model=payload.get("model", "sonnet"),
+      timeout_secs=payload.get("timeout_secs", 1800),
+      config=payload.get("config"),
+      db_path=self._db_path,
+    )
+    return {"meta_agent_id": aid}
+
+  async def _handle_update_meta_agent(self, payload):
+    """Handle update_meta_agent command."""
+    agent_id = payload["meta_agent_id"]
+    fields = {
+      k: v for k, v in payload.items()
+      if k != "cmd" and k != "meta_agent_id"
+    }
+    db.update_meta_agent(
+      agent_id, db_path=self._db_path, **fields,
+    )
+    return {"meta_agent_id": agent_id}
+
+  async def _handle_delete_meta_agent(self, payload):
+    """Handle delete_meta_agent command."""
+    agent_id = payload["meta_agent_id"]
+    db.delete_meta_agent(
+      agent_id, db_path=self._db_path,
+    )
+    return {"meta_agent_id": agent_id}
+
+  async def _handle_run_meta_agent(self, payload):
+    """Handle run_meta_agent command."""
+    agent_id = payload["meta_agent_id"]
+    agent = db.get_meta_agent(
+      agent_id, db_path=self._db_path,
+    )
+    if agent is None:
+      raise ValueError(
+        f"Meta agent {agent_id} not found"
+      )
+    run_id = db.create_meta_agent_run(
+      agent_id, db_path=self._db_path,
+    )
+    self._launch_meta_run(run_id)
+    return {"run_id": run_id}
+
+  async def _handle_cancel_meta_run(self, payload):
+    """Handle cancel_meta_run command."""
+    run_id = payload["run_id"]
+    task = self._meta_run_tasks.get(run_id)
+    if task:
+      task.cancel()
+    else:
+      run = db.get_meta_agent_run(
+        run_id, db_path=self._db_path,
+      )
+      if run and run["status"] in ("queued", "running"):
+        db.advance_meta_run(
+          run_id, "cancelled",
+          db_path=self._db_path,
+        )
+    return {"run_id": run_id}
+
+  async def _handle_list_meta_runs(self, payload):
+    """Handle list_meta_runs command."""
+    agent_id = payload["meta_agent_id"]
+    limit = payload.get("limit", 20)
+    runs = db.list_meta_agent_runs(
+      agent_id, limit, db_path=self._db_path,
+    )
+    return {"runs": runs}
+
+  async def _handle_replay_meta_output(self, payload):
+    """Handle replay_meta_output command."""
+    run_id = payload["run_id"]
+    from_line = payload.get("from_line", 0)
+    lines = db.get_meta_output(
+      run_id, from_line, db_path=self._db_path,
+    )
+    return {"lines": lines, "run_id": run_id}
+
   _cmd_handlers = {
     "ping": _handle_ping,
     "list_runs": _handle_list_runs,
@@ -467,6 +580,15 @@ class TaktService:
     "poll_now": _handle_poll_now,
     "list_agents": _handle_list_agents,
     "cancel_agent": _handle_cancel_agent,
+    "list_meta_agents": _handle_list_meta_agents,
+    "get_meta_agent": _handle_get_meta_agent,
+    "create_meta_agent": _handle_create_meta_agent,
+    "update_meta_agent": _handle_update_meta_agent,
+    "delete_meta_agent": _handle_delete_meta_agent,
+    "run_meta_agent": _handle_run_meta_agent,
+    "cancel_meta_run": _handle_cancel_meta_run,
+    "list_meta_runs": _handle_list_meta_runs,
+    "replay_meta_output": _handle_replay_meta_output,
   }
 
   # -- Pipeline execution --
@@ -533,6 +655,94 @@ class TaktService:
           b"step.update",
           json.dumps({
             "step_id": step_id,
+            "status": status,
+            "time": time.strftime("%H:%M:%S"),
+          }).encode(),
+        ],
+        flags=zmq.NOBLOCK,
+      )
+    except zmq.ZMQError:
+      pass
+
+  # -- Meta agent execution --
+
+  def _launch_meta_run(self, run_id):
+    """Launch a meta agent run as an asyncio task.
+
+    Args:
+      run_id: Meta agent run row ID.
+    """
+    if run_id in self._meta_run_tasks:
+      return
+
+    async def _execute():
+      async with self._semaphore:
+        run = db.get_meta_agent_run(
+          run_id, db_path=self._db_path,
+        )
+        if run is None:
+          return
+        agent = db.get_meta_agent(
+          run["meta_agent_id"],
+          db_path=self._db_path,
+        )
+        if agent is None:
+          return
+        from lib.meta_runner import MetaAgentExecutor
+        executor = MetaAgentExecutor(
+          run_id, agent,
+          on_output=self._on_meta_output,
+          on_status_update=self._on_meta_status,
+          db_path=self._db_path,
+        )
+        try:
+          status = await executor.execute()
+          log.info(
+            "Meta run %d finished: %s",
+            run_id, status,
+          )
+        except Exception as e:
+          log.error(
+            "Meta run %d failed: %s",
+            run_id, e, exc_info=True,
+          )
+        finally:
+          self._meta_run_tasks.pop(run_id, None)
+
+    task = asyncio.create_task(_execute())
+    self._meta_run_tasks[run_id] = task
+
+  def _on_meta_output(self, run_id, lines):
+    """Publish meta agent output lines via ZMQ.
+
+    Args:
+      run_id: Meta agent run row ID.
+      lines: List of output line dicts.
+    """
+    for line in lines:
+      topic = f"meta.output.run-{run_id}"
+      try:
+        self._pub.send_multipart(
+          [topic.encode(),
+           json.dumps(line).encode()],
+          flags=zmq.NOBLOCK,
+        )
+      except zmq.ZMQError:
+        pass
+
+  def _on_meta_status(self, run_id, status):
+    """Publish meta agent status change via ZMQ.
+
+    Args:
+      run_id: Meta agent run row ID.
+      status: New status string.
+    """
+    try:
+      self._pub.send_multipart(
+        [
+          b"meta.update",
+          json.dumps({
+            "run_id": run_id,
             "status": status,
             "time": time.strftime("%H:%M:%S"),
           }).encode(),
