@@ -1,0 +1,61 @@
+/* Custom titlebar — no window decorations */
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding: 0 8px;
+  background: #0f0f0f;
+  border-bottom: 1px solid #2e2e2e;
+  -webkit-app-region: drag;
+  user-select: none;
+  flex-shrink: 0;
+  font-family: 'FiraMono Nerd Font', 'Fira Code', monospace;
+}
+
+.titlebar h1 {
+  font-size: 11px;
+  font-weight: 600;
+  color: #737373;
+  letter-spacing: 0.5px;
+  margin: 0;
+}
+
+.titlebar-status {
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  color: #737373;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-controls {
+  display: flex;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-controls button {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.titlebar-controls .close { background: #ef4444; }
+.titlebar-controls .minimize { background: #eab308; }
+.titlebar-controls .maximize { background: #22c55e; }
+
+/* Status dot */
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 4px;
+}
+
+.status-dot.connected { background: #22c55e; }
+.status-dot.disconnected { background: #ef4444; }

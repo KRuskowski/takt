@@ -19,12 +19,15 @@ import time
 
 import zmq
 import zmq.asyncio
+from aiohttp import web
 
 from lib import db
+from lib.api import broadcast_to_sse, build_app
 from lib.config import (
   STATE_DIR,
   get_repo_path,
   load_repos_config,
+  load_takt_config,
 )
 from lib.pipeline import (
   PipelineExecutor,
@@ -32,7 +35,12 @@ from lib.pipeline import (
   group_by_branch,
   snapshot_all_refs,
 )
-from lib.workspace_ops import list_workspaces
+from lib.workspace_ops import (
+  add_repo_to_workspace,
+  create_workspace,
+  delete_workspace,
+  list_workspaces,
+)
 
 log = logging.getLogger("takt.service")
 
@@ -58,7 +66,8 @@ class TaktService:
   def __init__(self, interval=DEFAULT_INTERVAL,
                cmd_addr=None, pub_addr=None,
                max_agents=DEFAULT_MAX_AGENTS,
-               zmq_ctx=None, db_path=None):
+               zmq_ctx=None, db_path=None,
+               api_port=None):
     """Initialize the service.
 
     Args:
@@ -68,6 +77,7 @@ class TaktService:
       max_agents: Max concurrent pipeline runs.
       zmq_ctx: Optional ZMQ context (for testing).
       db_path: Optional DB path (for testing).
+      api_port: HTTP API port (0 to disable).
     """
     self.interval = interval
     self.cmd_addr = cmd_addr or DEFAULT_CMD_ADDR
@@ -84,6 +94,14 @@ class TaktService:
     self._running = False
     self._poll_task = None
     self._cmd_task = None
+    self._http_app = None
+    self._http_runner = None
+    # Resolve API port.
+    if api_port is not None:
+      self._api_port = api_port
+    else:
+      cfg = load_takt_config()
+      self._api_port = cfg.get("api_port", 7433)
 
   async def start(self, once=False):
     """Start the service event loop.
@@ -114,6 +132,9 @@ class TaktService:
       self._poll_task = asyncio.create_task(
         self._poll_loop()
       )
+      # Start HTTP API server.
+      if self._api_port:
+        await self._start_http()
       await asyncio.gather(
         self._cmd_task, self._poll_task,
         return_exceptions=True,
@@ -141,12 +162,27 @@ class TaktService:
       self._poll_task.cancel()
     if self._cmd_task:
       self._cmd_task.cancel()
+    if self._http_runner:
+      await self._http_runner.cleanup()
     if self._router:
       self._router.close(linger=0)
     if self._pub:
       self._pub.close(linger=0)
     if self._own_ctx:
       self._ctx.term()
+
+  async def _start_http(self):
+    """Start the aiohttp REST + SSE server."""
+    self._http_app = build_app(self)
+    self._http_runner = web.AppRunner(self._http_app)
+    await self._http_runner.setup()
+    site = web.TCPSite(
+      self._http_runner, "0.0.0.0", self._api_port,
+    )
+    await site.start()
+    log.info(
+      "HTTP API listening on port %d", self._api_port,
+    )
 
   async def _warm_caches(self):
     """Warm GPG and SSH caches at startup."""
@@ -564,6 +600,114 @@ class TaktService:
     )
     return {"lines": lines, "run_id": run_id}
 
+  # -- Workspace management --
+
+  async def _handle_create_workspace(self, payload):
+    """Handle create_workspace — reply immediately,
+    run in background."""
+    name = payload["name"]
+    repos = payload["repos"]
+    chroot = payload.get("chroot", False)
+    asyncio.ensure_future(
+      self._bg_create_workspace(name, repos, chroot)
+    )
+    return {"workspace": name}
+
+  async def _bg_create_workspace(self, name, repos,
+                                 chroot):
+    """Background task for workspace creation."""
+    loop = asyncio.get_event_loop()
+    try:
+      await loop.run_in_executor(
+        None,
+        lambda: create_workspace(
+          name, repos, chroot=chroot,
+        ),
+      )
+      msg = f"Created workspace '{name}'."
+      if chroot:
+        msg += " (with chroot)"
+      await self._publish(
+        "workspace.event",
+        {"action": "created", "name": name,
+         "message": msg},
+      )
+    except Exception as e:
+      log.error(
+        "create_workspace failed: %s", e,
+        exc_info=True,
+      )
+      await self._publish(
+        "workspace.event",
+        {"action": "error", "name": name,
+         "message": str(e)},
+      )
+
+  async def _handle_delete_workspace(self, payload):
+    """Handle delete_workspace — reply immediately,
+    run in background."""
+    name = payload["name"]
+    asyncio.ensure_future(
+      self._bg_delete_workspace(name)
+    )
+    return {"workspace": name}
+
+  async def _bg_delete_workspace(self, name):
+    """Background task for workspace deletion."""
+    loop = asyncio.get_event_loop()
+    try:
+      await loop.run_in_executor(
+        None, lambda: delete_workspace(name),
+      )
+      await self._publish(
+        "workspace.event",
+        {"action": "deleted", "name": name,
+         "message": f"Deleted workspace '{name}'."},
+      )
+    except Exception as e:
+      log.error(
+        "delete_workspace failed: %s", e,
+        exc_info=True,
+      )
+      await self._publish(
+        "workspace.event",
+        {"action": "error", "name": name,
+         "message": str(e)},
+      )
+
+  async def _handle_add_repo(self, payload):
+    """Handle add_repo — reply immediately,
+    run in background."""
+    name = payload["name"]
+    repo = payload["repo"]
+    asyncio.ensure_future(
+      self._bg_add_repo(name, repo)
+    )
+    return {"workspace": name, "repo": repo}
+
+  async def _bg_add_repo(self, name, repo):
+    """Background task for adding a repo."""
+    loop = asyncio.get_event_loop()
+    try:
+      await loop.run_in_executor(
+        None,
+        lambda: add_repo_to_workspace(name, repo),
+      )
+      await self._publish(
+        "workspace.event",
+        {"action": "repo_added", "name": name,
+         "message": f"Added {repo} to '{name}'."},
+      )
+    except Exception as e:
+      log.error(
+        "add_repo failed: %s", e, exc_info=True,
+      )
+      await self._publish(
+        "workspace.event",
+        {"action": "error", "name": name,
+         "message": str(e)},
+      )
+
   _cmd_handlers = {
     "ping": _handle_ping,
     "list_runs": _handle_list_runs,
@@ -589,6 +733,9 @@ class TaktService:
     "cancel_meta_run": _handle_cancel_meta_run,
     "list_meta_runs": _handle_list_meta_runs,
     "replay_meta_output": _handle_replay_meta_output,
+    "create_workspace": _handle_create_workspace,
+    "delete_workspace": _handle_delete_workspace,
+    "add_repo": _handle_add_repo,
   }
 
   # -- Pipeline execution --
@@ -626,7 +773,7 @@ class TaktService:
     self._run_tasks[run_id] = task
 
   def _on_step_output(self, step_id, lines):
-    """Publish agent output lines via ZMQ.
+    """Publish agent output lines via ZMQ and SSE.
 
     Args:
       step_id: Step row ID.
@@ -641,28 +788,32 @@ class TaktService:
         )
       except zmq.ZMQError:
         pass
+      if self._http_app:
+        broadcast_to_sse(self._http_app, topic, line)
 
   def _on_step_update(self, step_id, status):
-    """Publish step status change via ZMQ.
+    """Publish step status change via ZMQ and SSE.
 
     Args:
       step_id: Step row ID.
       status: New status string.
     """
+    data = {
+      "step_id": step_id,
+      "status": status,
+      "time": time.strftime("%H:%M:%S"),
+    }
     try:
       self._pub.send_multipart(
-        [
-          b"step.update",
-          json.dumps({
-            "step_id": step_id,
-            "status": status,
-            "time": time.strftime("%H:%M:%S"),
-          }).encode(),
-        ],
+        [b"step.update", json.dumps(data).encode()],
         flags=zmq.NOBLOCK,
       )
     except zmq.ZMQError:
       pass
+    if self._http_app:
+      broadcast_to_sse(
+        self._http_app, "step.update", data,
+      )
 
   # -- Meta agent execution --
 
@@ -713,7 +864,7 @@ class TaktService:
     self._meta_run_tasks[run_id] = task
 
   def _on_meta_output(self, run_id, lines):
-    """Publish meta agent output lines via ZMQ.
+    """Publish meta agent output lines via ZMQ and SSE.
 
     Args:
       run_id: Meta agent run row ID.
@@ -729,31 +880,35 @@ class TaktService:
         )
       except zmq.ZMQError:
         pass
+      if self._http_app:
+        broadcast_to_sse(self._http_app, topic, line)
 
   def _on_meta_status(self, run_id, status):
-    """Publish meta agent status change via ZMQ.
+    """Publish meta agent status change via ZMQ and SSE.
 
     Args:
       run_id: Meta agent run row ID.
       status: New status string.
     """
+    data = {
+      "run_id": run_id,
+      "status": status,
+      "time": time.strftime("%H:%M:%S"),
+    }
     try:
       self._pub.send_multipart(
-        [
-          b"meta.update",
-          json.dumps({
-            "run_id": run_id,
-            "status": status,
-            "time": time.strftime("%H:%M:%S"),
-          }).encode(),
-        ],
+        [b"meta.update", json.dumps(data).encode()],
         flags=zmq.NOBLOCK,
       )
     except zmq.ZMQError:
       pass
+    if self._http_app:
+      broadcast_to_sse(
+        self._http_app, "meta.update", data,
+      )
 
   async def _publish(self, topic, data):
-    """Publish a message on the PUB socket.
+    """Publish a message on the PUB socket and SSE.
 
     Args:
       topic: Topic string.
@@ -768,6 +923,9 @@ class TaktService:
       log.debug(
         "Failed to publish %s", topic, exc_info=True
       )
+    # Also broadcast to SSE clients.
+    if self._http_app:
+      broadcast_to_sse(self._http_app, topic, data)
 
   # -- Pipeline watcher --
 
