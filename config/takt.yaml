@@ -1,2 +1,3 @@
 base_dir: /home/karl/dev
-clone_disk_dir: /home/karl/libvirt/images
+clone_disk_dir: /home/karl/v
+api_port: 7433

@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .state/
 .locks/
+.venv/
 config/repos.yaml
 config/targets.yaml
 
@@ -21,10 +22,15 @@ config/targets.yaml
 .mcp.json
 
 # Stray git internals
-HEAD
-hooks
-objects
-refs
+/HEAD
+/hooks
+/objects
+/refs
 
 # Temp files
 *.xml
+
+# GUI build artifacts
+gui/node_modules/
+gui/dist/
+gui/src-tauri/target/

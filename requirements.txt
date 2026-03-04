@@ -1,2 +1,5 @@
 PyYAML>=6.0
 textual>=1.0.0
+pyzmq>=26.0
+claude-code-sdk>=0.0.10
+aiohttp>=3.9
