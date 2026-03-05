@@ -32,7 +32,9 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function del<T>(path: string): Promise<T> {
-  const resp = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  const resp = await fetch(`${BASE}${path}`, {
+    method: "DELETE",
+  });
   const json = await resp.json();
   if (json.status === "error") throw new Error(json.message);
   return json.data as T;
@@ -60,9 +62,19 @@ export const deleteWorkspace = (name: string) =>
   del(`/api/workspaces/${name}`);
 
 export const getWorkspaceStatus = (name: string) =>
-  get<{ repos: { repo: string; branch: string; status: string }[] }>(
-    `/api/workspaces/${name}/status`,
-  );
+  get<{
+    repos: { repo: string; branch: string; status: string }[];
+  }>(`/api/workspaces/${name}/status`);
+
+// -- Repos --
+
+export interface RepoInfo {
+  name: string;
+  push_order: number;
+}
+
+export const listRepos = () =>
+  get<{ repos: RepoInfo[] }>("/api/repos");
 
 // -- Targets --
 
@@ -72,14 +84,16 @@ export interface Target {
   host: string;
   description: string;
   template: boolean;
+  vm_state: string | null;
   lock: { workspace: string; claimed_at: string } | null;
 }
 
 export const listTargets = () =>
   get<{ targets: Target[] }>("/api/targets");
 
-export const claimTarget = (name: string, workspace: string) =>
-  post(`/api/targets/${name}/claim`, { workspace });
+export const claimTarget = (
+  name: string, workspace: string,
+) => post(`/api/targets/${name}/claim`, { workspace });
 
 export const releaseTarget = (name: string) =>
   post(`/api/targets/${name}/release`);
@@ -158,11 +172,19 @@ export const cancelAgent = (id: string) =>
 
 // -- Pipeline --
 
-export const getPipeline = (workspace: string) =>
-  get<{ steps: Step[] }>(`/api/pipeline/${workspace}`);
+export interface PipelineStep {
+  name: string;
+  step_type: string;
+}
 
-export const setPipeline = (workspace: string, steps: unknown[]) =>
-  put(`/api/pipeline/${workspace}`, { steps });
+export const getPipeline = (workspace: string) =>
+  get<{ steps: PipelineStep[] }>(
+    `/api/pipeline/${workspace}`,
+  );
+
+export const setPipeline = (
+  workspace: string, steps: unknown[],
+) => put(`/api/pipeline/${workspace}`, { steps });
 
 // -- Meta agents --
 
@@ -173,15 +195,43 @@ export interface MetaAgent {
   model: string;
 }
 
+export interface MetaAgentRun {
+  id: number;
+  meta_agent_id: number;
+  status: string;
+  error: string | null;
+  cost_usd: number;
+  num_turns: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 export const listMetaAgents = () =>
   get<{ agents: MetaAgent[] }>("/api/meta-agents");
 
 export const runMetaAgent = (id: number) =>
-  post(`/api/meta-agents/${id}/run`);
+  post<{ run_id: number }>(`/api/meta-agents/${id}/run`);
+
+export const listMetaAgentRuns = (id: number) =>
+  get<{ runs: MetaAgentRun[] }>(
+    `/api/meta-agents/${id}/runs`,
+  );
+
+export const getMetaAgentOutput = (
+  id: number, runId: number, from = 0,
+) => get<{ lines: OutputLine[] }>(
+  `/api/meta-agents/${id}/runs/${runId}/output?from=${from}`,
+);
+
+export const cancelMetaRun = (
+  id: number, runId: number,
+) => post(`/api/meta-agents/${id}/runs/${runId}/cancel`);
 
 // -- Ping --
 
-export const ping = () => get<{ pong: boolean }>("/api/ping");
+export const ping = () =>
+  get<{ pong: boolean }>("/api/ping");
 
 // -- Output lines --
 

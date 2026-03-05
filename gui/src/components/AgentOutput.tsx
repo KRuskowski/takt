@@ -1,6 +1,10 @@
 import { Box, Text } from "@chakra-ui/react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { type OutputLine, getStepOutput } from "../api";
+import {
+  useCallback, useEffect, useRef, useState,
+} from "react";
+import {
+  type OutputLine, getStepOutput,
+} from "../api";
 import { useSSE } from "../hooks/useSSE";
 
 const KIND_COLORS: Record<string, string> = {
@@ -13,24 +17,47 @@ const KIND_COLORS: Record<string, string> = {
 };
 
 interface Props {
-  runId: number;
-  stepId: number;
+  /** Fetch initial lines. Defaults to step output. */
+  fetchLines?: () => Promise<{ lines: OutputLine[] }>;
+  /** SSE topic for live updates. */
+  sseTopic?: string;
+  /** Legacy: run ID for step output. */
+  runId?: number;
+  /** Legacy: step ID for step output. */
+  stepId?: number;
 }
 
-export default function AgentOutput({ runId, stepId }: Props) {
+export default function AgentOutput({
+  fetchLines, sseTopic, runId, stepId,
+}: Props) {
   const [lines, setLines] = useState<OutputLine[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Resolve the fetch function.
+  const fetcher = fetchLines ?? (
+    runId != null && stepId != null
+      ? () => getStepOutput(runId, stepId)
+      : null
+  );
+
+  // Resolve the SSE topic.
+  const topic = sseTopic ?? (
+    stepId != null
+      ? `agent.output.step-${stepId}`
+      : undefined
+  );
+
   useEffect(() => {
+    if (!fetcher) return;
     let cancelled = false;
     (async () => {
       try {
-        const data = await getStepOutput(runId, stepId);
+        const data = await fetcher();
         if (!cancelled) setLines(data.lines);
-      } catch { /* */ }
+      } catch { /* service unavailable */ }
     })();
     return () => { cancelled = true; };
-  }, [runId, stepId]);
+  }, [runId, stepId, fetchLines]);
 
   const handleSSE = useCallback(
     (event: { topic: string; data: unknown }) => {
@@ -40,7 +67,8 @@ export default function AgentOutput({ runId, stepId }: Props) {
     [],
   );
 
-  useSSE([`agent.output.step-${stepId}`], handleSSE);
+  const topics = topic ? [topic] : [];
+  useSSE(topics, handleSSE);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -51,7 +79,9 @@ export default function AgentOutput({ runId, stepId }: Props) {
     <Box
       ref={containerRef}
       flex={1}
-      fontFamily="'FiraCode Nerd Font', 'Fira Code', monospace"
+      fontFamily={
+        "'FiraCode Nerd Font', 'Fira Code', monospace"
+      }
       fontSize="11px"
       lineHeight="1.4"
       bg="#0a0a0a"
@@ -60,7 +90,12 @@ export default function AgentOutput({ runId, stepId }: Props) {
       overflow="auto"
     >
       {lines.length === 0 ? (
-        <Text textAlign="center" py={4} color="#737373" fontSize="11px">
+        <Text
+          textAlign="center"
+          py={4}
+          color="#737373"
+          fontSize="11px"
+        >
           No output yet
         </Text>
       ) : (
@@ -70,7 +105,11 @@ export default function AgentOutput({ runId, stepId }: Props) {
             whiteSpace="pre-wrap"
             wordBreak="break-all"
             color={KIND_COLORS[line.kind] ?? "#d4d4d4"}
-            fontStyle={line.kind === "thinking" ? "italic" : undefined}
+            fontStyle={
+              line.kind === "thinking"
+                ? "italic"
+                : undefined
+            }
           >
             {line.content}
           </Box>
