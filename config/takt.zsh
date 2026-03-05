@@ -13,7 +13,6 @@ _takt() {
 
   groups=(
     'ws:Workspace management'
-    'chroot:Enter workspace chroot'
     'target:Target management'
     'pipeline:Pipeline management'
     'push:Push branches to GitHub'
@@ -78,11 +77,6 @@ _takt() {
                 fi
                 ;;
             esac
-          fi
-          ;;
-        chroot)
-          if (( CURRENT == 2 )); then
-            _takt_workspaces
           fi
           ;;
         target)

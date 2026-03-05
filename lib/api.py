@@ -189,7 +189,6 @@ async def handle_create_workspace(request):
   return await _call(request, "create_workspace", {
     "name": body["name"],
     "repos": body["repos"],
-    "chroot": body.get("chroot", False),
   })
 
 

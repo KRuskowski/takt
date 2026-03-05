@@ -3,7 +3,6 @@
 
 Usage:
   takt ws list|create|delete|status
-  takt chroot <name> [cmd...]
   takt target list|claim|release|up|down|run|status
   takt pipeline set|show|runs
   takt push <branch> [--dry-run] [-y] [--repos ...]
@@ -55,11 +54,6 @@ def build_parser():
   ws_create.add_argument(
     "repos", nargs="+", help="Repos to include.",
   )
-  ws_create.add_argument(
-    "--chroot", action="store_true",
-    help="Create an isolated chroot environment.",
-  )
-
   ws_delete = ws_sub.add_parser(
     "delete", help="Delete a workspace.",
   )
@@ -75,17 +69,6 @@ def build_parser():
     "status", help="Show repo status in a workspace.",
   )
   ws_status.add_argument("name", help="Workspace name.")
-
-  # -- chroot --
-  chroot = sub.add_parser(
-    "chroot",
-    help="Enter workspace chroot (or run a command).",
-  )
-  chroot.add_argument("name", help="Workspace name.")
-  chroot.add_argument(
-    "cmd", nargs="*",
-    help="Command to run (default: interactive shell).",
-  )
 
   # -- target --
   tgt = sub.add_parser("target", help="Target management.")
@@ -209,18 +192,6 @@ def main():
     sys.exit(0)
 
   group = args.group
-
-  # -- chroot: special (no subcmd) --
-  if group == "chroot":
-    result = dispatch(
-      "chroot", "enter",
-      name=args.name,
-      cmd=args.cmd if args.cmd else None,
-    )
-    if result.output:
-      print(result.output)
-    rc = result.data.get("returncode", 0) if result.ok else 1
-    sys.exit(rc)
 
   # -- push: special (no subcmd) --
   if group == "push":

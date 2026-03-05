@@ -10,7 +10,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
-from lib import chroot_ops, db
+from lib import db
 from lib.config import (
   load_repos_config,
   parse_pipeline_roles,
@@ -66,23 +66,20 @@ def ws_list(names_only=False, **_kw):
       ", ".join(ws["repos"]) if ws["repos"]
       else "(empty)"
     )
-    chroot_tag = " [chroot]" if ws.get("chroot") else ""
     lines.append(
       f"{ws['name']:<25} {repos_str:<40} "
-      f"{ws['branch']}{chroot_tag}"
+      f"{ws['branch']}"
     )
   return CommandResult(True, "\n".join(lines), workspaces)
 
 
-def ws_create(name, repos, chroot=False, **_kw):
+def ws_create(name, repos, **_kw):
   """Create a new workspace."""
   try:
-    ws_dir = create_workspace(name, repos, chroot=chroot)
+    ws_dir = create_workspace(name, repos)
   except (FileExistsError, ValueError, GitError) as e:
     return CommandResult(False, f"Error: {e}")
   msg = f"Workspace created: {ws_dir}\nBranch: {name}"
-  if chroot:
-    msg += "\nChroot: enabled"
   return CommandResult(True, msg, {"path": str(ws_dir)})
 
 
@@ -115,25 +112,6 @@ def ws_status(name, **_kw):
       f"{s['repo']:<30} {s['branch']:<25} {s['status']}"
     )
   return CommandResult(True, "\n".join(lines), statuses)
-
-
-# -- Chroot commands --
-
-def chroot_enter(name, cmd=None, **_kw):
-  """Enter chroot for a workspace. Returns exit code."""
-  if not chroot_ops.chroot_exists(name):
-    return CommandResult(
-      False,
-      f"Error: no chroot for '{name}'.\n"
-      f"Create one with: takt ws create --chroot",
-    )
-  cmd_str = " ".join(cmd) if cmd else None
-  result = chroot_ops.enter_chroot(name, cmd=cmd_str)
-  return CommandResult(
-    result.returncode == 0,
-    "",
-    {"returncode": result.returncode},
-  )
 
 
 # -- Target commands --
@@ -558,9 +536,6 @@ COMMANDS = {
     "create": ws_create,
     "delete": ws_delete,
     "status": ws_status,
-  },
-  "chroot": {
-    "enter": chroot_enter,
   },
   "target": {
     "list": target_list,

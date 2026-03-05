@@ -32,8 +32,6 @@ BASE_DIR = Path(_takt.get(
 ROOT_DIR = BASE_DIR / "root"
 STAGES_DIR = BASE_DIR / "stages"
 WORKSPACES_DIR = BASE_DIR / "workspaces"
-CHROOT_BASE_DIR = BASE_DIR / "chroots" / ".base"
-
 # Ensure runtime dirs exist.
 STATE_DIR.mkdir(exist_ok=True)
 LOCKS_DIR.mkdir(exist_ok=True)
