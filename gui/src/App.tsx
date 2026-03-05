@@ -5,6 +5,7 @@ import { type Tab, dispatch } from "./commands";
 import Agents from "./components/Agents";
 import CommandBar from "./components/CommandBar";
 import Dashboard from "./components/Dashboard";
+import MarkdownEditor from "./components/MarkdownEditor";
 import MetaAgents from "./components/MetaAgents";
 import Pipeline from "./components/Pipeline";
 import Targets from "./components/Targets";
@@ -18,6 +19,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "workspaces", label: "Workspaces" },
   { id: "targets", label: "Targets" },
   { id: "meta", label: "Meta" },
+  { id: "settings", label: "Settings" },
 ];
 
 export default function App() {
@@ -122,6 +124,12 @@ export default function App() {
         {tab === "workspaces" && <Workspaces />}
         {tab === "targets" && <Targets />}
         {tab === "meta" && <MetaAgents />}
+        {tab === "settings" && (
+          <MarkdownEditor
+            file="chroot_claude.md"
+            label="Chroot CLAUDE.md Template"
+          />
+        )}
       </Box>
 
       {/* Command bar */}

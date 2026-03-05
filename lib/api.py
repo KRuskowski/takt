@@ -103,6 +103,12 @@ def build_app(service):
     handle_cancel_meta_run,
   )
   app.router.add_get("/api/repos", handle_list_repos)
+  app.router.add_get(
+    "/api/templates/{name}", handle_get_template,
+  )
+  app.router.add_put(
+    "/api/templates/{name}", handle_put_template,
+  )
 
   # SSE.
   app.router.add_get("/api/events", handle_sse)
@@ -413,6 +419,45 @@ async def handle_cancel_meta_run(request):
   return await _call(request, "cancel_meta_run", {
     "run_id": run_id,
   })
+
+
+async def handle_get_template(request):
+  """GET /api/templates/:name — read a template file."""
+  from lib.config import TEMPLATES_DIR
+  name = request.match_info["name"]
+  if "/" in name or "\\" in name:
+    return web.json_response(
+      {"status": "error", "message": "invalid name"},
+      status=400,
+    )
+  path = TEMPLATES_DIR / name
+  if not path.exists():
+    return web.json_response(
+      {"status": "error", "message": "not found"},
+      status=404,
+    )
+  content = path.read_text()
+  return web.json_response(
+    {"status": "ok", "data": {"content": content}},
+  )
+
+
+async def handle_put_template(request):
+  """PUT /api/templates/:name — write a template file."""
+  from lib.config import TEMPLATES_DIR
+  name = request.match_info["name"]
+  if "/" in name or "\\" in name:
+    return web.json_response(
+      {"status": "error", "message": "invalid name"},
+      status=400,
+    )
+  body = await request.json()
+  content = body.get("content", "")
+  path = TEMPLATES_DIR / name
+  path.write_text(content)
+  return web.json_response(
+    {"status": "ok", "data": {"name": name}},
+  )
 
 
 async def handle_list_repos(request):

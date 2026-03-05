@@ -24,7 +24,8 @@ export type Tab =
   | "pipeline"
   | "workspaces"
   | "targets"
-  | "meta";
+  | "meta"
+  | "settings";
 
 export interface CommandResult {
   tab?: Tab;
@@ -46,6 +47,8 @@ const TAB_MAP: Record<string, Tab> = {
   t: "targets",
   meta: "meta",
   m: "meta",
+  settings: "settings",
+  s: "settings",
 };
 
 export async function dispatch(

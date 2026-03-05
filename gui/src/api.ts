@@ -228,6 +228,15 @@ export const cancelMetaRun = (
   id: number, runId: number,
 ) => post(`/api/meta-agents/${id}/runs/${runId}/cancel`);
 
+// -- Templates --
+
+export const getTemplate = (name: string) =>
+  get<{ content: string }>(`/api/templates/${name}`);
+
+export const putTemplate = (
+  name: string, content: string,
+) => put(`/api/templates/${name}`, { content });
+
 // -- Ping --
 
 export const ping = () =>

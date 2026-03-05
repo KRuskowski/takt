@@ -154,6 +154,10 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 - `templates/` — CLAUDE.md templates and role snippets
 - `context/` — architecture and decision docs
 
+# Building Repos
+
+Build instructions: `context/building-repos.md`
+
 # Setup
 
 New workstation setup: `context/workstation-setup.md`
