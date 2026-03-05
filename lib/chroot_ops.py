@@ -408,7 +408,6 @@ def enter_chroot(workspace, cmd=None):
   # Pass API key into chroot if available.
   api_key = os.environ.get("ANTHROPIC_API_KEY", "")
   full_cmd = [
-    "unshare", "--pid", "--fork", "--mount-proc",
     "chroot", str(merged),
     "su", "-l", "worker", "-c", shell_cmd,
   ]

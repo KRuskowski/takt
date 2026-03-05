@@ -25,6 +25,7 @@ from lib.git_utils import (
   get_index_mtime,
   get_status,
   init_submodules,
+  run_git,
 )
 
 
@@ -191,6 +192,21 @@ def create_workspace(name, repos):
       clone_local(source, dest)
       create_branch(dest, name)
       init_submodules(dest)
+      # Set git identity per-repo so agents commit
+      # correctly regardless of global gitconfig.
+      run_git(
+        ["config", "user.name", "Karl Ruskowski"],
+        cwd=dest,
+      )
+      run_git(
+        ["config", "user.email",
+         "karl.ruskowski@optris.de"],
+        cwd=dest,
+      )
+      run_git(
+        ["config", "commit.gpgsign", "false"],
+        cwd=dest,
+      )
   except GitError:
     shutil.rmtree(ws_dir, ignore_errors=True)
     raise
@@ -269,14 +285,51 @@ def _build_git_rules(name):
   """
   return (
     f"- Branch name: `{name}` (same across all repos)\n"
+    f"- Commit as: Karl Ruskowski "
+    f"<karl.ruskowski@optris.de>\n"
+    f"- Do NOT co-author commits\n"
+    f"- Do NOT sign commits (no GPG key)\n"
     f"- Push to origin only "
     f"(origin = root repo at ~/dev/root/<repo>)\n"
     f"- NEVER push to GitHub. The operator handles "
     f"GitHub pushes.\n"
-    f"- Sign all commits.\n"
     f"- Push order follows dependency chain "
     f"(upstream first)."
   )
+
+
+def _build_section(repos):
+  """Build per-repo build instructions.
+
+  Args:
+    repos: List of repo names.
+
+  Returns:
+    Build instructions string.
+  """
+  sections = []
+  for repo in repos:
+    if repo in ("OTC.Relay", "OTC.SDK.Server",
+                "OTC.SDK.View"):
+      sections.append(
+        f"### {repo}\n"
+        f"```bash\n"
+        f"cd {repo}\n"
+        f"cmake --preset default\n"
+        f"cmake --build build --parallel\n"
+        f"```\n"
+        f"- Do NOT install deps manually — "
+        f"FetchContent handles C++ deps\n"
+        f"- If a tool is missing, report it and stop"
+      )
+    elif repo == "OTC.SDK":
+      sections.append(
+        f"### {repo}\n"
+        f"Proprietary SDK — prebuilt, do not build."
+      )
+  if not sections:
+    return "Follow each repo's CLAUDE.md for build steps."
+  return "\n\n".join(sections)
 
 
 def _generate_workspace_claude_md(ws_dir, name, repos,
@@ -315,6 +368,7 @@ def _generate_workspace_claude_md(ws_dir, name, repos,
   )
   in_scope = "\n".join(f"- `{r}/`" for r in repos)
   git_rules = _build_git_rules(name)
+  build_instructions = _build_section(repos)
   content = tmpl.safe_substitute(
     workspace_name=name,
     role_section="(specify role when launching agent)",
@@ -325,6 +379,7 @@ def _generate_workspace_claude_md(ws_dir, name, repos,
     context_packets=context_packets,
     repo_table=repo_table,
     git_rules=git_rules,
+    build_section=build_instructions,
     pipeline_section="",
     status="Not started",
   )
