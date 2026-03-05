@@ -34,7 +34,6 @@ export default function Workspaces() {
   const [newName, setNewName] = useState("");
   const [selectedRepos, setSelectedRepos] =
     useState<string[]>([]);
-  const [useChroot, setUseChroot] = useState(false);
   const [creating, setCreating] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -94,13 +93,12 @@ export default function Workspaces() {
     setCreating(true);
     try {
       await createWorkspace(
-        newName.trim(), selectedRepos, useChroot,
+        newName.trim(), selectedRepos,
       );
       showSuccess(`Creating ${newName.trim()}...`);
       setShowForm(false);
       setNewName("");
       setSelectedRepos([]);
-      setUseChroot(false);
       refresh();
     } catch (e) {
       showError(
@@ -196,24 +194,6 @@ export default function Workspaces() {
               ))}
             </Flex>
             <Flex align="center" gap={2}>
-              <Checkbox.Root
-                size="sm"
-                checked={useChroot}
-                onCheckedChange={(e) =>
-                  setUseChroot(!!e.checked)
-                }
-              >
-                <Checkbox.HiddenInput />
-                <Checkbox.Control>
-                  <Checkbox.Indicator />
-                </Checkbox.Control>
-                <Checkbox.Label
-                  fontSize="10px"
-                  color="#d4d4d4"
-                >
-                  chroot
-                </Checkbox.Label>
-              </Checkbox.Root>
               <Button
                 size="2xs"
                 variant="solid"
@@ -252,19 +232,7 @@ export default function Workspaces() {
                   _hover={{ bg: "#2a2a2a" }}
                   onClick={() => selectWs(ws)}
                 >
-                  <Td>
-                    {ws.name}
-                    {ws.chroot && (
-                      <Text
-                        as="span"
-                        fontSize="9px"
-                        color="#737373"
-                        ml={1}
-                      >
-                        [chroot]
-                      </Text>
-                    )}
-                  </Td>
+                  <Td>{ws.name}</Td>
                   <Td>{ws.branch}</Td>
                   <Td textAlign="right">
                     {ws.repos.length}

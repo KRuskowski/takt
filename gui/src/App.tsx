@@ -126,8 +126,8 @@ export default function App() {
         {tab === "meta" && <MetaAgents />}
         {tab === "settings" && (
           <MarkdownEditor
-            file="chroot_claude.md"
-            label="Chroot CLAUDE.md Template"
+            file="workspace_claude.md"
+            label="Workspace CLAUDE.md Template"
           />
         )}
       </Box>

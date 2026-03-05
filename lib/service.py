@@ -607,26 +607,20 @@ class TaktService:
     run in background."""
     name = payload["name"]
     repos = payload["repos"]
-    chroot = payload.get("chroot", False)
     asyncio.ensure_future(
-      self._bg_create_workspace(name, repos, chroot)
+      self._bg_create_workspace(name, repos)
     )
     return {"workspace": name}
 
-  async def _bg_create_workspace(self, name, repos,
-                                 chroot):
+  async def _bg_create_workspace(self, name, repos):
     """Background task for workspace creation."""
     loop = asyncio.get_event_loop()
     try:
       await loop.run_in_executor(
         None,
-        lambda: create_workspace(
-          name, repos, chroot=chroot,
-        ),
+        lambda: create_workspace(name, repos),
       )
       msg = f"Created workspace '{name}'."
-      if chroot:
-        msg += " (with chroot)"
       await self._publish(
         "workspace.event",
         {"action": "created", "name": name,

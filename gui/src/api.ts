@@ -47,7 +47,6 @@ export interface Workspace {
   path: string;
   repos: string[];
   branch: string;
-  chroot: boolean;
   last_active: number;
 }
 
@@ -55,8 +54,8 @@ export const listWorkspaces = () =>
   get<{ workspaces: Workspace[] }>("/api/workspaces");
 
 export const createWorkspace = (
-  name: string, repos: string[], chroot = false,
-) => post("/api/workspaces", { name, repos, chroot });
+  name: string, repos: string[],
+) => post("/api/workspaces", { name, repos });
 
 export const deleteWorkspace = (name: string) =>
   del(`/api/workspaces/${name}`);
