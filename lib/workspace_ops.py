@@ -5,6 +5,7 @@ dashboard can share the same logic.
 """
 
 import shutil
+import subprocess
 from string import Template
 
 from lib.config import (
@@ -201,6 +202,43 @@ def create_workspace(name, repos):
   if CONTEXT_DIR.is_dir():
     shutil.copytree(CONTEXT_DIR, ctx_dest)
   return ws_dir
+
+
+def add_repo_to_workspace(name, repo):
+  """Add a repo to an existing workspace.
+
+  Clones the repo from ROOT_DIR into the workspace
+  directory and checks out the workspace branch.
+
+  Args:
+    name: Workspace name (= branch name).
+    repo: Repo name to add.
+
+  Raises:
+    FileNotFoundError: If workspace doesn't exist.
+  """
+  ws_dir = WORKSPACES_DIR / name
+  if not ws_dir.is_dir():
+    raise FileNotFoundError(
+      f"Workspace '{name}' not found."
+    )
+  repo_path = get_repo_path(repo)
+  if repo_path is None:
+    raise ValueError(f"Unknown repo: {repo}")
+  dest = ws_dir / repo
+  if dest.is_dir():
+    raise FileExistsError(
+      f"Repo '{repo}' already in workspace."
+    )
+  subprocess.run(
+    ["git", "clone", str(repo_path), str(dest)],
+    check=True, capture_output=True, text=True,
+  )
+  subprocess.run(
+    ["git", "checkout", "-b", name],
+    cwd=str(dest),
+    check=True, capture_output=True, text=True,
+  )
 
 
 def delete_workspace(name):
