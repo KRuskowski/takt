@@ -90,6 +90,19 @@ def build_app(service):
   app.router.add_post(
     "/api/meta-agents/{id}/run", handle_run_meta_agent,
   )
+  app.router.add_get(
+    "/api/meta-agents/{id}/runs",
+    handle_list_meta_runs,
+  )
+  app.router.add_get(
+    "/api/meta-agents/{id}/runs/{rid}/output",
+    handle_meta_run_output,
+  )
+  app.router.add_post(
+    "/api/meta-agents/{id}/runs/{rid}/cancel",
+    handle_cancel_meta_run,
+  )
+  app.router.add_get("/api/repos", handle_list_repos)
 
   # SSE.
   app.router.add_get("/api/events", handle_sse)
@@ -374,6 +387,52 @@ async def handle_run_meta_agent(request):
   return await _call(request, "run_meta_agent", {
     "meta_agent_id": agent_id,
   })
+
+
+async def handle_list_meta_runs(request):
+  """GET /api/meta-agents/:id/runs."""
+  agent_id = int(request.match_info["id"])
+  return await _call(request, "list_meta_runs", {
+    "meta_agent_id": agent_id,
+  })
+
+
+async def handle_meta_run_output(request):
+  """GET /api/meta-agents/:id/runs/:rid/output?from=0."""
+  run_id = int(request.match_info["rid"])
+  from_line = int(request.query.get("from", "0"))
+  return await _call(request, "replay_meta_output", {
+    "run_id": run_id,
+    "from_line": from_line,
+  })
+
+
+async def handle_cancel_meta_run(request):
+  """POST /api/meta-agents/:id/runs/:rid/cancel."""
+  run_id = int(request.match_info["rid"])
+  return await _call(request, "cancel_meta_run", {
+    "run_id": run_id,
+  })
+
+
+async def handle_list_repos(request):
+  """GET /api/repos — list configured repos."""
+  from lib.config import load_repos_config
+  loop = asyncio.get_running_loop()
+  config = await loop.run_in_executor(
+    None, load_repos_config,
+  )
+  repos = config.get("repos", {})
+  result = [
+    {
+      "name": name,
+      "push_order": cfg.get("push_order", 99),
+    }
+    for name, cfg in sorted(repos.items())
+  ]
+  return web.json_response(
+    {"status": "ok", "data": {"repos": result}},
+  )
 
 
 # -- SSE handler --

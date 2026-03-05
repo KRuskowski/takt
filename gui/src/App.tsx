@@ -1,14 +1,15 @@
 import { Box, Flex } from "@chakra-ui/react";
 import { useCallback, useEffect, useState } from "react";
 import { ping } from "./api";
+import { type Tab, dispatch } from "./commands";
 import Agents from "./components/Agents";
 import CommandBar from "./components/CommandBar";
 import Dashboard from "./components/Dashboard";
+import MetaAgents from "./components/MetaAgents";
 import Pipeline from "./components/Pipeline";
 import Targets from "./components/Targets";
 import Workspaces from "./components/Workspaces";
-
-type Tab = "dashboard" | "agents" | "pipeline" | "workspaces" | "targets";
+import { showError, showSuccess } from "./toast";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
@@ -16,6 +17,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "pipeline", label: "Pipeline" },
   { id: "workspaces", label: "Workspaces" },
   { id: "targets", label: "Targets" },
+  { id: "meta", label: "Meta" },
 ];
 
 export default function App() {
@@ -37,34 +39,42 @@ export default function App() {
     return () => clearInterval(iv);
   }, [checkConnection]);
 
-  const handleCommand = useCallback((cmd: string) => {
-    const parts = cmd.split(/\s+/);
-    const group = parts[0];
-    // Tab navigation shortcuts.
-    const tabMap: Record<string, Tab> = {
-      dashboard: "dashboard", d: "dashboard",
-      agents: "agents", a: "agents",
-      pipeline: "pipeline", p: "pipeline",
-      workspaces: "workspaces", ws: "workspaces", w: "workspaces",
-      targets: "targets", t: "targets",
-    };
-    if (group in tabMap) {
-      setTab(tabMap[group]);
-    }
-  }, []);
+  const handleCommand = useCallback(
+    async (cmd: string) => {
+      const result = await dispatch(cmd);
+      if (result.tab) {
+        setTab(result.tab);
+      }
+      if (result.message) {
+        if (result.error) {
+          showError(result.message);
+        } else {
+          showSuccess(result.message);
+        }
+      }
+    },
+    [],
+  );
 
   return (
     <Flex direction="column" h="100vh" bg="#141414">
       {/* Custom titlebar */}
       <div className="titlebar">
         <div className="titlebar-controls">
-          <button className="close" onClick={() => window.close()} />
+          <button
+            className="close"
+            onClick={() => window.close()}
+          />
           <button className="minimize" />
           <button className="maximize" />
         </div>
         <h1>takt</h1>
         <div className="titlebar-status">
-          <span className={`status-dot ${connected ? "connected" : "disconnected"}`} />
+          <span
+            className={
+              `status-dot ${connected ? "connected" : "disconnected"}`
+            }
+          />
           {connected ? "connected" : "disconnected"}
         </div>
       </div>
@@ -87,8 +97,14 @@ export default function App() {
             bg="transparent"
             border="none"
             borderBottom="2px solid"
-            borderBottomColor={tab === t.id ? "#dc2626" : "transparent"}
-            color={tab === t.id ? "#d4d4d4" : "#737373"}
+            borderBottomColor={
+              tab === t.id
+                ? "#dc2626"
+                : "transparent"
+            }
+            color={
+              tab === t.id ? "#d4d4d4" : "#737373"
+            }
             cursor="pointer"
             _hover={{ color: "#d4d4d4" }}
             onClick={() => setTab(t.id)}
@@ -105,6 +121,7 @@ export default function App() {
         {tab === "pipeline" && <Pipeline />}
         {tab === "workspaces" && <Workspaces />}
         {tab === "targets" && <Targets />}
+        {tab === "meta" && <MetaAgents />}
       </Box>
 
       {/* Command bar */}

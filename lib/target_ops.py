@@ -146,14 +146,19 @@ def get_all_targets():
   results = []
   for name, cfg in sorted(targets.items()):
     lock = read_lock(name)
+    t_type = cfg.get("type", "?")
+    vm_state = None
+    if t_type == "vm":
+      vm_state = get_vm_state(name)
     results.append({
       "name": name,
-      "type": cfg.get("type", "?"),
+      "type": t_type,
       "host": cfg.get("host", "?"),
       "user": cfg.get("user", ""),
       "port": cfg.get("port"),
       "description": cfg.get("description", ""),
       "template": cfg.get("template", False),
+      "vm_state": vm_state,
       "lock": lock,
     })
   return results

@@ -1,39 +1,57 @@
-import { Box, Button, Flex, Table, Text } from "@chakra-ui/react";
-import { useCallback, useEffect, useState } from "react";
-import { type Agent, cancelAgent, listAgents } from "../api";
+import { Box, Button, Flex, Table } from "@chakra-ui/react";
+import { useCallback, useState } from "react";
+import {
+  type Agent, cancelAgent, listAgents,
+} from "../api";
+import { useSSERefresh } from "../hooks/useSSERefresh";
+import { showError } from "../toast";
 import AgentOutput from "./AgentOutput";
 import StatusBadge from "./StatusBadge";
+import { Empty, PanelHeader, Td, Th } from "./shared";
 
 export default function Agents() {
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [selected, setSelected] = useState<Agent | null>(null);
+  const [selected, setSelected] = useState<Agent | null>(
+    null,
+  );
 
   const refresh = useCallback(async () => {
     try {
       const data = await listAgents();
       setAgents(data.agents);
-    } catch { /* */ }
+    } catch (e) {
+      showError(
+        e instanceof Error ? e.message : "Refresh failed",
+      );
+    }
   }, []);
 
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 3000);
-    return () => clearInterval(id);
-  }, [refresh]);
+  useSSERefresh(["step.update"], refresh);
 
   const handleCancel = async (agentId: string) => {
-    await cancelAgent(agentId);
-    refresh();
+    try {
+      await cancelAgent(agentId);
+      refresh();
+    } catch (e) {
+      showError(
+        e instanceof Error ? e.message : "Cancel failed",
+      );
+    }
   };
 
   return (
     <Flex gap={2} h="100%">
-      <Box flex="0 0 50%" bg="#1c1c1c" border="1px solid #2e2e2e" borderRadius="4px" p={2} overflow="auto">
-        <Text fontSize="10px" fontWeight={600} color="#737373" textTransform="uppercase" letterSpacing="0.5px" mb={1.5}>
-          Agents
-        </Text>
+      <Box
+        flex="0 0 50%"
+        bg="#1c1c1c"
+        border="1px solid #2e2e2e"
+        borderRadius="4px"
+        p={2}
+        overflow="auto"
+      >
+        <PanelHeader>Agents</PanelHeader>
         {agents.length === 0 ? (
-          <Text textAlign="center" py={4} color="#737373" fontSize="11px">No agents</Text>
+          <Empty>No agents</Empty>
         ) : (
           <Table.Root size="sm" variant="line">
             <Table.Header>
@@ -52,23 +70,38 @@ export default function Agents() {
                 <Table.Row
                   key={a.agent_id}
                   cursor="pointer"
-                  bg={selected?.agent_id === a.agent_id ? "#2a2a2a" : undefined}
+                  bg={
+                    selected?.agent_id === a.agent_id
+                      ? "#2a2a2a"
+                      : undefined
+                  }
                   _hover={{ bg: "#2a2a2a" }}
                   onClick={() => setSelected(a)}
                 >
                   <Td>{a.role}</Td>
                   <Td>{a.workspace}</Td>
-                  <Td>{a.model.replace("claude-", "").split("-")[0]}</Td>
-                  <Td><StatusBadge status={a.state} /></Td>
+                  <Td>
+                    {a.model
+                      .replace("claude-", "")
+                      .split("-")[0]}
+                  </Td>
+                  <Td>
+                    <StatusBadge status={a.state} />
+                  </Td>
                   <Td textAlign="right">{a.num_turns}</Td>
-                  <Td textAlign="right">${a.total_cost_usd.toFixed(2)}</Td>
+                  <Td textAlign="right">
+                    ${a.total_cost_usd.toFixed(2)}
+                  </Td>
                   <Td>
                     {a.state === "running" && (
                       <Button
                         size="2xs"
                         variant="outline"
                         colorPalette="red"
-                        onClick={(e) => { e.stopPropagation(); handleCancel(a.agent_id); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCancel(a.agent_id);
+                        }}
                       >
                         Cancel
                       </Button>
@@ -81,24 +114,28 @@ export default function Agents() {
         )}
       </Box>
 
-      <Box flex={1} bg="#1c1c1c" border="1px solid #2e2e2e" borderRadius="4px" p={2} overflow="hidden" display="flex" flexDirection="column">
-        <Text fontSize="10px" fontWeight={600} color="#737373" textTransform="uppercase" letterSpacing="0.5px" mb={1.5}>
-          Output
-        </Text>
+      <Box
+        flex={1}
+        bg="#1c1c1c"
+        border="1px solid #2e2e2e"
+        borderRadius="4px"
+        p={2}
+        overflow="hidden"
+        display="flex"
+        flexDirection="column"
+      >
+        <PanelHeader>Output</PanelHeader>
         {selected ? (
-          <AgentOutput runId={selected.run_id} stepId={selected.step_id} />
+          <AgentOutput
+            runId={selected.run_id}
+            stepId={selected.step_id}
+          />
         ) : (
-          <Text textAlign="center" py={4} color="#737373" fontSize="11px">Select an agent to view output</Text>
+          <Empty>
+            Select an agent to view output
+          </Empty>
         )}
       </Box>
     </Flex>
   );
-}
-
-function Th({ children, ...props }: { children: React.ReactNode; textAlign?: string; w?: string }) {
-  return <Table.ColumnHeader fontSize="11px" color="#737373" fontWeight={500} py={1} px={1.5} borderColor="#2e2e2e" {...props}>{children}</Table.ColumnHeader>;
-}
-
-function Td({ children, ...props }: { children: React.ReactNode; textAlign?: string }) {
-  return <Table.Cell fontSize="11px" py={1} px={1.5} borderColor="#2e2e2e" {...props}>{children}</Table.Cell>;
 }
