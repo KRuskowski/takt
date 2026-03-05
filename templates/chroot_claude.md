@@ -17,6 +17,12 @@
 - dont do double newline as demanded per pep 8, while
   writing python
 
+# Processes
+- NEVER use pkill, killall, or kill with broad patterns
+- only kill processes you started, by PID
+- /proc is shared with the host — careless kills will
+  terminate host processes including this session
+
 # Building
 - use cmake presets: `cmake --preset default`
 - then: `cmake --build build --parallel`
