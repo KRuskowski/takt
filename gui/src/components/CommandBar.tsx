@@ -8,6 +8,10 @@ import {
   type KeyboardEvent,
 } from "react";
 import { RiTerminalLine } from "@remixicon/react";
+import {
+  commonPrefix,
+  getCompletions,
+} from "../commands";
 
 interface Props {
   onCommand: (cmd: string) => void;
@@ -58,10 +62,39 @@ const CommandBar = forwardRef<
     setValue("");
   };
 
+  const handleTab = async () => {
+    const matches = await getCompletions(value);
+    if (matches.length === 0) return;
+
+    const parts = value.split(/\s+/);
+    if (matches.length === 1) {
+      parts[parts.length - 1] = matches[0];
+      setValue(parts.join(" ") + " ");
+      setOutput(null);
+    } else {
+      const cp = commonPrefix(matches);
+      if (
+        cp.length
+        > (parts[parts.length - 1] ?? "").length
+      ) {
+        parts[parts.length - 1] = cp;
+        setValue(parts.join(" "));
+      }
+      setOutput({
+        msg: matches.join("  "),
+        error: false,
+        multi: true,
+      });
+    }
+  };
+
   const handleKey = (
     e: KeyboardEvent<HTMLInputElement>,
   ) => {
-    if (e.key === "Enter") {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      handleTab();
+    } else if (e.key === "Enter") {
       submit();
     } else if (e.key === "Escape") {
       setOutput(null);
