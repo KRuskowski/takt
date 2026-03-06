@@ -1,32 +1,47 @@
 import {
-  Box, Button, Checkbox, Flex, IconButton,
-  Input, Table, Text,
+  Box, Button, Checkbox, Flex,
+  IconButton, Input, Table, Text,
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useState } from "react";
 import {
   RiAddLine,
   RiDeleteBinLine,
+  RiFileTextLine,
   RiFolderLine,
+  RiGitMergeLine,
   RiGitRepositoryLine,
+  RiSettings3Line,
 } from "@remixicon/react";
 import {
+  type PipelineStep,
   type RepoInfo,
   type Workspace,
   createWorkspace,
   deleteWorkspace,
+  getPipeline,
+  getWorkspaceClaudeMd,
   getWorkspaceStatus,
   listRepos,
   listWorkspaces,
+  putWorkspaceClaudeMd,
+  setPipeline,
 } from "../api";
 import { useSSERefresh } from "../hooks/useSSERefresh";
 import { showError, showSuccess } from "../toast";
 import { Empty, PanelHeader, Td, Th } from "./shared";
+import MarkdownEditor from "./MarkdownEditor";
 
 interface RepoStatus {
   repo: string;
   branch: string;
   status: string;
 }
+
+type DetailView =
+  | { kind: "repos" }
+  | { kind: "claude" }
+  | { kind: "stage"; step: PipelineStep }
+  | { kind: "settings" };
 
 export default function Workspaces() {
   const [workspaces, setWorkspaces] =
@@ -35,12 +50,19 @@ export default function Workspaces() {
     useState<Workspace | null>(null);
   const [repoStatus, setRepoStatus] =
     useState<RepoStatus[]>([]);
-  const [repos, setRepos] = useState<RepoInfo[]>([]);
-  const [showForm, setShowForm] = useState(false);
+  const [pipelineSteps, setPipelineSteps] =
+    useState<PipelineStep[]>([]);
+  const [repos, setRepos] =
+    useState<RepoInfo[]>([]);
+  const [showForm, setShowForm] =
+    useState(false);
   const [newName, setNewName] = useState("");
   const [selectedRepos, setSelectedRepos] =
     useState<string[]>([]);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] =
+    useState(false);
+  const [detail, setDetail] =
+    useState<DetailView>({ kind: "repos" });
 
   const refresh = useCallback(async () => {
     try {
@@ -48,7 +70,9 @@ export default function Workspaces() {
       setWorkspaces(data.workspaces);
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Refresh failed",
+        e instanceof Error
+          ? e.message
+          : "Refresh failed",
       );
     }
   }, []);
@@ -64,16 +88,25 @@ export default function Workspaces() {
 
   const selectWs = async (ws: Workspace) => {
     setSelected(ws);
+    setDetail({ kind: "repos" });
     try {
-      const data = await getWorkspaceStatus(ws.name);
-      setRepoStatus(data.repos);
+      const [statusData, plData] =
+        await Promise.all([
+          getWorkspaceStatus(ws.name),
+          getPipeline(ws.name),
+        ]);
+      setRepoStatus(statusData.repos);
+      setPipelineSteps(plData.steps);
     } catch {
       setRepoStatus([]);
+      setPipelineSteps([]);
     }
   };
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete workspace '${name}'?`)) return;
+    if (
+      !confirm(`Delete workspace '${name}'?`)
+    ) return;
     try {
       await deleteWorkspace(name);
       setSelected(null);
@@ -81,7 +114,9 @@ export default function Workspaces() {
       showSuccess(`Deleted ${name}`);
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Delete failed",
+        e instanceof Error
+          ? e.message
+          : "Delete failed",
       );
     }
   };
@@ -100,14 +135,18 @@ export default function Workspaces() {
       await createWorkspace(
         newName.trim(), selectedRepos,
       );
-      showSuccess(`Creating ${newName.trim()}...`);
+      showSuccess(
+        `Creating ${newName.trim()}...`,
+      );
       setShowForm(false);
       setNewName("");
       setSelectedRepos([]);
       refresh();
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Create failed",
+        e instanceof Error
+          ? e.message
+          : "Create failed",
       );
     } finally {
       setCreating(false);
@@ -124,14 +163,17 @@ export default function Workspaces() {
 
   return (
     <Flex gap={2} h="100%">
+      {/* Left: workspace list */}
       <Box
-        flex="0 0 50%"
+        flex="0 0 260px"
         bg="bg.muted"
         border="1px solid"
         borderColor="border.muted"
         borderRadius="md"
         p={2}
         overflow="auto"
+        display="flex"
+        flexDirection="column"
       >
         <Flex
           justify="space-between"
@@ -139,15 +181,21 @@ export default function Workspaces() {
           mb={1.5}
         >
           <PanelHeader
-            icon={<RiFolderLine size={14} />}
+            icon={
+              <RiFolderLine size={14} />
+            }
           >
             Workspaces
           </PanelHeader>
           <IconButton
-            aria-label={showForm ? "Cancel" : "New"}
+            aria-label={
+              showForm ? "Cancel" : "New"
+            }
             size="2xs"
             variant="outline"
-            onClick={() => setShowForm(!showForm)}
+            onClick={() =>
+              setShowForm(!showForm)
+            }
           >
             <RiAddLine />
           </IconButton>
@@ -184,14 +232,18 @@ export default function Workspaces() {
             >
               Repos:
             </Text>
-            <Flex gap={1} flexWrap="wrap" mb={1.5}>
+            <Flex
+              gap={1}
+              flexWrap="wrap"
+              mb={1.5}
+            >
               {repos.map((r) => (
                 <Checkbox.Root
                   key={r.name}
                   size="sm"
-                  checked={
-                    selectedRepos.includes(r.name)
-                  }
+                  checked={selectedRepos.includes(
+                    r.name,
+                  )}
                   onCheckedChange={() =>
                     toggleRepo(r.name)
                   }
@@ -230,8 +282,6 @@ export default function Workspaces() {
               <Table.Row bg="transparent">
                 <Th>Name</Th>
                 <Th>Branch</Th>
-                <Th textAlign="right">Repos</Th>
-                <Th w="1px">{""}</Th>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -251,23 +301,6 @@ export default function Workspaces() {
                 >
                   <Td>{ws.name}</Td>
                   <Td>{ws.branch}</Td>
-                  <Td textAlign="right">
-                    {ws.repos.length}
-                  </Td>
-                  <Td>
-                    <IconButton
-                      aria-label="Delete"
-                      size="2xs"
-                      variant="outline"
-                      colorPalette="red"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(ws.name);
-                      }}
-                    >
-                      <RiDeleteBinLine />
-                    </IconButton>
-                  </Td>
                 </Table.Row>
               ))}
             </Table.Body>
@@ -275,52 +308,302 @@ export default function Workspaces() {
         )}
       </Box>
 
-      <Box
+      {/* Right: detail panel */}
+      <Flex
         flex={1}
-        bg="bg.muted"
-        border="1px solid"
-        borderColor="border.muted"
-        borderRadius="md"
-        p={2}
-        overflow="auto"
+        direction="column"
+        gap={2}
+        overflow="hidden"
       >
-        <PanelHeader
-          icon={<RiGitRepositoryLine size={14} />}
-        >
-          {selected
-            ? `${selected.name} — Repos`
-            : "Repo Status"}
-        </PanelHeader>
         {!selected ? (
-          <Empty>Select a workspace</Empty>
-        ) : repoStatus.length === 0 ? (
-          <Empty>No repos</Empty>
+          <Box
+            flex={1}
+            bg="bg.muted"
+            border="1px solid"
+            borderColor="border.muted"
+            borderRadius="md"
+            p={2}
+          >
+            <Empty>Select a workspace</Empty>
+          </Box>
         ) : (
-          <Table.Root size="sm" variant="line">
-            <Table.Header>
-              <Table.Row bg="transparent">
-                <Th>Repo</Th>
-                <Th>Branch</Th>
-                <Th>Status</Th>
-              </Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {repoStatus.map((r) => (
-                <Table.Row
-                  key={r.repo}
-                  _hover={{
-                    bg: "bg.emphasized",
-                  }}
-                >
-                  <Td>{r.repo}</Td>
-                  <Td>{r.branch}</Td>
-                  <Td>{r.status}</Td>
-                </Table.Row>
+          <>
+            {/* Sub-nav tabs */}
+            <Flex
+              gap={0.5}
+              flexShrink={0}
+            >
+              <NavTab
+                active={detail.kind === "repos"}
+                icon={
+                  <RiGitRepositoryLine
+                    size={13}
+                  />
+                }
+                label="Repos"
+                onClick={() =>
+                  setDetail({ kind: "repos" })
+                }
+              />
+              <NavTab
+                active={
+                  detail.kind === "claude"
+                }
+                icon={
+                  <RiFileTextLine size={13} />
+                }
+                label="CLAUDE.md"
+                onClick={() =>
+                  setDetail({ kind: "claude" })
+                }
+              />
+              {pipelineSteps.map((step) => (
+                <NavTab
+                  key={step.seq}
+                  active={
+                    detail.kind === "stage"
+                    && detail.step.seq
+                      === step.seq
+                  }
+                  icon={
+                    <RiGitMergeLine
+                      size={13}
+                    />
+                  }
+                  label={step.name}
+                  onClick={() =>
+                    setDetail({
+                      kind: "stage",
+                      step,
+                    })
+                  }
+                />
               ))}
-            </Table.Body>
-          </Table.Root>
+              <NavTab
+                active={
+                  detail.kind === "settings"
+                }
+                icon={
+                  <RiSettings3Line size={13} />
+                }
+                label="Settings"
+                onClick={() =>
+                  setDetail({
+                    kind: "settings",
+                  })
+                }
+              />
+            </Flex>
+
+            {/* Detail content */}
+            <Box
+              flex={1}
+              bg="bg.muted"
+              border="1px solid"
+              borderColor="border.muted"
+              borderRadius="md"
+              overflow="hidden"
+            >
+              {detail.kind === "repos" && (
+                <Box p={2} overflow="auto">
+                  <PanelHeader
+                    icon={
+                      <RiGitRepositoryLine
+                        size={14}
+                      />
+                    }
+                  >
+                    {selected.name} — Repos
+                  </PanelHeader>
+                  {repoStatus.length === 0 ? (
+                    <Empty>No repos</Empty>
+                  ) : (
+                    <Table.Root
+                      size="sm"
+                      variant="line"
+                    >
+                      <Table.Header>
+                        <Table.Row
+                          bg="transparent"
+                        >
+                          <Th>Repo</Th>
+                          <Th>Branch</Th>
+                          <Th>Status</Th>
+                        </Table.Row>
+                      </Table.Header>
+                      <Table.Body>
+                        {repoStatus.map((r) => (
+                          <Table.Row
+                            key={r.repo}
+                            _hover={{
+                              bg:
+                                "bg.emphasized",
+                            }}
+                          >
+                            <Td>{r.repo}</Td>
+                            <Td>
+                              {r.branch}
+                            </Td>
+                            <Td>
+                              {r.status}
+                            </Td>
+                          </Table.Row>
+                        ))}
+                      </Table.Body>
+                    </Table.Root>
+                  )}
+                </Box>
+              )}
+              {detail.kind === "claude" && (
+                <MarkdownEditor
+                  key={`ws:${selected.name}`}
+                  file="CLAUDE.md"
+                  label={
+                    `${selected.name}`
+                    + " / CLAUDE.md"
+                  }
+                  load={() =>
+                    getWorkspaceClaudeMd(
+                      selected.name,
+                    )
+                  }
+                  save={(c) =>
+                    putWorkspaceClaudeMd(
+                      selected.name, c,
+                    )
+                  }
+                />
+              )}
+              {detail.kind === "settings" && (
+                <Box p={2}>
+                  <PanelHeader
+                    icon={
+                      <RiSettings3Line
+                        size={14}
+                      />
+                    }
+                  >
+                    {selected.name} — Settings
+                  </PanelHeader>
+                  <Box mt={4}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      colorPalette="red"
+                      onClick={() =>
+                        handleDelete(
+                          selected.name,
+                        )
+                      }
+                    >
+                      <RiDeleteBinLine
+                        size={14}
+                      />
+                      Delete Workspace
+                    </Button>
+                  </Box>
+                </Box>
+              )}
+              {detail.kind === "stage" && (
+                <MarkdownEditor
+                  key={
+                    `stage:${selected.name}`
+                    + `:${detail.step.seq}`
+                  }
+                  file={detail.step.name}
+                  label={
+                    `${selected.name}`
+                    + ` / ${detail.step.name}`
+                    + " prompt"
+                  }
+                  load={async () => {
+                    const cfg = JSON.parse(
+                      detail.step.config_json,
+                    );
+                    return {
+                      content:
+                        cfg.prompt ?? "",
+                    };
+                  }}
+                  save={async (content) => {
+                    const cfg = JSON.parse(
+                      detail.step.config_json,
+                    );
+                    cfg.prompt = content;
+                    const updated =
+                      pipelineSteps.map((s) =>
+                        s.seq
+                          === detail.step.seq
+                          ? {
+                            name: s.name,
+                            step_type:
+                              s.step_type,
+                            config: cfg,
+                            timeout_secs:
+                              s.timeout_secs,
+                          }
+                          : {
+                            name: s.name,
+                            step_type:
+                              s.step_type,
+                            config: JSON.parse(
+                              s.config_json,
+                            ),
+                            timeout_secs:
+                              s.timeout_secs,
+                          },
+                      );
+                    await setPipeline(
+                      selected.name,
+                      updated,
+                    );
+                    detail.step.config_json =
+                      JSON.stringify(cfg);
+                  }}
+                />
+              )}
+            </Box>
+          </>
         )}
-      </Box>
+      </Flex>
+    </Flex>
+  );
+}
+
+function NavTab({
+  active, icon, label, onClick,
+}: {
+  active: boolean;
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Flex
+      align="center"
+      gap={1}
+      px={2}
+      py={1}
+      borderRadius="md"
+      cursor="pointer"
+      fontSize="12px"
+      fontWeight={active ? 600 : 400}
+      color={active ? "fg" : "fg.muted"}
+      bg={
+        active ? "bg.muted" : undefined
+      }
+      border="1px solid"
+      borderColor={
+        active
+          ? "border.muted"
+          : "transparent"
+      }
+      _hover={{ bg: "bg.muted" }}
+      onClick={onClick}
+      flexShrink={0}
+    >
+      {icon}
+      {label}
     </Flex>
   );
 }

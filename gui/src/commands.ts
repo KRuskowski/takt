@@ -40,7 +40,7 @@ export interface CommandResult {
 const HELP = [
   "Navigation: dashboard (d), agents (a),",
   "  pipeline (p), workspaces (w/ws),",
-  "  targets (t), meta (m), settings (s)",
+  "  deployments (t), meta (m), settings (s)",
   "Actions:",
   "  run <workspace>        — trigger pipeline",
   "  cancel run <id>        — cancel run",
@@ -65,6 +65,7 @@ const TAB_MAP: Record<string, Tab> = {
   ws: "workspaces",
   w: "workspaces",
   targets: "targets",
+  deployments: "targets",
   t: "targets",
   meta: "meta",
   m: "meta",
@@ -229,7 +230,8 @@ export async function dispatch(
 
 const COMMANDS = [
   "dashboard", "d", "agents", "a", "pipeline",
-  "p", "workspaces", "ws", "w", "targets", "t",
+  "p", "workspaces", "ws", "w", "targets",
+  "deployments", "t",
   "meta", "m", "settings", "s", "run", "cancel",
   "claim", "release", "up", "down", "help",
 ];

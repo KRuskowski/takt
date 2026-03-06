@@ -104,6 +104,17 @@ def build_app(service):
   )
   app.router.add_get("/api/repos", handle_list_repos)
   app.router.add_get(
+    "/api/workspaces/{name}/claude-md",
+    handle_get_workspace_claude_md,
+  )
+  app.router.add_put(
+    "/api/workspaces/{name}/claude-md",
+    handle_put_workspace_claude_md,
+  )
+  app.router.add_get(
+    "/api/templates", handle_list_templates,
+  )
+  app.router.add_get(
     "/api/templates/{name}", handle_get_template,
   )
   app.router.add_put(
@@ -119,10 +130,7 @@ def build_app(service):
   return app
 
 
-@web.middleware
-async def cors_middleware(request, handler):
-  """Add CORS headers for Tauri dev server."""
-  resp = await handler(request)
+def _add_cors(resp):
   resp.headers["Access-Control-Allow-Origin"] = "*"
   resp.headers["Access-Control-Allow-Methods"] = (
     "GET, POST, PUT, DELETE, OPTIONS"
@@ -130,6 +138,24 @@ async def cors_middleware(request, handler):
   resp.headers["Access-Control-Allow-Headers"] = (
     "Content-Type"
   )
+
+
+@web.middleware
+async def cors_middleware(request, handler):
+  """Add CORS headers for Tauri dev server."""
+  if request.method == "OPTIONS":
+    resp = web.Response(status=204)
+    _add_cors(resp)
+    return resp
+  try:
+    resp = await handler(request)
+  except web.HTTPException as exc:
+    _add_cors(exc)
+    raise
+  # web.Response (regular) gets headers; raw
+  # StreamResponse (SSE) sets its own in handler.
+  if isinstance(resp, web.Response):
+    _add_cors(resp)
   return resp
 
 
@@ -418,6 +444,52 @@ async def handle_cancel_meta_run(request):
   return await _call(request, "cancel_meta_run", {
     "run_id": run_id,
   })
+
+
+async def handle_get_workspace_claude_md(request):
+  """GET /api/workspaces/:name/claude-md."""
+  from lib.config import WORKSPACES_DIR
+  name = request.match_info["name"]
+  path = WORKSPACES_DIR / name / "CLAUDE.md"
+  if not path.exists():
+    return web.json_response(
+      {"status": "error", "message": "not found"},
+      status=404,
+    )
+  content = path.read_text()
+  return web.json_response(
+    {"status": "ok", "data": {"content": content}},
+  )
+
+
+async def handle_put_workspace_claude_md(request):
+  """PUT /api/workspaces/:name/claude-md."""
+  from lib.config import WORKSPACES_DIR
+  name = request.match_info["name"]
+  path = WORKSPACES_DIR / name / "CLAUDE.md"
+  if not path.parent.exists():
+    return web.json_response(
+      {"status": "error", "message": "workspace not found"},
+      status=404,
+    )
+  body = await request.json()
+  content = body.get("content", "")
+  path.write_text(content)
+  return web.json_response(
+    {"status": "ok", "data": {"name": name}},
+  )
+
+
+async def handle_list_templates(request):
+  """GET /api/templates — list template files."""
+  from lib.config import TEMPLATES_DIR
+  files = sorted(
+    f.name for f in TEMPLATES_DIR.glob("*.md")
+    if f.is_file()
+  )
+  return web.json_response(
+    {"status": "ok", "data": {"templates": files}},
+  )
 
 
 async def handle_get_template(request):

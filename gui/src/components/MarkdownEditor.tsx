@@ -1,57 +1,141 @@
-import { Box, Button, Flex, Text } from "@chakra-ui/react";
-import { markdown } from "@codemirror/lang-markdown";
-import { oneDark } from "@codemirror/theme-one-dark";
-import { EditorView } from "@codemirror/view";
 import {
-  EditorState,
-} from "@codemirror/state";
+  Box, Button, Flex, Text,
+} from "@chakra-ui/react";
+import { markdown } from "@codemirror/lang-markdown";
+import {
+  HighlightStyle,
+  syntaxHighlighting,
+} from "@codemirror/language";
+import { tags as t } from "@lezer/highlight";
+import { EditorView } from "@codemirror/view";
+import { EditorState } from "@codemirror/state";
 import { basicSetup } from "codemirror";
 import {
   useCallback, useEffect, useRef, useState,
 } from "react";
 import { RiSaveLine } from "@remixicon/react";
-import { getTemplate, putTemplate } from "../api";
+import {
+  getTemplate, putTemplate,
+} from "../api";
 import { showError, showSuccess } from "../toast";
 
 interface Props {
   file: string;
   label?: string;
+  load?: () => Promise<{ content: string }>;
+  save?: (content: string) => Promise<unknown>;
 }
+
+// Psychotropic nvim palette.
+const P = {
+  bg: "#101010",
+  grey7: "#121212",
+  grey11: "#1c1c1c",
+  grey15: "#262626",
+  grey18: "#2e2e2e",
+  grey27: "#444444",
+  grey39: "#626262",
+  grey62: "#9e9e9e",
+  white: "#F6FAFA",
+  khaki: "#f9cb52",
+  orange: "#de935f",
+  coral: "#f09479",
+  lime: "#99da3d",
+  turquoise: "#7fd3a5",
+  lightblue: "#4DB9F4",
+  sky: "#7FB7EF",
+  lavender: "#adadf3",
+  magenta: "#FF03F2",
+  magenta2: "#B31DAB",
+  sand: "#EFDB8A",
+};
 
 const theme = EditorView.theme({
   "&": {
     fontSize: "12px",
     fontFamily:
-      "'FiraMono Nerd Font', 'Fira Code', monospace",
-    backgroundColor: "#0a0a0a",
+      "'FiraMono Nerd Font', 'Fira Code',"
+      + " monospace",
+    backgroundColor: P.bg,
     height: "100%",
   },
   ".cm-content": {
-    caretColor: "#d4d4d4",
+    caretColor: P.white,
     padding: "8px",
   },
   ".cm-gutters": {
-    backgroundColor: "#141414",
-    borderRight: "1px solid #2e2e2e",
-    color: "#525252",
+    backgroundColor: P.grey7,
+    borderRight: `1px solid ${P.grey18}`,
+    color: P.grey27,
   },
   ".cm-activeLine": {
-    backgroundColor: "#1c1c1c",
+    backgroundColor: P.grey11,
   },
   ".cm-activeLineGutter": {
-    backgroundColor: "#1c1c1c",
+    backgroundColor: P.grey11,
   },
   "&.cm-focused .cm-cursor": {
-    borderLeftColor: "#d4d4d4",
+    borderLeftColor: P.white,
   },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground":
     {
-      backgroundColor: "#2a2a2a",
+      backgroundColor: P.grey18,
     },
+  ".cm-matchingBracket": {
+    color: `${P.orange} !important`,
+    fontWeight: "bold",
+  },
+  ".cm-searchMatch": {
+    backgroundColor: P.grey27,
+  },
+  ".cm-searchMatch.cm-searchMatch-selected": {
+    backgroundColor: P.orange,
+    color: P.bg,
+  },
 });
 
+const psychotropicHL = HighlightStyle.define([
+  { tag: t.comment, color: P.grey62,
+    fontStyle: "italic" },
+  { tag: t.keyword, color: P.lime,
+    fontWeight: "bold" },
+  { tag: t.string, color: P.khaki },
+  { tag: t.number, color: P.coral },
+  { tag: t.bool, color: P.lightblue,
+    fontWeight: "bold" },
+  { tag: t.variableName, color: P.lightblue },
+  { tag: t.function(t.variableName),
+    color: P.sand },
+  { tag: t.typeName, color: P.turquoise },
+  { tag: t.operator, color: P.white },
+  { tag: t.punctuation, color: P.white },
+  { tag: t.bracket, color: P.white },
+  { tag: t.meta, color: P.orange },
+  { tag: t.link, color: P.lightblue,
+    textDecoration: "underline" },
+  { tag: t.url, color: P.sky },
+  { tag: t.heading, color: P.lime,
+    fontWeight: "bold" },
+  { tag: t.heading1, color: P.lime,
+    fontWeight: "bold" },
+  { tag: t.heading2, color: P.turquoise,
+    fontWeight: "bold" },
+  { tag: t.heading3, color: P.sand,
+    fontWeight: "bold" },
+  { tag: t.emphasis, color: P.lavender,
+    fontStyle: "italic" },
+  { tag: t.strong, color: P.white,
+    fontWeight: "bold" },
+  { tag: t.strikethrough, color: P.grey39,
+    textDecoration: "line-through" },
+  { tag: t.monospace, color: P.coral },
+  { tag: t.processingInstruction,
+    color: P.magenta2 },
+  { tag: t.invalid, color: P.magenta },
+]);
+
 export default function MarkdownEditor({
-  file, label,
+  file, label, load, save: saveFn,
 }: Props) {
   const containerRef =
     useRef<HTMLDivElement>(null);
@@ -60,12 +144,26 @@ export default function MarkdownEditor({
   const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  const doLoad = useCallback(
+    () => load
+      ? load()
+      : getTemplate(file),
+    [file, load],
+  );
+
+  const doSave = useCallback(
+    (content: string) => saveFn
+      ? saveFn(content)
+      : putTemplate(file, content),
+    [file, saveFn],
+  );
+
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const data = await getTemplate(file);
+        const data = await doLoad();
         if (cancelled) return;
 
         const state = EditorState.create({
@@ -73,8 +171,8 @@ export default function MarkdownEditor({
           extensions: [
             basicSetup,
             markdown(),
-            oneDark,
             theme,
+            syntaxHighlighting(psychotropicHL),
             EditorView.lineWrapping,
             EditorView.updateListener.of(
               (update) => {
@@ -112,16 +210,18 @@ export default function MarkdownEditor({
       viewRef.current?.destroy();
       viewRef.current = null;
     };
-  }, [file]);
+  }, [doLoad]);
 
-  const save = useCallback(async () => {
+  const handleSave = useCallback(async () => {
     if (!viewRef.current) return;
     const content =
       viewRef.current.state.doc.toString();
     try {
-      await putTemplate(file, content);
+      await doSave(content);
       setDirty(false);
-      showSuccess(`Saved ${file}`);
+      showSuccess(
+        `Saved ${label ?? file}`,
+      );
     } catch (e) {
       showError(
         e instanceof Error
@@ -129,7 +229,7 @@ export default function MarkdownEditor({
           : "Save failed",
       );
     }
-  }, [file]);
+  }, [doSave, file, label]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -137,7 +237,7 @@ export default function MarkdownEditor({
         (e.ctrlKey || e.metaKey) && e.key === "s"
       ) {
         e.preventDefault();
-        save();
+        handleSave();
       }
     };
     window.addEventListener("keydown", handler);
@@ -145,7 +245,7 @@ export default function MarkdownEditor({
       window.removeEventListener(
         "keydown", handler,
       );
-  }, [save]);
+  }, [handleSave]);
 
   return (
     <Flex direction="column" h="100%">
@@ -174,7 +274,7 @@ export default function MarkdownEditor({
         <Button
           size="2xs"
           variant="outline"
-          onClick={save}
+          onClick={handleSave}
           disabled={!dirty}
         >
           <RiSaveLine size={14} />
@@ -185,7 +285,7 @@ export default function MarkdownEditor({
         ref={containerRef}
         flex={1}
         overflow="auto"
-        bg="#0a0a0a"
+        bg={P.bg}
       >
         {loading && (
           <Text
