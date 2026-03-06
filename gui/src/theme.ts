@@ -1,15 +1,20 @@
-import { createSystem, defaultConfig, defineConfig } from "@chakra-ui/react";
+import {
+  createSystem,
+  defaultConfig,
+  defineConfig,
+} from "@chakra-ui/react";
 
-const FONT_BODY = "'FiraMono Nerd Font', 'Fira Code', monospace";
-const FONT_MONO = "'FiraCode Nerd Font', 'Fira Code', monospace";
+const FONT =
+  "'FiraMono Nerd Font', 'Fira Code', monospace";
 
 const config = defineConfig({
   globalCss: {
+    html: {
+      colorScheme: "dark",
+    },
     body: {
-      bg: "#141414",
-      color: "#d4d4d4",
-      fontSize: "12px",
-      fontFamily: FONT_BODY,
+      fontSize: "13px",
+      fontFamily: FONT,
       overflow: "hidden",
     },
     "*::-webkit-scrollbar": {
@@ -17,36 +22,35 @@ const config = defineConfig({
       height: "6px",
     },
     "*::-webkit-scrollbar-track": {
-      bg: "#141414",
+      bg: "bg",
     },
     "*::-webkit-scrollbar-thumb": {
-      bg: "#3a3a3a",
+      bg: "bg.emphasized",
       borderRadius: "3px",
     },
   },
   theme: {
     tokens: {
       fonts: {
-        body: { value: FONT_BODY },
-        heading: { value: FONT_BODY },
-        mono: { value: FONT_MONO },
+        body: { value: FONT },
+        heading: { value: FONT },
+        mono: { value: FONT },
       },
       colors: {
-        bg: { value: "#141414" },
-        "bg.panel": { value: "#1c1c1c" },
-        "bg.card": { value: "#242424" },
-        "bg.hover": { value: "#2a2a2a" },
-        "border.dim": { value: "#2e2e2e" },
-        "text.dim": { value: "#737373" },
-      },
-    },
-    semanticTokens: {
-      colors: {
-        "bg.canvas": { value: "#141414" },
-        "bg.muted": { value: "#1c1c1c" },
-        "bg.subtle": { value: "#242424" },
-        "border.muted": { value: "#2e2e2e" },
-        "fg.muted": { value: "#737373" },
+        // Override grays for a slightly warmer dark
+        gray: {
+          50: { value: "#fafafa" },
+          100: { value: "#f4f4f5" },
+          200: { value: "#e4e4e7" },
+          300: { value: "#d4d4d8" },
+          400: { value: "#a1a1aa" },
+          500: { value: "#71717a" },
+          600: { value: "#52525b" },
+          700: { value: "#3f3f46" },
+          800: { value: "#27272a" },
+          900: { value: "#1c1c1c" },
+          950: { value: "#141414" },
+        },
       },
     },
   },

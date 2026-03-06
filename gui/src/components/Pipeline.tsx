@@ -1,7 +1,15 @@
 import {
-  Box, Button, Flex, NativeSelect, Table,
+  Box, Button, Flex, IconButton,
+  NativeSelect, Table,
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useState } from "react";
+import {
+  RiFileListLine,
+  RiGitMergeLine,
+  RiPlayLine,
+  RiStopCircleLine,
+  RiTerminalBoxLine,
+} from "@remixicon/react";
 import {
   type PipelineStep,
   type Run,
@@ -23,9 +31,8 @@ import { Empty, PanelHeader, Td, Th } from "./shared";
 
 export default function Pipeline() {
   const [runs, setRuns] = useState<Run[]>([]);
-  const [selectedRun, setSelectedRun] = useState<Run | null>(
-    null,
-  );
+  const [selectedRun, setSelectedRun] =
+    useState<Run | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [selectedStep, setSelectedStep] =
     useState<Step | null>(null);
@@ -45,7 +52,9 @@ export default function Pipeline() {
       setWorkspaces(ws.workspaces);
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Refresh failed",
+        e instanceof Error
+          ? e.message
+          : "Refresh failed",
       );
     }
   }, [wsFilter]);
@@ -54,7 +63,6 @@ export default function Pipeline() {
     ["step.update", "pipeline.event"], refreshRuns,
   );
 
-  // Reload when filter changes.
   useEffect(() => { refreshRuns(); }, [refreshRuns]);
 
   const selectRun = async (run: Run) => {
@@ -79,7 +87,9 @@ export default function Pipeline() {
       refreshRuns();
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Cancel failed",
+        e instanceof Error
+          ? e.message
+          : "Cancel failed",
       );
     }
   };
@@ -96,19 +106,21 @@ export default function Pipeline() {
       refreshRuns();
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Trigger failed",
+        e instanceof Error
+          ? e.message
+          : "Trigger failed",
       );
     }
   };
 
   return (
     <Flex gap={2} h="100%">
-      {/* Runs list */}
       <Box
         flex="0 0 400px"
-        bg="#1c1c1c"
-        border="1px solid #2e2e2e"
-        borderRadius="4px"
+        bg="bg.muted"
+        border="1px solid"
+        borderColor="border.muted"
+        borderRadius="md"
         p={2}
         overflow="auto"
         display="flex"
@@ -119,23 +131,33 @@ export default function Pipeline() {
           align="center"
           mb={1.5}
         >
-          <PanelHeader>Pipeline Runs</PanelHeader>
+          <PanelHeader
+            icon={<RiGitMergeLine size={14} />}
+          >
+            Pipeline Runs
+          </PanelHeader>
           <Flex gap={1} align="center">
             <NativeSelect.Root size="xs" w="140px">
               <NativeSelect.Field
-                fontSize="10px"
-                bg="#242424"
-                border="1px solid #2e2e2e"
-                color="#d4d4d4"
+                fontSize="12px"
+                bg="bg.subtle"
+                border="1px solid"
+                borderColor="border.muted"
+                color="fg"
                 h="22px"
                 value={wsFilter}
                 onChange={(e) =>
                   setWsFilter(e.target.value)
                 }
               >
-                <option value="">All workspaces</option>
+                <option value="">
+                  All workspaces
+                </option>
                 {workspaces.map((ws) => (
-                  <option key={ws.name} value={ws.name}>
+                  <option
+                    key={ws.name}
+                    value={ws.name}
+                  >
                     {ws.name}
                   </option>
                 ))}
@@ -146,6 +168,7 @@ export default function Pipeline() {
               variant="outline"
               onClick={handleTrigger}
             >
+              <RiPlayLine size={14} />
               Run
             </Button>
           </Flex>
@@ -171,27 +194,36 @@ export default function Pipeline() {
                   cursor="pointer"
                   bg={
                     selectedRun?.id === r.id
-                      ? "#2a2a2a"
+                      ? "bg.emphasized"
                       : undefined
                   }
-                  _hover={{ bg: "#2a2a2a" }}
+                  _hover={{
+                    bg: "bg.emphasized",
+                  }}
                   onClick={() => selectRun(r)}
                 >
                   <Td>{r.id}</Td>
                   <Td>{r.workspace}</Td>
                   <Td>
-                    <StatusBadge status={r.status} />
+                    <StatusBadge
+                      status={r.status}
+                    />
                   </Td>
-                  <Td>{relativeTime(r.started_at)}</Td>
+                  <Td>
+                    {relativeTime(r.started_at)}
+                  </Td>
                   <Td>
                     {duration(
-                      r.started_at, r.finished_at,
+                      r.started_at,
+                      r.finished_at,
                     )}
                   </Td>
                   <Td>
                     {(r.status === "queued"
-                      || r.status === "running") && (
-                      <Button
+                      || r.status
+                        === "running") && (
+                      <IconButton
+                        aria-label="Cancel"
                         size="2xs"
                         variant="outline"
                         colorPalette="red"
@@ -200,8 +232,8 @@ export default function Pipeline() {
                           handleCancel(r.id);
                         }}
                       >
-                        Cancel
-                      </Button>
+                        <RiStopCircleLine />
+                      </IconButton>
                     )}
                   </Td>
                 </Table.Row>
@@ -211,16 +243,20 @@ export default function Pipeline() {
         )}
       </Box>
 
-      {/* Steps + output + config */}
       <Flex flex={1} direction="column" gap={2}>
         {selectedRun && (
           <Box
-            bg="#1c1c1c"
-            border="1px solid #2e2e2e"
-            borderRadius="4px"
+            bg="bg.muted"
+            border="1px solid"
+            borderColor="border.muted"
+            borderRadius="md"
             p={2}
           >
-            <PanelHeader>
+            <PanelHeader
+              icon={
+                <RiFileListLine size={14} />
+              }
+            >
               Steps — Run #{selectedRun.id}
             </PanelHeader>
             <Table.Root size="sm" variant="line">
@@ -230,8 +266,12 @@ export default function Pipeline() {
                   <Th>Name</Th>
                   <Th>Type</Th>
                   <Th>Status</Th>
-                  <Th textAlign="right">Turns</Th>
-                  <Th textAlign="right">Cost</Th>
+                  <Th textAlign="right">
+                    Turns
+                  </Th>
+                  <Th textAlign="right">
+                    Cost
+                  </Th>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
@@ -241,17 +281,23 @@ export default function Pipeline() {
                     cursor="pointer"
                     bg={
                       selectedStep?.id === s.id
-                        ? "#2a2a2a"
+                        ? "bg.emphasized"
                         : undefined
                     }
-                    _hover={{ bg: "#2a2a2a" }}
-                    onClick={() => setSelectedStep(s)}
+                    _hover={{
+                      bg: "bg.emphasized",
+                    }}
+                    onClick={() =>
+                      setSelectedStep(s)
+                    }
                   >
                     <Td>{s.seq}</Td>
                     <Td>{s.name}</Td>
                     <Td>{s.step_type}</Td>
                     <Td>
-                      <StatusBadge status={s.status} />
+                      <StatusBadge
+                        status={s.status}
+                      />
                     </Td>
                     <Td textAlign="right">
                       {s.num_turns}
@@ -266,15 +312,19 @@ export default function Pipeline() {
           </Box>
         )}
 
-        {/* Pipeline config */}
         {selectedRun && pipeline.length > 0 && (
           <Box
-            bg="#1c1c1c"
-            border="1px solid #2e2e2e"
-            borderRadius="4px"
+            bg="bg.muted"
+            border="1px solid"
+            borderColor="border.muted"
+            borderRadius="md"
             p={2}
           >
-            <PanelHeader>
+            <PanelHeader
+              icon={
+                <RiGitMergeLine size={14} />
+              }
+            >
               Pipeline — {selectedRun.workspace}
             </PanelHeader>
             <Table.Root size="sm" variant="line">
@@ -289,7 +339,9 @@ export default function Pipeline() {
                 {pipeline.map((ps, i) => (
                   <Table.Row
                     key={`${ps.name}-${i}`}
-                    _hover={{ bg: "#2a2a2a" }}
+                    _hover={{
+                      bg: "bg.emphasized",
+                    }}
                   >
                     <Td>{i + 1}</Td>
                     <Td>{ps.name}</Td>
@@ -304,15 +356,20 @@ export default function Pipeline() {
         {selectedStep && selectedRun && (
           <Box
             flex={1}
-            bg="#1c1c1c"
-            border="1px solid #2e2e2e"
-            borderRadius="4px"
+            bg="bg.muted"
+            border="1px solid"
+            borderColor="border.muted"
+            borderRadius="md"
             p={2}
             display="flex"
             flexDirection="column"
             overflow="hidden"
           >
-            <PanelHeader>
+            <PanelHeader
+              icon={
+                <RiTerminalBoxLine size={14} />
+              }
+            >
               Output — {selectedStep.name}
             </PanelHeader>
             <AgentOutput

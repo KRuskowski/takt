@@ -1,7 +1,13 @@
 import {
-  Box, Button, Flex, Table, Text,
+  Box, Flex, IconButton, Table, Text,
 } from "@chakra-ui/react";
 import { useCallback, useState } from "react";
+import {
+  RiLockUnlockLine,
+  RiPlayLine,
+  RiServerLine,
+  RiShutDownLine,
+} from "@remixicon/react";
 import {
   type Target,
   listTargets,
@@ -15,7 +21,7 @@ import { Empty, PanelHeader, Td, Th } from "./shared";
 
 const VM_STATE_COLOR: Record<string, string> = {
   running: "#22c55e",
-  "shut off": "#737373",
+  "shut off": "fg.muted",
   paused: "#eab308",
 };
 
@@ -66,19 +72,24 @@ export default function Targets() {
       refresh();
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Release failed",
+        e instanceof Error
+          ? e.message
+          : "Release failed",
       );
     }
   };
 
   return (
     <Box
-      bg="#1c1c1c"
-      border="1px solid #2e2e2e"
-      borderRadius="4px"
+      bg="bg.muted"
+      border="1px solid"
+      borderColor="border.muted"
+      borderRadius="md"
       p={2}
     >
-      <PanelHeader>Targets</PanelHeader>
+      <PanelHeader icon={<RiServerLine size={14} />}>
+        Targets
+      </PanelHeader>
       {targets.length === 0 ? (
         <Empty>No targets configured</Empty>
       ) : (
@@ -91,22 +102,22 @@ export default function Targets() {
               <Th>State</Th>
               <Th>Description</Th>
               <Th>Claimed By</Th>
-              <Th w="1px">Actions</Th>
+              <Th w="1px">{""}</Th>
             </Table.Row>
           </Table.Header>
           <Table.Body>
             {targets.map((t) => (
               <Table.Row
                 key={t.name}
-                _hover={{ bg: "#2a2a2a" }}
+                _hover={{ bg: "bg.emphasized" }}
               >
                 <Td>
                   {t.name}
                   {t.template && (
                     <Text
                       as="span"
-                      fontSize="9px"
-                      color="#737373"
+                      fontSize="11px"
+                      color="fg.muted"
                       ml={1}
                     >
                       [tpl]
@@ -114,14 +125,16 @@ export default function Targets() {
                   )}
                 </Td>
                 <Td>{t.type}</Td>
-                <Td fontFamily="monospace">{t.host}</Td>
+                <Td fontFamily="monospace">
+                  {t.host}
+                </Td>
                 <Td>
                   {t.vm_state ? (
                     <Text
                       as="span"
                       color={
                         VM_STATE_COLOR[t.vm_state]
-                          ?? "#737373"
+                          ?? "fg.muted"
                       }
                     >
                       {t.vm_state}
@@ -132,35 +145,40 @@ export default function Targets() {
                 </Td>
                 <Td>{t.description}</Td>
                 <Td>
-                  {t.lock ? t.lock.workspace : "—"}
+                  {t.lock
+                    ? t.lock.workspace
+                    : "—"}
                 </Td>
                 <Td>
                   {!t.template && (
                     <Flex gap={1}>
                       {t.type === "vm" && (
                         <>
-                          <Button
+                          <IconButton
+                            aria-label="Start VM"
                             size="2xs"
                             variant="outline"
                             onClick={() =>
                               handleUp(t.name)
                             }
                           >
-                            Up
-                          </Button>
-                          <Button
+                            <RiPlayLine />
+                          </IconButton>
+                          <IconButton
+                            aria-label="Stop VM"
                             size="2xs"
                             variant="outline"
                             onClick={() =>
                               handleDown(t.name)
                             }
                           >
-                            Down
-                          </Button>
+                            <RiShutDownLine />
+                          </IconButton>
                         </>
                       )}
                       {t.lock && (
-                        <Button
+                        <IconButton
+                          aria-label="Release"
                           size="2xs"
                           variant="outline"
                           colorPalette="red"
@@ -168,8 +186,8 @@ export default function Targets() {
                             handleRelease(t.name)
                           }
                         >
-                          Release
-                        </Button>
+                          <RiLockUnlockLine />
+                        </IconButton>
                       )}
                     </Flex>
                   )}

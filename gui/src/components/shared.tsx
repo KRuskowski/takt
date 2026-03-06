@@ -1,4 +1,4 @@
-import { Box, Table, Text } from "@chakra-ui/react";
+import { Box, Flex, Table, Text } from "@chakra-ui/react";
 
 export function Th({
   children, ...props
@@ -9,12 +9,12 @@ export function Th({
 }) {
   return (
     <Table.ColumnHeader
-      fontSize="11px"
-      color="#737373"
+      fontSize="13px"
+      color="fg.muted"
       fontWeight={500}
       py={1}
       px={1.5}
-      borderColor="#2e2e2e"
+      borderColor="border.muted"
       {...props}
     >
       {children}
@@ -31,10 +31,10 @@ export function Td({
 }) {
   return (
     <Table.Cell
-      fontSize="11px"
+      fontSize="13px"
       py={1}
       px={1.5}
-      borderColor="#2e2e2e"
+      borderColor="border.muted"
       {...props}
     >
       {children}
@@ -43,40 +43,46 @@ export function Td({
 }
 
 export function Panel({
-  title, children,
+  title, icon, children,
 }: {
   title: string;
+  icon?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <Box
-      bg="#1c1c1c"
-      border="1px solid #2e2e2e"
-      borderRadius="4px"
+      bg="bg.muted"
+      border="1px solid"
+      borderColor="border.muted"
+      borderRadius="md"
       p={2}
     >
-      <PanelHeader>{title}</PanelHeader>
+      <PanelHeader icon={icon}>{title}</PanelHeader>
       {children}
     </Box>
   );
 }
 
 export function PanelHeader({
-  children,
+  icon, children,
 }: {
+  icon?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <Text
-      fontSize="10px"
+    <Flex
+      align="center"
+      gap={1}
+      fontSize="12px"
       fontWeight={600}
-      color="#737373"
+      color="fg.muted"
       textTransform="uppercase"
       letterSpacing="0.5px"
       mb={1.5}
     >
+      {icon}
       {children}
-    </Text>
+    </Flex>
   );
 }
 
@@ -89,8 +95,8 @@ export function Empty({
     <Text
       textAlign="center"
       py={4}
-      color="#737373"
-      fontSize="11px"
+      color="fg.muted"
+      fontSize="13px"
     >
       {children}
     </Text>

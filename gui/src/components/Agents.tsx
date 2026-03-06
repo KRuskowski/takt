@@ -1,5 +1,12 @@
-import { Box, Button, Flex, Table } from "@chakra-ui/react";
+import {
+  Box, Flex, IconButton, Table,
+} from "@chakra-ui/react";
 import { useCallback, useState } from "react";
+import {
+  RiRobotLine,
+  RiStopCircleLine,
+  RiTerminalBoxLine,
+} from "@remixicon/react";
 import {
   type Agent, cancelAgent, listAgents,
 } from "../api";
@@ -43,13 +50,16 @@ export default function Agents() {
     <Flex gap={2} h="100%">
       <Box
         flex="0 0 50%"
-        bg="#1c1c1c"
-        border="1px solid #2e2e2e"
-        borderRadius="4px"
+        bg="bg.muted"
+        border="1px solid"
+        borderColor="border.muted"
+        borderRadius="md"
         p={2}
         overflow="auto"
       >
-        <PanelHeader>Agents</PanelHeader>
+        <PanelHeader icon={<RiRobotLine size={14} />}>
+          Agents
+        </PanelHeader>
         {agents.length === 0 ? (
           <Empty>No agents</Empty>
         ) : (
@@ -72,10 +82,10 @@ export default function Agents() {
                   cursor="pointer"
                   bg={
                     selected?.agent_id === a.agent_id
-                      ? "#2a2a2a"
+                      ? "bg.emphasized"
                       : undefined
                   }
-                  _hover={{ bg: "#2a2a2a" }}
+                  _hover={{ bg: "bg.emphasized" }}
                   onClick={() => setSelected(a)}
                 >
                   <Td>{a.role}</Td>
@@ -88,13 +98,16 @@ export default function Agents() {
                   <Td>
                     <StatusBadge status={a.state} />
                   </Td>
-                  <Td textAlign="right">{a.num_turns}</Td>
+                  <Td textAlign="right">
+                    {a.num_turns}
+                  </Td>
                   <Td textAlign="right">
                     ${a.total_cost_usd.toFixed(2)}
                   </Td>
                   <Td>
                     {a.state === "running" && (
-                      <Button
+                      <IconButton
+                        aria-label="Cancel"
                         size="2xs"
                         variant="outline"
                         colorPalette="red"
@@ -103,8 +116,8 @@ export default function Agents() {
                           handleCancel(a.agent_id);
                         }}
                       >
-                        Cancel
-                      </Button>
+                        <RiStopCircleLine />
+                      </IconButton>
                     )}
                   </Td>
                 </Table.Row>
@@ -116,15 +129,20 @@ export default function Agents() {
 
       <Box
         flex={1}
-        bg="#1c1c1c"
-        border="1px solid #2e2e2e"
-        borderRadius="4px"
+        bg="bg.muted"
+        border="1px solid"
+        borderColor="border.muted"
+        borderRadius="md"
         p={2}
         overflow="hidden"
         display="flex"
         flexDirection="column"
       >
-        <PanelHeader>Output</PanelHeader>
+        <PanelHeader
+          icon={<RiTerminalBoxLine size={14} />}
+        >
+          Output
+        </PanelHeader>
         {selected ? (
           <AgentOutput
             runId={selected.run_id}

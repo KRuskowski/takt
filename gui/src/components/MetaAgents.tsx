@@ -1,7 +1,14 @@
 import {
-  Box, Button, Flex, Table,
+  Box, Flex, IconButton, Table,
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useState } from "react";
+import {
+  RiBrainLine,
+  RiHistoryLine,
+  RiPlayLine,
+  RiStopCircleLine,
+  RiTerminalBoxLine,
+} from "@remixicon/react";
 import {
   type MetaAgent,
   type MetaAgentRun,
@@ -19,10 +26,12 @@ import StatusBadge from "./StatusBadge";
 import { Empty, PanelHeader, Td, Th } from "./shared";
 
 export default function MetaAgents() {
-  const [agents, setAgents] = useState<MetaAgent[]>([]);
+  const [agents, setAgents] =
+    useState<MetaAgent[]>([]);
   const [selected, setSelected] =
     useState<MetaAgent | null>(null);
-  const [runs, setRuns] = useState<MetaAgentRun[]>([]);
+  const [runs, setRuns] =
+    useState<MetaAgentRun[]>([]);
   const [selectedRun, setSelectedRun] =
     useState<MetaAgentRun | null>(null);
 
@@ -32,7 +41,9 @@ export default function MetaAgents() {
       setAgents(data.agents);
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Refresh failed",
+        e instanceof Error
+          ? e.message
+          : "Refresh failed",
       );
     }
   }, []);
@@ -42,7 +53,9 @@ export default function MetaAgents() {
   const refreshRuns = useCallback(async () => {
     if (!selected) return;
     try {
-      const data = await listMetaAgentRuns(selected.id);
+      const data = await listMetaAgentRuns(
+        selected.id,
+      );
       setRuns(data.runs);
     } catch {
       setRuns([]);
@@ -60,12 +73,16 @@ export default function MetaAgents() {
       if (selected?.id === agent.id) refreshRuns();
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Run failed",
+        e instanceof Error
+          ? e.message
+          : "Run failed",
       );
     }
   };
 
-  const handleCancel = async (run: MetaAgentRun) => {
+  const handleCancel = async (
+    run: MetaAgentRun,
+  ) => {
     if (!selected) return;
     try {
       await cancelMetaRun(selected.id, run.id);
@@ -73,7 +90,9 @@ export default function MetaAgents() {
       refreshRuns();
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Cancel failed",
+        e instanceof Error
+          ? e.message
+          : "Cancel failed",
       );
     }
   };
@@ -84,24 +103,31 @@ export default function MetaAgents() {
     setRuns([]);
   };
 
-  const fetchOutput = selectedRun && selected
-    ? () => getMetaAgentOutput(
-        selected.id, selectedRun.id,
-      )
-    : undefined;
+  const fetchOutput =
+    selectedRun && selected
+      ? () =>
+          getMetaAgentOutput(
+            selected.id,
+            selectedRun.id,
+          )
+      : undefined;
 
   return (
     <Flex gap={2} h="100%">
-      {/* Agent list */}
       <Box
         flex="0 0 240px"
-        bg="#1c1c1c"
-        border="1px solid #2e2e2e"
-        borderRadius="4px"
+        bg="bg.muted"
+        border="1px solid"
+        borderColor="border.muted"
+        borderRadius="md"
         p={2}
         overflow="auto"
       >
-        <PanelHeader>Meta Agents</PanelHeader>
+        <PanelHeader
+          icon={<RiBrainLine size={14} />}
+        >
+          Meta Agents
+        </PanelHeader>
         {agents.length === 0 ? (
           <Empty>No meta agents</Empty>
         ) : (
@@ -119,15 +145,18 @@ export default function MetaAgents() {
                   cursor="pointer"
                   bg={
                     selected?.id === a.id
-                      ? "#2a2a2a"
+                      ? "bg.emphasized"
                       : undefined
                   }
-                  _hover={{ bg: "#2a2a2a" }}
+                  _hover={{
+                    bg: "bg.emphasized",
+                  }}
                   onClick={() => selectAgent(a)}
                 >
                   <Td>{a.name}</Td>
                   <Td>
-                    <Button
+                    <IconButton
+                      aria-label="Run"
                       size="2xs"
                       variant="outline"
                       onClick={(e) => {
@@ -135,8 +164,8 @@ export default function MetaAgents() {
                         handleRun(a);
                       }}
                     >
-                      Run
-                    </Button>
+                      <RiPlayLine />
+                    </IconButton>
                   </Td>
                 </Table.Row>
               ))}
@@ -145,19 +174,20 @@ export default function MetaAgents() {
         )}
       </Box>
 
-      {/* Runs + output */}
       <Flex flex={1} direction="column" gap={2}>
-        {/* Runs for selected agent */}
         <Box
-          bg="#1c1c1c"
-          border="1px solid #2e2e2e"
-          borderRadius="4px"
+          bg="bg.muted"
+          border="1px solid"
+          borderColor="border.muted"
+          borderRadius="md"
           p={2}
           overflow="auto"
           flex="0 0 auto"
           maxH="40%"
         >
-          <PanelHeader>
+          <PanelHeader
+            icon={<RiHistoryLine size={14} />}
+          >
             {selected
               ? `Runs — ${selected.name}`
               : "Runs"}
@@ -174,7 +204,9 @@ export default function MetaAgents() {
                   <Th>Status</Th>
                   <Th>Started</Th>
                   <Th>Duration</Th>
-                  <Th textAlign="right">Cost</Th>
+                  <Th textAlign="right">
+                    Cost
+                  </Th>
                   <Th w="1px">{""}</Th>
                 </Table.Row>
               </Table.Header>
@@ -185,22 +217,31 @@ export default function MetaAgents() {
                     cursor="pointer"
                     bg={
                       selectedRun?.id === r.id
-                        ? "#2a2a2a"
+                        ? "bg.emphasized"
                         : undefined
                     }
-                    _hover={{ bg: "#2a2a2a" }}
-                    onClick={() => setSelectedRun(r)}
+                    _hover={{
+                      bg: "bg.emphasized",
+                    }}
+                    onClick={() =>
+                      setSelectedRun(r)
+                    }
                   >
                     <Td>{r.id}</Td>
                     <Td>
-                      <StatusBadge status={r.status} />
+                      <StatusBadge
+                        status={r.status}
+                      />
                     </Td>
                     <Td>
-                      {relativeTime(r.started_at)}
+                      {relativeTime(
+                        r.started_at,
+                      )}
                     </Td>
                     <Td>
                       {duration(
-                        r.started_at, r.finished_at,
+                        r.started_at,
+                        r.finished_at,
                       )}
                     </Td>
                     <Td textAlign="right">
@@ -208,8 +249,10 @@ export default function MetaAgents() {
                     </Td>
                     <Td>
                       {(r.status === "queued"
-                        || r.status === "running") && (
-                        <Button
+                        || r.status
+                          === "running") && (
+                        <IconButton
+                          aria-label="Cancel"
                           size="2xs"
                           variant="outline"
                           colorPalette="red"
@@ -218,8 +261,8 @@ export default function MetaAgents() {
                             handleCancel(r);
                           }}
                         >
-                          Cancel
-                        </Button>
+                          <RiStopCircleLine />
+                        </IconButton>
                       )}
                     </Td>
                   </Table.Row>
@@ -229,18 +272,22 @@ export default function MetaAgents() {
           )}
         </Box>
 
-        {/* Output */}
         <Box
           flex={1}
-          bg="#1c1c1c"
-          border="1px solid #2e2e2e"
-          borderRadius="4px"
+          bg="bg.muted"
+          border="1px solid"
+          borderColor="border.muted"
+          borderRadius="md"
           p={2}
           display="flex"
           flexDirection="column"
           overflow="hidden"
         >
-          <PanelHeader>
+          <PanelHeader
+            icon={
+              <RiTerminalBoxLine size={14} />
+            }
+          >
             {selectedRun
               ? `Output — Run #${selectedRun.id}`
               : "Output"}
@@ -253,7 +300,9 @@ export default function MetaAgents() {
               }
             />
           ) : (
-            <Empty>Select a run to view output</Empty>
+            <Empty>
+              Select a run to view output
+            </Empty>
           )}
         </Box>
       </Flex>

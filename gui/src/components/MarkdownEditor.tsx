@@ -9,6 +9,7 @@ import { basicSetup } from "codemirror";
 import {
   useCallback, useEffect, useRef, useState,
 } from "react";
+import { RiSaveLine } from "@remixicon/react";
 import { getTemplate, putTemplate } from "../api";
 import { showError, showSuccess } from "../toast";
 
@@ -52,8 +53,10 @@ const theme = EditorView.theme({
 export default function MarkdownEditor({
   file, label,
 }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<EditorView | null>(null);
+  const containerRef =
+    useRef<HTMLDivElement>(null);
+  const viewRef =
+    useRef<EditorView | null>(null);
   const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -73,9 +76,12 @@ export default function MarkdownEditor({
             oneDark,
             theme,
             EditorView.lineWrapping,
-            EditorView.updateListener.of((update) => {
-              if (update.docChanged) setDirty(true);
-            }),
+            EditorView.updateListener.of(
+              (update) => {
+                if (update.docChanged)
+                  setDirty(true);
+              },
+            ),
           ],
         });
 
@@ -110,30 +116,35 @@ export default function MarkdownEditor({
 
   const save = useCallback(async () => {
     if (!viewRef.current) return;
-    const content = viewRef.current.state.doc.toString();
+    const content =
+      viewRef.current.state.doc.toString();
     try {
       await putTemplate(file, content);
       setDirty(false);
       showSuccess(`Saved ${file}`);
     } catch (e) {
       showError(
-        e instanceof Error ? e.message : "Save failed",
+        e instanceof Error
+          ? e.message
+          : "Save failed",
       );
     }
   }, [file]);
 
-  // Ctrl+S to save.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      if (
+        (e.ctrlKey || e.metaKey) && e.key === "s"
+      ) {
         e.preventDefault();
         save();
       }
     };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener(
-      "keydown", handler,
-    );
+    return () =>
+      window.removeEventListener(
+        "keydown", handler,
+      );
   }, [save]);
 
   return (
@@ -143,14 +154,19 @@ export default function MarkdownEditor({
         align="center"
         px={2}
         py={1}
-        bg="#1c1c1c"
-        borderBottom="1px solid #2e2e2e"
+        bg="bg.muted"
+        borderBottom="1px solid"
+        borderBottomColor="border.muted"
         flexShrink={0}
       >
-        <Text fontSize="11px" color="#737373">
+        <Text fontSize="13px" color="fg.muted">
           {label ?? file}
           {dirty && (
-            <Text as="span" color="#eab308" ml={1}>
+            <Text
+              as="span"
+              color="#eab308"
+              ml={1}
+            >
               (modified)
             </Text>
           )}
@@ -161,6 +177,7 @@ export default function MarkdownEditor({
           onClick={save}
           disabled={!dirty}
         >
+          <RiSaveLine size={14} />
           Save
         </Button>
       </Flex>
@@ -174,8 +191,8 @@ export default function MarkdownEditor({
           <Text
             textAlign="center"
             py={4}
-            color="#737373"
-            fontSize="11px"
+            color="fg.muted"
+            fontSize="13px"
           >
             Loading...
           </Text>

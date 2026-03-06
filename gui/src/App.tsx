@@ -1,30 +1,59 @@
-import { Box, Flex } from "@chakra-ui/react";
-import { useCallback, useEffect, useState } from "react";
+import { Box, Flex, Tabs, Text } from "@chakra-ui/react";
+import {
+  useCallback, useEffect, useRef, useState,
+} from "react";
+import {
+  RiBrainLine,
+  RiDashboardLine,
+  RiFolderLine,
+  RiGitMergeLine,
+  RiRobotLine,
+  RiServerLine,
+  RiSettings3Line,
+} from "@remixicon/react";
 import { ping } from "./api";
 import { type Tab, dispatch } from "./commands";
 import Agents from "./components/Agents";
-import CommandBar from "./components/CommandBar";
+import CommandBar, {
+  type CommandBarHandle,
+} from "./components/CommandBar";
 import Dashboard from "./components/Dashboard";
 import MarkdownEditor from "./components/MarkdownEditor";
 import MetaAgents from "./components/MetaAgents";
 import Pipeline from "./components/Pipeline";
 import Targets from "./components/Targets";
 import Workspaces from "./components/Workspaces";
-import { showError, showSuccess } from "./toast";
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "agents", label: "Agents" },
-  { id: "pipeline", label: "Pipeline" },
-  { id: "workspaces", label: "Workspaces" },
-  { id: "targets", label: "Targets" },
-  { id: "meta", label: "Meta" },
-  { id: "settings", label: "Settings" },
+
+type TabDef = {
+  id: Tab;
+  label: string;
+  Icon: React.ComponentType<{
+    size?: number | string;
+  }>;
+};
+
+const TABS: TabDef[] = [
+  { id: "dashboard", label: "Dashboard",
+    Icon: RiDashboardLine },
+  { id: "agents", label: "Agents",
+    Icon: RiRobotLine },
+  { id: "pipeline", label: "Pipeline",
+    Icon: RiGitMergeLine },
+  { id: "workspaces", label: "Workspaces",
+    Icon: RiFolderLine },
+  { id: "targets", label: "Targets",
+    Icon: RiServerLine },
+  { id: "meta", label: "Meta",
+    Icon: RiBrainLine },
+  { id: "settings", label: "Settings",
+    Icon: RiSettings3Line },
 ];
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [connected, setConnected] = useState(false);
+  const cmdRef = useRef<CommandBarHandle>(null);
 
   const checkConnection = useCallback(async () => {
     try {
@@ -48,73 +77,82 @@ export default function App() {
         setTab(result.tab);
       }
       if (result.message) {
-        if (result.error) {
-          showError(result.message);
-        } else {
-          showSuccess(result.message);
-        }
+        cmdRef.current?.setOutput({
+          msg: result.message,
+          error: !!result.error,
+          multi: result.multi,
+        });
       }
     },
     [],
   );
 
   return (
-    <Flex direction="column" h="100vh" bg="#141414">
-      {/* Custom titlebar */}
-      <div className="titlebar">
-        <div className="titlebar-controls">
-          <button
-            className="close"
-            onClick={() => window.close()}
-          />
-          <button className="minimize" />
-          <button className="maximize" />
-        </div>
-        <h1>takt</h1>
-        <div className="titlebar-status">
-          <span
-            className={
-              `status-dot ${connected ? "connected" : "disconnected"}`
-            }
+    <Flex direction="column" h="100vh" bg="bg">
+      {/* Titlebar */}
+      <Flex
+        className="drag"
+        align="center"
+        justify="space-between"
+        h="28px"
+        px={2}
+        bg="bg"
+        borderBottom="1px solid"
+        borderBottomColor="border"
+        flexShrink={0}
+        userSelect="none"
+      >
+        <Text
+          fontSize="12px"
+          fontWeight={600}
+          color="fg.muted"
+          letterSpacing="0.5px"
+        >
+          takt
+        </Text>
+        <Flex
+          className="no-drag"
+          align="center"
+          gap={1}
+          fontSize="12px"
+          color="fg.muted"
+        >
+          <Box
+            w="6px"
+            h="6px"
+            borderRadius="full"
+            bg={connected ? "#22c55e" : "#ef4444"}
           />
           {connected ? "connected" : "disconnected"}
-        </div>
-      </div>
+        </Flex>
+      </Flex>
 
       {/* Tab nav */}
-      <Flex
-        gap={0}
-        px={1}
-        bg="#1c1c1c"
-        borderBottom="1px solid #2e2e2e"
-        flexShrink={0}
+      <Tabs.Root
+        value={tab}
+        onValueChange={
+          (d) => setTab(d.value as Tab)
+        }
+        variant="line"
+        size="sm"
       >
-        {TABS.map((t) => (
-          <Box
-            key={t.id}
-            as="button"
-            px={2.5}
-            py={1}
-            fontSize="11px"
-            bg="transparent"
-            border="none"
-            borderBottom="2px solid"
-            borderBottomColor={
-              tab === t.id
-                ? "#dc2626"
-                : "transparent"
-            }
-            color={
-              tab === t.id ? "#d4d4d4" : "#737373"
-            }
-            cursor="pointer"
-            _hover={{ color: "#d4d4d4" }}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </Box>
-        ))}
-      </Flex>
+        <Tabs.List
+          bg="bg.muted"
+          borderBottomColor="border.muted"
+          px={1}
+        >
+          {TABS.map((t) => (
+            <Tabs.Trigger
+              key={t.id}
+              value={t.id}
+              fontSize="13px"
+            >
+              <t.Icon size={14} />
+              {t.label}
+            </Tabs.Trigger>
+          ))}
+        </Tabs.List>
+      </Tabs.Root>
 
       {/* Content */}
       <Box flex={1} overflow="auto" p={2}>
@@ -132,8 +170,10 @@ export default function App() {
         )}
       </Box>
 
-      {/* Command bar */}
-      <CommandBar onCommand={handleCommand} />
+      <CommandBar
+        ref={cmdRef}
+        onCommand={handleCommand}
+      />
     </Flex>
   );
 }

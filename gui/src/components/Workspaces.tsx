@@ -1,8 +1,14 @@
 import {
-  Box, Button, Checkbox, Flex, Input,
-  Table, Text,
+  Box, Button, Checkbox, Flex, IconButton,
+  Input, Table, Text,
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useState } from "react";
+import {
+  RiAddLine,
+  RiDeleteBinLine,
+  RiFolderLine,
+  RiGitRepositoryLine,
+} from "@remixicon/react";
 import {
   type RepoInfo,
   type Workspace,
@@ -49,7 +55,6 @@ export default function Workspaces() {
 
   useSSERefresh(["workspace.event"], refresh);
 
-  // Load repos for the create form.
   useEffect(() => {
     if (!showForm) return;
     listRepos()
@@ -121,9 +126,10 @@ export default function Workspaces() {
     <Flex gap={2} h="100%">
       <Box
         flex="0 0 50%"
-        bg="#1c1c1c"
-        border="1px solid #2e2e2e"
-        borderRadius="4px"
+        bg="bg.muted"
+        border="1px solid"
+        borderColor="border.muted"
+        borderRadius="md"
         p={2}
         overflow="auto"
       >
@@ -132,40 +138,48 @@ export default function Workspaces() {
           align="center"
           mb={1.5}
         >
-          <PanelHeader>Workspaces</PanelHeader>
-          <Button
+          <PanelHeader
+            icon={<RiFolderLine size={14} />}
+          >
+            Workspaces
+          </PanelHeader>
+          <IconButton
+            aria-label={showForm ? "Cancel" : "New"}
             size="2xs"
             variant="outline"
             onClick={() => setShowForm(!showForm)}
           >
-            {showForm ? "Cancel" : "New"}
-          </Button>
+            <RiAddLine />
+          </IconButton>
         </Flex>
 
-        {/* Create form */}
         {showForm && (
           <Box
             mb={2}
             p={2}
-            bg="#242424"
-            borderRadius="4px"
-            border="1px solid #2e2e2e"
+            bg="bg.subtle"
+            borderRadius="md"
+            border="1px solid"
+            borderColor="border.muted"
           >
             <Input
               size="xs"
-              fontSize="11px"
-              bg="#1c1c1c"
-              border="1px solid #2e2e2e"
-              color="#d4d4d4"
+              fontSize="13px"
+              bg="bg.muted"
+              border="1px solid"
+              borderColor="border.muted"
+              color="fg"
               placeholder="Workspace name"
               mb={1.5}
               value={newName}
-              onChange={(e) => setNewName(e.target.value)}
+              onChange={(e) =>
+                setNewName(e.target.value)
+              }
               spellCheck={false}
             />
             <Text
-              fontSize="10px"
-              color="#737373"
+              fontSize="12px"
+              color="fg.muted"
               mb={1}
             >
               Repos:
@@ -175,7 +189,9 @@ export default function Workspaces() {
                 <Checkbox.Root
                   key={r.name}
                   size="sm"
-                  checked={selectedRepos.includes(r.name)}
+                  checked={
+                    selectedRepos.includes(r.name)
+                  }
                   onCheckedChange={() =>
                     toggleRepo(r.name)
                   }
@@ -185,25 +201,24 @@ export default function Workspaces() {
                     <Checkbox.Indicator />
                   </Checkbox.Control>
                   <Checkbox.Label
-                    fontSize="10px"
-                    color="#d4d4d4"
+                    fontSize="12px"
+                    color="fg"
                   >
                     {r.name}
                   </Checkbox.Label>
                 </Checkbox.Root>
               ))}
             </Flex>
-            <Flex align="center" gap={2}>
-              <Button
-                size="2xs"
-                variant="solid"
-                colorPalette="green"
-                onClick={handleCreate}
-                loading={creating}
-              >
-                Create
-              </Button>
-            </Flex>
+            <Button
+              size="2xs"
+              variant="solid"
+              colorPalette="green"
+              onClick={handleCreate}
+              loading={creating}
+            >
+              <RiAddLine size={14} />
+              Create
+            </Button>
           </Box>
         )}
 
@@ -226,10 +241,12 @@ export default function Workspaces() {
                   cursor="pointer"
                   bg={
                     selected?.name === ws.name
-                      ? "#2a2a2a"
+                      ? "bg.emphasized"
                       : undefined
                   }
-                  _hover={{ bg: "#2a2a2a" }}
+                  _hover={{
+                    bg: "bg.emphasized",
+                  }}
                   onClick={() => selectWs(ws)}
                 >
                   <Td>{ws.name}</Td>
@@ -238,7 +255,8 @@ export default function Workspaces() {
                     {ws.repos.length}
                   </Td>
                   <Td>
-                    <Button
+                    <IconButton
+                      aria-label="Delete"
                       size="2xs"
                       variant="outline"
                       colorPalette="red"
@@ -247,8 +265,8 @@ export default function Workspaces() {
                         handleDelete(ws.name);
                       }}
                     >
-                      Del
-                    </Button>
+                      <RiDeleteBinLine />
+                    </IconButton>
                   </Td>
                 </Table.Row>
               ))}
@@ -259,13 +277,16 @@ export default function Workspaces() {
 
       <Box
         flex={1}
-        bg="#1c1c1c"
-        border="1px solid #2e2e2e"
-        borderRadius="4px"
+        bg="bg.muted"
+        border="1px solid"
+        borderColor="border.muted"
+        borderRadius="md"
         p={2}
         overflow="auto"
       >
-        <PanelHeader>
+        <PanelHeader
+          icon={<RiGitRepositoryLine size={14} />}
+        >
           {selected
             ? `${selected.name} — Repos`
             : "Repo Status"}
@@ -287,7 +308,9 @@ export default function Workspaces() {
               {repoStatus.map((r) => (
                 <Table.Row
                   key={r.repo}
-                  _hover={{ bg: "#2a2a2a" }}
+                  _hover={{
+                    bg: "bg.emphasized",
+                  }}
                 >
                   <Td>{r.repo}</Td>
                   <Td>{r.branch}</Td>

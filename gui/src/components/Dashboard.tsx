@@ -1,6 +1,13 @@
 import { Box, Grid, Table, Text } from "@chakra-ui/react";
 import { useCallback, useState } from "react";
 import {
+  RiBrainLine,
+  RiFolderLine,
+  RiPlayCircleLine,
+  RiRobotLine,
+  RiServerLine,
+} from "@remixicon/react";
+import {
   type Agent,
   type MetaAgent,
   type Run,
@@ -20,20 +27,18 @@ import StatusBadge from "./StatusBadge";
 
 const VM_STATE_COLOR: Record<string, string> = {
   running: "#22c55e",
-  "shut off": "#737373",
+  "shut off": "fg.muted",
   paused: "#eab308",
 };
 
 export default function Dashboard() {
-  const [workspaces, setWorkspaces] = useState<Workspace[]>(
-    [],
-  );
+  const [workspaces, setWorkspaces] =
+    useState<Workspace[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [targets, setTargets] = useState<Target[]>([]);
-  const [metaAgents, setMetaAgents] = useState<MetaAgent[]>(
-    [],
-  );
+  const [metaAgents, setMetaAgents] =
+    useState<MetaAgent[]>([]);
 
   const refresh = useCallback(async () => {
     try {
@@ -72,8 +77,8 @@ export default function Dashboard() {
     <Box>
       {totalCost > 0 && (
         <Text
-          fontSize="10px"
-          color="#737373"
+          fontSize="12px"
+          color="fg.muted"
           mb={1}
           textAlign="right"
         >
@@ -86,8 +91,10 @@ export default function Dashboard() {
         }
         gap={2}
       >
-        {/* Workspaces */}
-        <Panel title={`Workspaces (${workspaces.length})`}>
+        <Panel
+          title={`Workspaces (${workspaces.length})`}
+          icon={<RiFolderLine size={14} />}
+        >
           {workspaces.length === 0 ? (
             <Empty>No workspaces</Empty>
           ) : (
@@ -103,7 +110,9 @@ export default function Dashboard() {
                 {workspaces.map((ws) => (
                   <Table.Row
                     key={ws.name}
-                    _hover={{ bg: "#2a2a2a" }}
+                    _hover={{
+                      bg: "bg.emphasized",
+                    }}
                   >
                     <Td>{ws.name}</Td>
                     <Td>{ws.branch}</Td>
@@ -115,8 +124,10 @@ export default function Dashboard() {
           )}
         </Panel>
 
-        {/* Recent runs */}
-        <Panel title={`Recent Runs (${runs.length})`}>
+        <Panel
+          title={`Recent Runs (${runs.length})`}
+          icon={<RiPlayCircleLine size={14} />}
+        >
           {runs.length === 0 ? (
             <Empty>No runs</Empty>
           ) : (
@@ -134,17 +145,24 @@ export default function Dashboard() {
                 {runs.slice(0, 10).map((r) => (
                   <Table.Row
                     key={r.id}
-                    _hover={{ bg: "#2a2a2a" }}
+                    _hover={{
+                      bg: "bg.emphasized",
+                    }}
                   >
                     <Td>{r.id}</Td>
                     <Td>{r.workspace}</Td>
                     <Td>
-                      <StatusBadge status={r.status} />
+                      <StatusBadge
+                        status={r.status}
+                      />
                     </Td>
-                    <Td>{relativeTime(r.started_at)}</Td>
+                    <Td>
+                      {relativeTime(r.started_at)}
+                    </Td>
                     <Td>
                       {duration(
-                        r.started_at, r.finished_at,
+                        r.started_at,
+                        r.finished_at,
                       )}
                     </Td>
                   </Table.Row>
@@ -154,11 +172,11 @@ export default function Dashboard() {
           )}
         </Panel>
 
-        {/* Agents */}
         <Panel
           title={
             `Agents (${agents.filter((a) => a.state === "running").length} active)`
           }
+          icon={<RiRobotLine size={14} />}
         >
           {agents.length === 0 ? (
             <Empty>No agents</Empty>
@@ -176,12 +194,16 @@ export default function Dashboard() {
                 {agents.map((a) => (
                   <Table.Row
                     key={a.agent_id}
-                    _hover={{ bg: "#2a2a2a" }}
+                    _hover={{
+                      bg: "bg.emphasized",
+                    }}
                   >
                     <Td>{a.role}</Td>
                     <Td>{a.workspace}</Td>
                     <Td>
-                      <StatusBadge status={a.state} />
+                      <StatusBadge
+                        status={a.state}
+                      />
                     </Td>
                     <Td textAlign="right">
                       ${a.total_cost_usd.toFixed(2)}
@@ -193,8 +215,10 @@ export default function Dashboard() {
           )}
         </Panel>
 
-        {/* Targets */}
-        <Panel title={`Targets (${targets.length})`}>
+        <Panel
+          title={`Targets (${targets.length})`}
+          icon={<RiServerLine size={14} />}
+        >
           {targets.length === 0 ? (
             <Empty>No targets</Empty>
           ) : (
@@ -211,15 +235,17 @@ export default function Dashboard() {
                 {targets.map((t) => (
                   <Table.Row
                     key={t.name}
-                    _hover={{ bg: "#2a2a2a" }}
+                    _hover={{
+                      bg: "bg.emphasized",
+                    }}
                   >
                     <Td>
                       {t.name}
                       {t.template && (
                         <Text
                           as="span"
-                          fontSize="9px"
-                          color="#737373"
+                          fontSize="11px"
+                          color="fg.muted"
                           ml={1}
                         >
                           [tpl]
@@ -232,8 +258,9 @@ export default function Dashboard() {
                         <Text
                           as="span"
                           color={
-                            VM_STATE_COLOR[t.vm_state]
-                              ?? "#737373"
+                            VM_STATE_COLOR[
+                              t.vm_state
+                            ] ?? "fg.muted"
                           }
                         >
                           {t.vm_state}
@@ -243,7 +270,9 @@ export default function Dashboard() {
                       )}
                     </Td>
                     <Td>
-                      {t.lock ? t.lock.workspace : "—"}
+                      {t.lock
+                        ? t.lock.workspace
+                        : "—"}
                     </Td>
                   </Table.Row>
                 ))}
@@ -252,9 +281,11 @@ export default function Dashboard() {
           )}
         </Panel>
 
-        {/* Meta Agents */}
         <Panel
-          title={`Meta Agents (${metaAgents.length})`}
+          title={
+            `Meta Agents (${metaAgents.length})`
+          }
+          icon={<RiBrainLine size={14} />}
         >
           {metaAgents.length === 0 ? (
             <Empty>No meta agents</Empty>
@@ -271,7 +302,9 @@ export default function Dashboard() {
                 {metaAgents.map((m) => (
                   <Table.Row
                     key={m.id}
-                    _hover={{ bg: "#2a2a2a" }}
+                    _hover={{
+                      bg: "bg.emphasized",
+                    }}
                   >
                     <Td>{m.name}</Td>
                     <Td>{m.model}</Td>

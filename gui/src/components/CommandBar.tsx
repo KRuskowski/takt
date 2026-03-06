@@ -1,33 +1,57 @@
 import { Box, Flex, Input, Text } from "@chakra-ui/react";
 import {
-  useEffect, useRef, useState,
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
   type KeyboardEvent,
 } from "react";
+import { RiTerminalLine } from "@remixicon/react";
 
 interface Props {
   onCommand: (cmd: string) => void;
 }
 
-export default function CommandBar({ onCommand }: Props) {
-  const [value, setValue] = useState("");
-  const [history, setHistory] = useState<string[]>([]);
-  const [histIdx, setHistIdx] = useState(-1);
-  const [feedback, setFeedback] = useState<{
-    msg: string;
-    error: boolean;
-  } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+export interface CommandFeedback {
+  msg: string;
+  error: boolean;
+  multi?: boolean;
+}
 
-  // Auto-clear feedback after 3 seconds.
+export interface CommandBarHandle {
+  setOutput: (fb: CommandFeedback) => void;
+}
+
+const CommandBar = forwardRef<
+  CommandBarHandle, Props
+>(({ onCommand }, ref) => {
+  const [value, setValue] = useState("");
+  const [history, setHistory] =
+    useState<string[]>([]);
+  const [histIdx, setHistIdx] = useState(-1);
+  const [output, setOutput] =
+    useState<CommandFeedback | null>(null);
+  const inputRef =
+    useRef<HTMLInputElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    setOutput,
+  }));
+
+  // Auto-clear single-line feedback.
   useEffect(() => {
-    if (!feedback) return;
-    const id = setTimeout(() => setFeedback(null), 3000);
+    if (!output || output.multi) return;
+    const id = setTimeout(
+      () => setOutput(null), 3000,
+    );
     return () => clearTimeout(id);
-  }, [feedback]);
+  }, [output]);
 
   const submit = () => {
     const trimmed = value.trim();
     if (!trimmed) return;
+    setOutput(null);
     onCommand(trimmed);
     setHistory((prev) => [trimmed, ...prev]);
     setHistIdx(-1);
@@ -39,6 +63,9 @@ export default function CommandBar({ onCommand }: Props) {
   ) => {
     if (e.key === "Enter") {
       submit();
+    } else if (e.key === "Escape") {
+      setOutput(null);
+      setValue("");
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       const next = Math.min(
@@ -62,70 +89,80 @@ export default function CommandBar({ onCommand }: Props) {
   };
 
   return (
-    <Flex
-      align="center"
-      h="24px"
-      bg="#0f0f0f"
-      borderTop="1px solid #2e2e2e"
-      flexShrink={0}
-      px={1}
-      gap={0}
-      onClick={() => inputRef.current?.focus()}
-      cursor="text"
-    >
-      <Text
-        color="#737373"
-        fontSize="11px"
-        fontFamily={
-          "'FiraCode Nerd Font', 'Fira Code', monospace"
-        }
-        flexShrink={0}
-        userSelect="none"
-      >
-        :
-      </Text>
-      <Box flex={1}>
-        <Input
-          ref={inputRef}
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-            setHistIdx(-1);
-          }}
-          onKeyDown={handleKey}
-          variant="flushed"
-          fontSize="11px"
-          fontFamily={
-            "'FiraMono Nerd Font', 'Fira Code', monospace"
-          }
-          color="#d4d4d4"
-          h="24px"
-          pl={1}
-          pr={1}
-          _placeholder={{ color: "#3a3a3a" }}
-          placeholder="command"
-          spellCheck={false}
-          autoComplete="off"
-        />
-      </Box>
-      {feedback && (
-        <Text
-          fontSize="10px"
-          color={feedback.error ? "#dc2626" : "#22c55e"}
-          flexShrink={0}
+    <Box flexShrink={0}>
+      {output?.multi && (
+        <Box
+          bg="bg"
+          borderTop="1px solid"
+          borderTopColor="border.muted"
           px={2}
+          py={1.5}
+          fontSize="12px"
+          color="fg.muted"
+          whiteSpace="pre"
+          lineHeight="1.5"
         >
-          {feedback.msg}
-        </Text>
+          {output.msg}
+        </Box>
       )}
-    </Flex>
-  );
-}
 
-/**
- * Show brief feedback in the command bar.
- * Exposed so App can call it after dispatch.
- */
-export type SetFeedback = (
-  msg: string, error: boolean,
-) => void;
+      <Flex
+        align="center"
+        h="32px"
+        bg="bg"
+        borderTop="1px solid"
+        borderTopColor="border.muted"
+        px={1.5}
+        gap={1.5}
+        onClick={() =>
+          inputRef.current?.focus()
+        }
+        cursor="text"
+      >
+        <Box color="fg.muted" flexShrink={0}>
+          <RiTerminalLine size={14} />
+        </Box>
+        <Box flex={1}>
+          <Input
+            ref={inputRef}
+            value={value}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setHistIdx(-1);
+            }}
+            onKeyDown={handleKey}
+            variant="flushed"
+            fontSize="13px"
+            color="fg"
+            h="32px"
+            pl={0}
+            pr={1}
+            _placeholder={{
+              color: "fg.subtle",
+            }}
+            placeholder="type help for commands"
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </Box>
+        {output && !output.multi && (
+          <Text
+            fontSize="12px"
+            color={
+              output.error
+                ? "#dc2626"
+                : "#22c55e"
+            }
+            flexShrink={0}
+            px={1}
+          >
+            {output.msg}
+          </Text>
+        )}
+      </Flex>
+    </Box>
+  );
+});
+
+CommandBar.displayName = "CommandBar";
+export default CommandBar;
