@@ -1,4 +1,4 @@
-import { Box, Flex, Tabs, Text } from "@chakra-ui/react";
+import { Box, Flex, Tabs } from "@chakra-ui/react";
 import {
   useCallback, useEffect, useRef, useState,
 } from "react";
@@ -18,10 +18,10 @@ import CommandBar, {
   type CommandBarHandle,
 } from "./components/CommandBar";
 import Dashboard from "./components/Dashboard";
-import MarkdownEditor from "./components/MarkdownEditor";
 import MetaAgents from "./components/MetaAgents";
 import Pipeline from "./components/Pipeline";
 import Targets from "./components/Targets";
+import Settings from "./components/Settings";
 import Workspaces from "./components/Workspaces";
 
 
@@ -42,7 +42,7 @@ const TABS: TabDef[] = [
     Icon: RiGitMergeLine },
   { id: "workspaces", label: "Workspaces",
     Icon: RiFolderLine },
-  { id: "targets", label: "Targets",
+  { id: "targets", label: "Deployments",
     Icon: RiServerLine },
   { id: "meta", label: "Meta",
     Icon: RiBrainLine },
@@ -94,7 +94,7 @@ export default function App() {
         className="drag"
         align="center"
         justify="space-between"
-        h="28px"
+        h="44px"
         px={2}
         bg="bg"
         borderBottom="1px solid"
@@ -102,14 +102,11 @@ export default function App() {
         flexShrink={0}
         userSelect="none"
       >
-        <Text
-          fontSize="12px"
-          fontWeight={600}
-          color="fg.muted"
-          letterSpacing="0.5px"
-        >
-          takt
-        </Text>
+        <img
+          src="/logo.svg"
+          alt="takt"
+          style={{ height: "30px" }}
+        />
         <Flex
           className="no-drag"
           align="center"
@@ -162,12 +159,7 @@ export default function App() {
         {tab === "workspaces" && <Workspaces />}
         {tab === "targets" && <Targets />}
         {tab === "meta" && <MetaAgents />}
-        {tab === "settings" && (
-          <MarkdownEditor
-            file="workspace_claude.md"
-            label="Workspace CLAUDE.md Template"
-          />
-        )}
+        {tab === "settings" && <Settings />}
       </Box>
 
       <CommandBar

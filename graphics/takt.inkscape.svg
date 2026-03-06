@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="210mm"
+   height="297mm"
+   viewBox="0 0 210 297"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.4 (e7c3feb100, 2024-10-09)"
+   sodipodi:docname="takt.inkscape.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     showguides="true"
+     inkscape:zoom="1.0973349"
+     inkscape:cx="315.76504"
+     inkscape:cy="264.73231"
+     inkscape:window-width="1920"
+     inkscape:window-height="1080"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1">
+    <sodipodi:guide
+       position="195.30273,231.65798"
+       orientation="0,-1"
+       id="guide8"
+       inkscape:locked="false" />
+    <sodipodi:guide
+       position="189.51598,189.46294"
+       orientation="0,-1"
+       id="guide9"
+       inkscape:locked="false" />
+    <sodipodi:guide
+       position="183.20882,236.22575"
+       orientation="0,-1"
+       id="guide10"
+       inkscape:locked="false" />
+  </sodipodi:namedview>
+  <defs
+     id="defs1">
+    <rect
+       x="255.17669"
+       y="549.01652"
+       width="216.51356"
+       height="225.53495"
+       id="rect7" />
+    <rect
+       x="170.56194"
+       y="532.26249"
+       width="454.49207"
+       height="431.73834"
+       id="rect6" />
+    <rect
+       x="197.18199"
+       y="462.66885"
+       width="402.0966"
+       height="372.45487"
+       id="rect5" />
+  </defs>
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <path
+       id="path1-2"
+       style="fill:#4d4d4d;stroke-width:5.74373;stroke-dashoffset:7.23475"
+       d="m 58.339765,84.155406 a 9.3964463,9.3964463 0 0 1 -9.396445,9.396446 9.3964463,9.3964463 0 0 1 -9.396447,-9.396446 9.3964463,9.3964463 0 0 1 9.396447,-9.396447 9.3964463,9.3964463 0 0 1 9.396445,9.396447 z" />
+    <path
+       id="path1-5-9-3-0"
+       style="fill:#4d4d4d;stroke-width:3.58169;stroke-dashoffset:7.23475"
+       d="m 27.530835,88.351349 a 5.7858401,5.9339668 0 0 1 0,-8.391896 5.7858401,5.9339668 0 0 1 8.182414,0 5.7858401,5.9339668 0 0 1 0,8.391896 5.7858401,5.9339668 0 0 1 -8.182414,0 z" />
+    <path
+       id="path1-5-9-3-1"
+       style="fill:#4d4d4d;stroke-width:1.95615;stroke-dashoffset:7.23475"
+       d="m 22.759918,86.418255 a 3.2001521,3.2001521 0 0 1 -4.525699,0 3.2001521,3.2001521 0 0 1 0,-4.525698 3.2001521,3.2001521 0 0 1 4.525699,0 3.2001521,3.2001521 0 0 1 0,4.525698 z" />
+    <text
+       xml:space="preserve"
+       transform="scale(0.26458333)"
+       id="text6"
+       style="font-family:Unitblock;-inkscape-font-specification:Unitblock;text-align:start;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect6);display:inline;fill:none;fill-opacity:1;stroke:#8d8d8d;stroke-width:12.7181;stroke-dasharray:none;stroke-dashoffset:53.4161;stroke-opacity:1" />
+    <text
+       xml:space="preserve"
+       style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:62.6278px;font-family:C059;-inkscape-font-specification:'C059, Normal';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#000000;fill-opacity:1;stroke:none;stroke-width:20.3597;stroke-dasharray:none;stroke-dashoffset:53.4161;stroke-opacity:1"
+       x="63.401749"
+       y="106.93095"
+       id="text8"><tspan
+         sodipodi:role="line"
+         id="tspan8"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:62.6278px;font-family:C059;-inkscape-font-specification:'C059, Normal';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;fill:#000000;fill-opacity:1;stroke:none;stroke-width:20.3597"
+         x="63.401749"
+         y="106.93095">takt</tspan></text>
+    <path
+       style="fill:#4d4d4d;stroke-width:0.970766;stroke-dashoffset:53.4161"
+       d="m 36.377389,60.773437 c -12.571302,0 -22.750436,10.513099 -22.750436,23.381813 0,12.868714 10.179134,23.38181 22.750436,23.38181 12.571301,0 22.750435,-10.513096 22.750435,-23.38181 0,-12.868714 -10.179134,-23.381813 -22.750435,-23.381813 z m 0,3.225143 c 10.777176,0 19.527188,8.979523 19.527188,20.15667 0,11.177147 -8.750012,20.15857 -19.527188,20.15857 -10.777176,0 -19.525293,-8.981423 -19.525293,-20.15857 0,-11.177147 8.748117,-20.15667 19.525293,-20.15667 z"
+       id="path8" />
+  </g>
+</svg>

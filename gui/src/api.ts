@@ -65,6 +65,19 @@ export const getWorkspaceStatus = (name: string) =>
     repos: { repo: string; branch: string; status: string }[];
   }>(`/api/workspaces/${name}/status`);
 
+export const getWorkspaceClaudeMd = (
+  name: string,
+) => get<{ content: string }>(
+  `/api/workspaces/${name}/claude-md`,
+);
+
+export const putWorkspaceClaudeMd = (
+  name: string, content: string,
+) => put(
+  `/api/workspaces/${name}/claude-md`,
+  { content },
+);
+
 // -- Repos --
 
 export interface RepoInfo {
@@ -172,8 +185,13 @@ export const cancelAgent = (id: string) =>
 // -- Pipeline --
 
 export interface PipelineStep {
+  id: number;
+  workspace: string;
+  seq: number;
   name: string;
   step_type: string;
+  config_json: string;
+  timeout_secs: number;
 }
 
 export const getPipeline = (workspace: string) =>
@@ -228,6 +246,9 @@ export const cancelMetaRun = (
 ) => post(`/api/meta-agents/${id}/runs/${runId}/cancel`);
 
 // -- Templates --
+
+export const listTemplates = () =>
+  get<{ templates: string[] }>("/api/templates");
 
 export const getTemplate = (name: string) =>
   get<{ content: string }>(`/api/templates/${name}`);

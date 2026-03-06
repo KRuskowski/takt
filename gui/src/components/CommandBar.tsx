@@ -38,6 +38,11 @@ const CommandBar = forwardRef<
     useState<CommandFeedback | null>(null);
   const inputRef =
     useRef<HTMLInputElement>(null);
+  const compRef = useRef<{
+    matches: string[];
+    idx: number;
+    base: string;
+  } | null>(null);
 
   useImperativeHandle(ref, () => ({
     setOutput,
@@ -62,7 +67,31 @@ const CommandBar = forwardRef<
     setValue("");
   };
 
-  const handleTab = async () => {
+  const handleTab = async (shift: boolean) => {
+    const comp = compRef.current;
+
+    // Already cycling — advance index.
+    if (comp && comp.matches.length > 1) {
+      const dir = shift ? -1 : 1;
+      comp.idx =
+        (comp.idx + dir + comp.matches.length)
+        % comp.matches.length;
+      const parts = comp.base.split(/\s+/);
+      parts[parts.length - 1] =
+        comp.matches[comp.idx];
+      setValue(parts.join(" "));
+      setOutput({
+        msg: comp.matches
+          .map((m, i) =>
+            i === comp.idx ? `[${m}]` : m,
+          )
+          .join("  "),
+        error: false,
+        multi: true,
+      });
+      return;
+    }
+
     const matches = await getCompletions(value);
     if (matches.length === 0) return;
 
@@ -71,7 +100,9 @@ const CommandBar = forwardRef<
       parts[parts.length - 1] = matches[0];
       setValue(parts.join(" ") + " ");
       setOutput(null);
+      compRef.current = null;
     } else {
+      // Complete common prefix first.
       const cp = commonPrefix(matches);
       if (
         cp.length
@@ -80,6 +111,12 @@ const CommandBar = forwardRef<
         parts[parts.length - 1] = cp;
         setValue(parts.join(" "));
       }
+      // Start cycling from first match.
+      compRef.current = {
+        matches,
+        idx: -1,
+        base: parts.join(" "),
+      };
       setOutput({
         msg: matches.join("  "),
         error: false,
@@ -93,10 +130,24 @@ const CommandBar = forwardRef<
   ) => {
     if (e.key === "Tab") {
       e.preventDefault();
-      handleTab();
+      handleTab(e.shiftKey);
     } else if (e.key === "Enter") {
+      if (compRef.current
+        && compRef.current.idx >= 0) {
+        // Accept current completion.
+        const c = compRef.current;
+        const parts = c.base.split(/\s+/);
+        parts[parts.length - 1] =
+          c.matches[c.idx];
+        setValue(parts.join(" ") + " ");
+        compRef.current = null;
+        setOutput(null);
+        return;
+      }
+      compRef.current = null;
       submit();
     } else if (e.key === "Escape") {
+      compRef.current = null;
       setOutput(null);
       setValue("");
     } else if (e.key === "ArrowUp") {
@@ -141,19 +192,19 @@ const CommandBar = forwardRef<
 
       <Flex
         align="center"
-        h="32px"
-        bg="bg"
+        h="40px"
+        bg="bg.muted"
         borderTop="1px solid"
-        borderTopColor="border.muted"
-        px={1.5}
-        gap={1.5}
+        borderTopColor="border"
+        px={2.5}
+        gap={2}
         onClick={() =>
           inputRef.current?.focus()
         }
         cursor="text"
       >
         <Box color="fg.muted" flexShrink={0}>
-          <RiTerminalLine size={14} />
+          <RiTerminalLine size={16} />
         </Box>
         <Box flex={1}>
           <Input
@@ -162,12 +213,13 @@ const CommandBar = forwardRef<
             onChange={(e) => {
               setValue(e.target.value);
               setHistIdx(-1);
+              compRef.current = null;
             }}
             onKeyDown={handleKey}
             variant="flushed"
-            fontSize="13px"
+            fontSize="14px"
             color="fg"
-            h="32px"
+            h="40px"
             pl={0}
             pr={1}
             _placeholder={{
@@ -180,7 +232,7 @@ const CommandBar = forwardRef<
         </Box>
         {output && !output.multi && (
           <Text
-            fontSize="12px"
+            fontSize="13px"
             color={
               output.error
                 ? "#dc2626"

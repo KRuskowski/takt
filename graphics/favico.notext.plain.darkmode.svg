@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="210mm"
+   height="297mm"
+   viewBox="0 0 210 297"
+   version="1.1"
+   id="svg1"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1">
+    <rect
+       x="255.17669"
+       y="549.01652"
+       width="216.51356"
+       height="225.53495"
+       id="rect7" />
+    <rect
+       x="170.56194"
+       y="532.26249"
+       width="454.49207"
+       height="431.73834"
+       id="rect6" />
+    <rect
+       x="197.18199"
+       y="462.66885"
+       width="402.0966"
+       height="372.45487"
+       id="rect5" />
+  </defs>
+  <g
+     id="layer1">
+    <circle
+       style="fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:5.01818;stroke-dasharray:none;stroke-dashoffset:53.4161;stroke-opacity:1"
+       id="path10"
+       cx="56.918839"
+       cy="71.87265"
+       r="24.955349"
+       transform="rotate(15)" />
+    <path
+       id="path1-2"
+       style="fill:#241f1c;stroke-width:5.74373;stroke-dashoffset:7.23475"
+       d="M 36.377625 60.773551 C 23.806323 60.773551 13.627075 71.286356 13.627075 84.15507 C 13.627075 97.023784 23.806323 107.53711 36.377625 107.53711 C 48.948926 107.53711 59.127657 97.023784 59.127657 84.15507 C 59.127657 71.286356 48.948926 60.773551 36.377625 60.773551 z M 36.377625 63.998678 C 44.55931 63.998678 51.568065 69.176032 54.471611 76.559151 A 9.3964463 9.3964463 0 0 0 48.943266 74.758744 A 9.3964463 9.3964463 0 0 0 39.54694 84.155587 A 9.3964463 9.3964463 0 0 0 48.943266 93.551912 A 9.3964463 9.3964463 0 0 0 54.485563 91.714299 C 51.590915 99.117627 44.572956 104.31405 36.377625 104.31405 C 25.600449 104.31405 16.852201 95.332217 16.852201 84.15507 C 16.852201 72.977923 25.600449 63.998678 36.377625 63.998678 z M 31.209465 78.236568 A 5.7858401 5.9339668 0 0 0 27.530619 79.95946 A 5.7858401 5.9339668 0 0 0 27.530619 88.351196 A 5.7858401 5.9339668 0 0 0 35.713066 88.351196 A 5.7858401 5.9339668 0 0 0 35.713066 79.95946 A 5.7858401 5.9339668 0 0 0 31.209465 78.236568 z M 20.26853 80.963534 A 3.2001521 3.2001521 0 0 0 18.234029 81.892676 A 3.2001521 3.2001521 0 0 0 18.234029 86.418498 A 3.2001521 3.2001521 0 0 0 22.759851 86.418498 A 3.2001521 3.2001521 0 0 0 22.759851 81.892676 A 3.2001521 3.2001521 0 0 0 20.26853 80.963534 z " />
+    <text
+       xml:space="preserve"
+       transform="scale(0.26458333)"
+       id="text6"
+       style="font-family:Unitblock;-inkscape-font-specification:Unitblock;text-align:start;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect6);display:inline;fill:none;fill-opacity:1;stroke:#8d8d8d;stroke-width:12.7181;stroke-dasharray:none;stroke-dashoffset:53.4161;stroke-opacity:1" />
+  </g>
+</svg>
