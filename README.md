@@ -1,4 +1,6 @@
-# takt
+<p align="center">
+  <img src="graphics/takt.plain.darkmode.svg" width="280" alt="takt" />
+</p>
 
 Multi-agent pipeline orchestration for running Claude Code
 agents across multi-repo projects.
