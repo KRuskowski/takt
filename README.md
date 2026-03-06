@@ -15,12 +15,14 @@ agents across multi-repo projects.
 - Runs pipelines via a **background service** that watches
   for branch changes and executes steps in temporary
   worktrees
-- Manages **build/test targets** (VMs and hardware) with
+- Manages **deployment targets** (VMs and hardware) with
   exclusive locking and qcow2-backed VM cloning
-- Provides a **TUI dashboard** for monitoring workspaces,
-  agents, pipelines, and targets in real time
+- Runs **meta agents** for cross-cutting tasks (CLAUDE.md
+  generation, pipeline setup, role template improvement)
+- Provides a **desktop GUI** (Tauri + React), **TUI**
+  (Textual), **REST/SSE API**, and **CLI** for management
 
-![takt dashboard](screenshots/takt.png)
+![takt GUI](screenshots/takt.png)
 
 ## Architecture
 
@@ -67,16 +69,62 @@ GitHub (upstream)
 - **Progressive context disclosure.** CLAUDE.md files are
   lean and point to context packets. Agents fetch what
   they need rather than loading everything upfront.
-- **Pooled targets.** Build/test targets (VMs, hardware)
+- **Pooled targets.** Deployment targets (VMs, hardware)
   are shared resources with exclusive locking. Agents
   claim, use, and release.
+
+## Interfaces
+
+### Desktop GUI (Tauri + React)
+
+Built with Tauri, React, and Chakra UI. Tabs for
+Dashboard, Agents, Pipeline, Workspaces, Deployments,
+Meta Agents, and Settings.
+
+- **Workspaces**: repo status, inline CLAUDE.md editor,
+  pipeline stage prompt editor, workspace settings
+- **Pipeline**: runs with step output streaming via SSE,
+  workspace filter, trigger button
+- **Deployments**: target inventory, VM lifecycle, claim/
+  release
+- **Meta Agents**: run history, cost tracking, output
+  streaming
+- **Settings**: shared template editor (pipeline roles,
+  workspace/repo CLAUDE.md templates)
+- **Command bar**: shell-style command input with
+  zsh-style tab completion cycling
+
+```bash
+cd gui && npm run tauri dev
+```
+
+### TUI (Textual)
+
+Terminal dashboard with live panels for workspaces,
+agents, pipeline runs, and targets. Connects to
+takt-service via ZMQ.
+
+```bash
+bin/takt.py
+```
+
+### REST/SSE API
+
+The background service exposes a REST API on port 7433
+with SSE for real-time events.
+
+```bash
+curl http://localhost:7433/api/workspaces
+curl http://localhost:7433/api/runs?workspace=my-ws
+curl http://localhost:7433/api/events?topics=step.update
+```
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
 | `bin/workspace.py` | Create/delete workspaces, define pipelines |
-| `bin/takt_service.py` | Background service for pipeline watching + execution |
+| `bin/takt_service.py` | Background service (REST API + pipeline execution) |
 | `bin/takt.py` | Textual TUI (connects to takt-service) |
 | `bin/pipeline_watch.py` | Standalone poll for branch changes |
 | `bin/target.py` | Claim/release targets, VM lifecycle, SSH |
@@ -97,10 +145,13 @@ bin/workspace.py pipeline-set feature-auth test push_to_github
 # Start the background service
 systemctl --user start takt-service
 
-# Launch the TUI
+# Launch the GUI
+cd gui && npm run tauri dev
+
+# Or the TUI
 bin/takt.py
 
-# Or trigger a run manually
+# Or trigger a run from the command line
 bin/workspace.py trigger feature-auth
 
 # Push to GitHub when ready
@@ -122,10 +173,11 @@ Built-in scripts:
 
 Agent steps run with a configurable model
 (sonnet/opus/haiku) and get a role prompt from
-`templates/pipeline_roles.md`. Results are written to
-`.stage-result.json` in the worktree.
+`templates/pipeline_roles.md`. Per-step custom prompts
+can be edited inline in the Workspaces tab. Results are
+written to `.stage-result.json` in the worktree.
 
-## Build targets
+## Deployment targets
 
 Targets are VMs and hardware registered in
 `config/targets.yaml`. Template VMs are read-only base
@@ -156,9 +208,14 @@ lib/                  Shared library modules
   db.py               SQLite state layer
   pipeline.py         Pipeline executor
   service.py          Background service (ZMQ + asyncio)
+  api.py              REST/SSE API (aiohttp)
   agent_runner.py     Claude Code SDK wrapper
   workspace_ops.py    Workspace operations
   git_utils.py        Git helpers
+  meta_runner.py      Meta agent executor
+gui/                  Tauri + React desktop GUI
+  src/                React components (Chakra UI)
+  src-tauri/          Tauri backend (Rust)
 tui/                  Dashboard TUI (Textual)
   tabs/               Tab implementations
   widgets/            Reusable panel widgets
@@ -167,6 +224,7 @@ config/
   targets.yaml        Target inventory (gitignored)
 templates/            CLAUDE.md templates, pipeline roles
 context/              Architecture and decision docs
+graphics/             Logos and icons
 tests/                Unit tests
 ```
 
@@ -174,6 +232,8 @@ tests/                Unit tests
 
 - Python 3.11+
 - PyYAML, pyzmq, textual, claude-code-sdk
+- Node.js 18+ (for GUI)
+- Rust (for Tauri)
 - Git
 - libvirt + QEMU (for VM management, optional)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
