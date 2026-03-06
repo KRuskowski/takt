@@ -31,7 +31,25 @@ export interface CommandResult {
   tab?: Tab;
   message?: string;
   error?: boolean;
+  multi?: boolean;
 }
+
+const HELP = [
+  "Navigation: dashboard (d), agents (a),",
+  "  pipeline (p), workspaces (w/ws),",
+  "  targets (t), meta (m), settings (s)",
+  "Actions:",
+  "  run <workspace>        — trigger pipeline",
+  "  cancel run <id>        — cancel run",
+  "  ws new <name> <repos>  — create workspace",
+  "  ws del <name>          — delete workspace",
+  "  claim <target> <ws>    — claim target",
+  "  release <target>       — release target",
+  "  up <target>            — start VM",
+  "  down <target>          — stop VM",
+  "  meta run <name>        — run meta agent",
+  "  help                   — show this",
+].join("\n");
 
 const TAB_MAP: Record<string, Tab> = {
   dashboard: "dashboard",
@@ -56,6 +74,11 @@ export async function dispatch(
 ): Promise<CommandResult> {
   const parts = cmd.trim().split(/\s+/);
   const group = parts[0];
+
+  // Help.
+  if (group === "help" || group === "?") {
+    return { message: HELP, multi: true };
+  }
 
   // Tab navigation.
   if (group in TAB_MAP) {

@@ -31,6 +31,26 @@ $in_scope_repos
 **Reference repos** (read-only context):
 $reference_repos
 
+## Deployment Target
+Each workspace gets an exclusive VM for building and running.
+Claim your target before deploying:
+
+```bash
+takt target claim <vm-name> $workspace_name
+takt target run <vm-name> "<command>"
+```
+
+Available VMs: dev-01, dev-02, dev-03
+(10.101.0.10-12, Debian 13, user: worker)
+
+- ALWAYS deploy and run services on your claimed VM,
+  never on the host
+- Use `takt target run` or SSH directly
+  (`ssh worker@<ip>`)
+- Release the target when done:
+  `takt target release <vm-name>`
+- If all VMs are claimed, report the blocker and stop
+
 ## Building
 $build_section
 

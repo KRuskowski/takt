@@ -82,7 +82,7 @@ export default function AgentOutput({
       fontFamily={
         "'FiraCode Nerd Font', 'Fira Code', monospace"
       }
-      fontSize="11px"
+      fontSize="13px"
       lineHeight="1.4"
       bg="#0a0a0a"
       borderRadius="3px"
@@ -93,8 +93,8 @@ export default function AgentOutput({
         <Text
           textAlign="center"
           py={4}
-          color="#737373"
-          fontSize="11px"
+          color="fg.muted"
+          fontSize="13px"
         >
           No output yet
         </Text>

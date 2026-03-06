@@ -1,20 +1,58 @@
-import { Badge } from "@chakra-ui/react";
+import { Badge, Flex } from "@chakra-ui/react";
+import {
+  RiCheckLine,
+  RiCloseCircleLine,
+  RiForbidLine,
+  RiLoader4Line,
+  RiTimeLine,
+} from "@remixicon/react";
 
-const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
-  running: { bg: "#14291a", color: "#22c55e" },
-  passed: { bg: "#14291a", color: "#22c55e" },
-  completed: { bg: "#14291a", color: "#22c55e" },
-  failed: { bg: "#2a1414", color: "#dc2626" },
-  queued: { bg: "#29250e", color: "#eab308" },
-  pending: { bg: "#1e1e1e", color: "#737373" },
-  cancelled: { bg: "#1e1e1e", color: "#737373" },
+const STATUS_CFG: Record<string, {
+  bg: string;
+  color: string;
+  Icon: React.ComponentType<{
+    size?: number | string;
+  }>;
+}> = {
+  running: {
+    bg: "#14291a", color: "#22c55e",
+    Icon: RiLoader4Line,
+  },
+  passed: {
+    bg: "#14291a", color: "#22c55e",
+    Icon: RiCheckLine,
+  },
+  completed: {
+    bg: "#14291a", color: "#22c55e",
+    Icon: RiCheckLine,
+  },
+  failed: {
+    bg: "#2a1414", color: "#dc2626",
+    Icon: RiCloseCircleLine,
+  },
+  queued: {
+    bg: "#29250e", color: "#eab308",
+    Icon: RiTimeLine,
+  },
+  pending: {
+    bg: "#1e1e1e", color: "#737373",
+    Icon: RiTimeLine,
+  },
+  cancelled: {
+    bg: "#1e1e1e", color: "#737373",
+    Icon: RiForbidLine,
+  },
 };
 
-export default function StatusBadge({ status }: { status: string }) {
-  const s = STATUS_COLORS[status] ?? STATUS_COLORS.pending;
+const DEFAULT = STATUS_CFG.pending;
+
+export default function StatusBadge(
+  { status }: { status: string },
+) {
+  const s = STATUS_CFG[status] ?? DEFAULT;
   return (
     <Badge
-      fontSize="10px"
+      fontSize="12px"
       px={1.5}
       py={0}
       borderRadius="3px"
@@ -22,7 +60,10 @@ export default function StatusBadge({ status }: { status: string }) {
       bg={s.bg}
       color={s.color}
     >
-      {status}
+      <Flex align="center" gap={0.5}>
+        <s.Icon size={12} />
+        {status}
+      </Flex>
     </Badge>
   );
 }
