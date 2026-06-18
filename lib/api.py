@@ -454,6 +454,104 @@ async def handle_template(request):
   )
 
 
+# -- Meta agent routes --
+
+async def handle_meta_agents(request):
+  """GET /api/meta-agents — list meta agents."""
+  db.migrate()
+  agents = db.list_meta_agents()
+  return _json(agents)
+
+
+async def handle_meta_agent(request):
+  """GET /api/meta-agents/{id}."""
+  agent_id = int(request.match_info["id"])
+  db.migrate()
+  agent = db.get_meta_agent(agent_id)
+  if agent is None:
+    return _error(
+      f"Meta agent {agent_id} not found.", 404,
+    )
+  return _json(agent)
+
+
+async def handle_meta_agent_create(request):
+  """POST /api/meta-agents — create a meta agent."""
+  body = await request.json()
+  name = body.get("name")
+  if not name:
+    return _error("Missing 'name'.")
+  db.migrate()
+  try:
+    agent_id = db.create_meta_agent(
+      name=name,
+      description=body.get("description", ""),
+      prompt=body.get("prompt", ""),
+      model=body.get("model", "sonnet"),
+      timeout_secs=body.get("timeout_secs", 1800),
+      config=body.get("config"),
+    )
+    return _json({
+      "status": "created",
+      "meta_agent_id": agent_id,
+    }, status=201)
+  except Exception as e:
+    return _error(str(e))
+
+
+async def handle_meta_agent_delete(request):
+  """DELETE /api/meta-agents/{id}."""
+  agent_id = int(request.match_info["id"])
+  db.migrate()
+  agent = db.get_meta_agent(agent_id)
+  if agent is None:
+    return _error(
+      f"Meta agent {agent_id} not found.", 404,
+    )
+  db.delete_meta_agent(agent_id)
+  return _json({
+    "status": "deleted",
+    "meta_agent_id": agent_id,
+  })
+
+
+async def handle_meta_agent_runs(request):
+  """GET /api/meta-agents/{id}/runs."""
+  agent_id = int(request.match_info["id"])
+  limit = int(request.query.get("limit", "20"))
+  db.migrate()
+  runs = db.list_meta_agent_runs(
+    agent_id, limit=limit,
+  )
+  return _json(runs)
+
+
+async def handle_meta_agent_run(request):
+  """POST /api/meta-agents/{id}/run — trigger a run."""
+  agent_id = int(request.match_info["id"])
+  db.migrate()
+  agent = db.get_meta_agent(agent_id)
+  if agent is None:
+    return _error(
+      f"Meta agent {agent_id} not found.", 404,
+    )
+  run_id = db.create_meta_agent_run(agent_id)
+  return _json({
+    "status": "triggered",
+    "run_id": run_id,
+    "meta_agent_id": agent_id,
+  }, status=201)
+
+
+async def handle_meta_agent_run_output(request):
+  """GET /api/meta-agents/runs/{rid}/output."""
+  run_id = int(request.match_info["rid"])
+  from_line = int(request.query.get("from", "0"))
+  db.migrate()
+  lines = db.get_meta_output(run_id, from_line=from_line)
+  return _json(lines)
+
+
 # -- SSE for live updates --
 
 async def handle_events(request):
@@ -582,6 +680,30 @@ def create_app():
   )
   app.router.add_get(
     "/api/templates/{name}", handle_template,
+  )
+  app.router.add_get(
+    "/api/meta-agents", handle_meta_agents,
+  )
+  app.router.add_post(
+    "/api/meta-agents", handle_meta_agent_create,
+  )
+  app.router.add_get(
+    "/api/meta-agents/{id}", handle_meta_agent,
+  )
+  app.router.add_delete(
+    "/api/meta-agents/{id}", handle_meta_agent_delete,
+  )
+  app.router.add_get(
+    "/api/meta-agents/{id}/runs",
+    handle_meta_agent_runs,
+  )
+  app.router.add_post(
+    "/api/meta-agents/{id}/run",
+    handle_meta_agent_run,
+  )
+  app.router.add_get(
+    "/api/meta-agents/runs/{rid}/output",
+    handle_meta_agent_run_output,
   )
   app.router.add_get("/api/events", handle_events)
   return app

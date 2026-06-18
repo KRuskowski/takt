@@ -120,3 +120,14 @@ def test_agents_list():
   status, data = _run(_get("/api/agents"))
   assert status == 200
   assert isinstance(data, list)
+
+
+def test_meta_agents_list():
+  status, data = _run(_get("/api/meta-agents"))
+  assert status == 200
+  assert isinstance(data, list)
+
+
+def test_meta_agent_not_found():
+  status, data = _run(_get("/api/meta-agents/99999"))
+  assert status == 404

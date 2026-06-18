@@ -1,0 +1,14 @@
+[Unit]
+Description=takt REST API server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/dev/takt/.venv/bin/python3 %h/dev/takt/bin/takt_api.py
+Restart=on-failure
+RestartSec=5
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/dev/takt
+
+[Install]
+WantedBy=default.target
