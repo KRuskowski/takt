@@ -154,6 +154,18 @@ CREATE TABLE IF NOT EXISTS meta_agent_output (
   ts TEXT NOT NULL DEFAULT
     (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+
+
+
+CREATE TABLE IF NOT EXISTS agent_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account TEXT NOT NULL,
+  model TEXT NOT NULL,
+  cost_usd REAL NOT NULL DEFAULT 0.0,
+  turns INTEGER NOT NULL DEFAULT 0,
+  ts TEXT NOT NULL DEFAULT
+    (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))
+);
 """
 
 
@@ -1221,3 +1233,43 @@ def seed_default_meta_agents(db_path=None):
       )
   log.info("Seeded %d default meta agents",
            len(_DEFAULT_META_AGENTS))
+
+
+def record_agent_usage(account, model, cost_usd, turns=1,
+                       db_path=None):
+  """Record an agent turn's usage."""
+  with _connect(db_path) as conn:
+    conn.execute(
+      "INSERT INTO agent_usage "
+      "(account, model, cost_usd, turns) "
+      "VALUES (?, ?, ?, ?)",
+      (account, model, cost_usd, turns),
+    )
+
+
+def get_agent_usage_summary(db_path=None):
+  """Get usage summary per account."""
+  with _connect(db_path) as conn:
+    rows = conn.execute(
+      "SELECT account, model, "
+      "SUM(cost_usd) as total_cost, "
+      "SUM(turns) as total_turns, "
+      "COUNT(*) as sessions "
+      "FROM agent_usage GROUP BY account, model "
+      "ORDER BY account",
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_agent_usage_today(db_path=None):
+  """Get today's usage per account."""
+  with _connect(db_path) as conn:
+    rows = conn.execute(
+      "SELECT account, model, "
+      "SUM(cost_usd) as cost, "
+      "SUM(turns) as turns "
+      "FROM agent_usage "
+      "WHERE ts >= date('now') "
+      "GROUP BY account, model",
+    ).fetchall()
+    return [dict(r) for r in rows]

@@ -121,6 +121,18 @@ def build_app(service):
     "/api/templates/{name}", handle_put_template,
   )
 
+  # Agent usage + accounts.
+  app.router.add_get(
+    "/api/agent/usage", handle_agent_usage,
+  )
+  app.router.add_get(
+    "/api/agent/accounts", handle_agent_accounts,
+  )
+  app.router.add_post(
+    "/api/agent/accounts/active",
+    handle_set_active_account,
+  )
+
   # SSE.
   app.router.add_get("/api/events", handle_sse)
 
@@ -549,6 +561,139 @@ async def handle_list_repos(request):
   return web.json_response(
     {"status": "ok", "data": {"repos": result}},
   )
+
+
+# -- Agent usage + accounts --
+
+async def handle_agent_usage(request):
+  """GET /api/agent/usage — token usage from stats-cache."""
+  import json as _json
+  from pathlib import Path
+  from lib.config import load_takt_config
+  cfg = load_takt_config()
+  agent_cfg = cfg.get("agent", {})
+  accounts = agent_cfg.get("accounts", {})
+  active = agent_cfg.get("active_account", "default")
+  result = []
+  for name, acfg in accounts.items():
+    claude_home = acfg.get("claude_home", "~/.claude")
+    stats_path = (
+      Path(claude_home).expanduser() / "stats-cache.json"
+    )
+    entry = {
+      "account": name,
+      "label": acfg.get("label", name),
+      "active": name == active,
+      "tier": None,
+      "subscription": None,
+      "models": {},
+      "total_sessions": 0,
+      "total_messages": 0,
+      "last_computed": None,
+    }
+    creds_path = (
+      Path(claude_home).expanduser() / ".credentials.json"
+    )
+    if creds_path.exists():
+      try:
+        creds = _json.loads(creds_path.read_text())
+        oauth = creds.get("claudeAiOauth", {})
+        entry["tier"] = oauth.get("rateLimitTier")
+        entry["subscription"] = oauth.get(
+          "subscriptionType",
+        )
+      except Exception:
+        pass
+    if stats_path.exists():
+      try:
+        data = _json.loads(stats_path.read_text())
+        entry["total_sessions"] = data.get(
+          "totalSessions", 0,
+        )
+        entry["total_messages"] = data.get(
+          "totalMessages", 0,
+        )
+        entry["last_computed"] = data.get(
+          "lastComputedDate",
+        )
+        for model, usage in data.get(
+          "modelUsage", {},
+        ).items():
+          short = model.replace("claude-", "")
+          for suffix in [
+            "-20250929", "-20251101", "-20251001",
+          ]:
+            short = short.replace(suffix, "")
+          entry["models"][short] = {
+            "input": usage.get("inputTokens", 0),
+            "output": usage.get("outputTokens", 0),
+            "cache_read": usage.get(
+              "cacheReadInputTokens", 0,
+            ),
+            "cache_write": usage.get(
+              "cacheCreationInputTokens", 0,
+            ),
+          }
+      except Exception:
+        pass
+    result.append(entry)
+  return web.json_response({
+    "status": "ok",
+    "data": {"accounts": result},
+  })
+
+
+async def handle_agent_accounts(request):
+  """GET /api/agent/accounts."""
+  from lib.config import load_takt_config
+  cfg = load_takt_config()
+  agent_cfg = cfg.get("agent", {})
+  accounts = agent_cfg.get("accounts", {})
+  active = agent_cfg.get("active_account", "default")
+  result = []
+  for name, acfg in accounts.items():
+    result.append({
+      "name": name,
+      "label": acfg.get("label", name),
+      "claude_home": acfg.get("claude_home", ""),
+      "active": name == active,
+    })
+  return web.json_response({
+    "status": "ok",
+    "data": {"accounts": result, "active": active},
+  })
+
+
+async def handle_set_active_account(request):
+  """POST /api/agent/accounts/active."""
+  import yaml
+  from lib.config import CONFIG_DIR
+  body = await request.json()
+  account = body.get("account")
+  if not account:
+    return web.json_response(
+      {"status": "error", "message": "missing account"},
+      status=400,
+    )
+  path = CONFIG_DIR / "takt.yaml"
+  with open(path) as f:
+    cfg = yaml.safe_load(f) or {}
+  agent_cfg = cfg.setdefault("agent", {})
+  accounts = agent_cfg.get("accounts", {})
+  if account not in accounts:
+    return web.json_response(
+      {"status": "error",
+       "message": f"unknown account: {account}"},
+      status=400,
+    )
+  agent_cfg["active_account"] = account
+  with open(path, "w") as f:
+    yaml.dump(cfg, f, default_flow_style=False,
+              sort_keys=False)
+  return web.json_response({
+    "status": "ok",
+    "data": {"active": account},
+  })
 
 
 # -- SSE handler --

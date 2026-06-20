@@ -1,3 +1,18 @@
 base_dir: /home/karl/dev
 clone_disk_dir: /home/karl/v
 api_port: 7433
+
+# Agent configuration.
+agent:
+  model: "claude-opus-4-6[1m]"
+  active_account: default
+  accounts:
+    default:
+      claude_home: "~/.claude"
+      label: "Max 20x (default)"
+    private:
+      claude_home: "~/claude-private/.claude"
+      label: "Max 5x (private)"
+    work:
+      claude_home: "~/claude-work/.claude"
+      label: "Max 20x (work)"
