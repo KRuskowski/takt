@@ -303,7 +303,9 @@
     }
 
     ws.addEventListener('open', function() {
-      tryFit(); notifyResize(); term.focus();
+      if (!pane.hidden) {
+        tryFit(); notifyResize(); term.focus();
+      }
     });
     ws.addEventListener('message', function(ev) {
       if (typeof ev.data === 'string') term.write(ev.data);
@@ -324,14 +326,20 @@
     return { term: term, fit: fit, ws: ws, pane: pane };
   }
 
-  function createTab(id, label, wsPath, closeable) {
-    if (tabs[id]) { switchTab(id); return; }
+  function createTab(id, label, wsPath, closeable,
+                     noSwitch) {
+    if (tabs[id]) {
+      if (!noSwitch) switchTab(id);
+      return;
+    }
     var pty = createTermPane(id, wsPath);
 
     var btn = document.createElement('button');
     btn.className = 'takt-tab';
     btn.dataset.tab = id;
-    btn.onclick = function() { switchTab(id); };
+    btn.onclick = function() {
+      switchTab(id); saveState();
+    };
     btn.textContent = label;
     if (closeable) {
       var close = document.createElement('span');
@@ -350,7 +358,7 @@
       term: pty.term, fit: pty.fit, ws: pty.ws,
       pane: pty.pane, btn: btn,
     };
-    switchTab(id);
+    if (!noSwitch) switchTab(id);
   }
 
   function switchTab(id) {
@@ -519,7 +527,8 @@
   }
 
   function restoreTabs() {
-    createTab('mngmt', 'mngmt', '/cli/ws/mngmt', false);
+    createTab('mngmt', 'mngmt', '/cli/ws/mngmt',
+              false, true);
     fetch('{{ takt_api_url }}/api/shell/tabs')
         .then(function(r) { return r.json(); })
         .then(function(r) {
@@ -528,11 +537,11 @@
           var act = state.active || 'mngmt';
           open.forEach(function(name) {
             createTab(name, name,
-                '/ws/workspace/' + name, true);
+                '/ws/workspace/' + name, true, true);
           });
-          if (tabs[act]) switchTab(act);
+          switchTab(act);
         })
-        .catch(function() {});
+        .catch(function() { switchTab('mngmt'); });
   }
 
   window.taktShell = {
