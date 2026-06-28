@@ -145,6 +145,17 @@ def build_app(service):
     "/api/roles", handle_list_roles,
   )
 
+  # Project root files.
+  app.router.add_get(
+    "/api/files", handle_list_files,
+  )
+  app.router.add_get(
+    "/api/files/{path:.+}", handle_get_file,
+  )
+  app.router.add_put(
+    "/api/files/{path:.+}", handle_put_file,
+  )
+
   # Search.
   app.router.add_get(
     "/api/search", handle_search,
@@ -882,6 +893,84 @@ async def handle_search(request):
         })
   return web.json_response(
     {"status": "ok", "data": {"results": results}},
+  )
+
+
+# -- Project files --
+
+EDITABLE_FILES = [
+  "CLAUDE.md",
+  "README.md",
+]
+EDITABLE_DIRS = [
+  "templates",
+  "context",
+]
+
+
+async def handle_list_files(request):
+  """GET /api/files — list editable project files."""
+  from lib.config import PROJECT_DIR
+  result = []
+  for f in EDITABLE_FILES:
+    path = PROJECT_DIR / f
+    if path.exists():
+      result.append({"path": f, "section": "project"})
+  for d in EDITABLE_DIRS:
+    dpath = PROJECT_DIR / d
+    if not dpath.exists():
+      continue
+    for f in sorted(dpath.iterdir()):
+      if f.is_file():
+        rel = f"{d}/{f.name}"
+        result.append({"path": rel, "section": d})
+  return web.json_response(
+    {"status": "ok", "data": {"files": result}},
+  )
+
+
+async def handle_get_file(request):
+  """GET /api/files/{path} — read a project file."""
+  from lib.config import PROJECT_DIR
+  rel = request.match_info["path"]
+  if ".." in rel:
+    return web.json_response(
+      {"status": "error", "message": "invalid path"},
+      status=400,
+    )
+  path = PROJECT_DIR / rel
+  if not path.exists():
+    return web.json_response(
+      {"status": "error", "message": "not found"},
+      status=404,
+    )
+  content = path.read_text()
+  return web.json_response(
+    {"status": "ok",
+     "data": {"path": rel, "content": content}},
+  )
+
+
+async def handle_put_file(request):
+  """PUT /api/files/{path} — write a project file."""
+  from lib.config import PROJECT_DIR
+  rel = request.match_info["path"]
+  if ".." in rel:
+    return web.json_response(
+      {"status": "error", "message": "invalid path"},
+      status=400,
+    )
+  path = PROJECT_DIR / rel
+  if not path.parent.exists():
+    return web.json_response(
+      {"status": "error", "message": "dir not found"},
+      status=404,
+    )
+  body = await request.json()
+  content = body.get("content", "")
+  path.write_text(content)
+  return web.json_response(
+    {"status": "ok", "data": {"path": rel}},
   )
 
 

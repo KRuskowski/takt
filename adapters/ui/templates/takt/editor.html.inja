@@ -1,0 +1,481 @@
+{# File editor page. Lists templates, context, and config
+   files with search. CodeMirror 6 editor with psychotropic
+   theme. #}
+<script>document.querySelector('.app-main').classList.add('app-viewport');</script>
+
+<div class="ted" id="ted" hx-boost="false">
+  <div class="ted-sidebar">
+    <div class="ted-search">
+      <input type="text" class="ted-search-input"
+             id="ted-search" placeholder="search files…"
+             autocomplete="off"
+             oninput="taktEditor.search(this.value)">
+      <button class="ted-search-clear" id="ted-search-clear"
+              onclick="taktEditor.clearSearch()"
+              style="display:none">×</button>
+    </div>
+    <div class="ted-file-list" id="ted-file-list"></div>
+  </div>
+  <div class="ted-main">
+    <div class="ted-file-label" id="ted-file-label"></div>
+    <div class="ted-editor" id="ted-editor"></div>
+    <div class="ted-status" id="ted-status"></div>
+  </div>
+</div>
+
+<style>
+  .ted {
+    display: flex;
+    height: 100%;
+    overflow: hidden;
+  }
+  .ted-sidebar {
+    width: 240px;
+    min-width: 180px;
+    border-right: 1px solid var(--einheit-border, #333);
+    display: flex;
+    flex-direction: column;
+    background: var(--einheit-bg1, #151515);
+    overflow: hidden;
+  }
+  .ted-search {
+    padding: 8px;
+    border-bottom: 1px solid var(--einheit-border, #333);
+    position: relative;
+  }
+  .ted-search-input {
+    width: 100%;
+    background: var(--einheit-bg, #101010);
+    border: 1px solid var(--einheit-border, #333);
+    border-radius: 3px;
+    color: var(--einheit-fg, #e0e0e0);
+    padding: 5px 28px 5px 8px;
+    font-size: 0.82rem;
+    outline: none;
+    box-sizing: border-box;
+  }
+  .ted-search-input:focus {
+    border-color: var(--einheit-accent, #bb86fc);
+  }
+  .ted-search-clear {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--einheit-fg3, #555);
+    font-size: 1rem;
+    cursor: pointer;
+    padding: 2px 4px;
+    line-height: 1;
+  }
+  .ted-search-clear:hover {
+    color: var(--einheit-fg, #e0e0e0);
+  }
+  .ted-file-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+  .ted-section {
+    padding: 6px 12px 2px;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--einheit-fg3, #555);
+  }
+  .ted-file {
+    padding: 4px 12px 4px 20px;
+    font-size: 0.82rem;
+    color: var(--einheit-fg2, #888);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ted-file:hover {
+    background: var(--einheit-bg2, #1e1e1e);
+    color: var(--einheit-fg, #e0e0e0);
+  }
+  .ted-file.active {
+    background: color-mix(in srgb,
+        var(--einheit-accent, #bb86fc) 12%,
+        var(--einheit-bg, #101010));
+    color: var(--einheit-fg, #e0e0e0);
+    border-left: 2px solid var(--einheit-accent, #bb86fc);
+    padding-left: 18px;
+  }
+  .ted-file .ted-match {
+    font-size: 0.72rem;
+    color: var(--einheit-fg3, #555);
+    margin-left: 4px;
+  }
+  .ted-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--einheit-bg, #101010);
+  }
+  .ted-file-label {
+    padding: 6px 16px;
+    font-size: 0.78rem;
+    color: var(--einheit-fg3, #555);
+    border-bottom: 1px solid var(--einheit-border, #333);
+    min-height: 14px;
+  }
+  .ted-file-label .ted-section-name {
+    color: var(--einheit-fg2, #888);
+  }
+  .ted-file-label .ted-file-name {
+    color: var(--einheit-fg, #e0e0e0);
+  }
+  .ted-editor {
+    flex: 1;
+    overflow: hidden;
+  }
+  .ted-editor .cm-editor {
+    height: 100%;
+  }
+  .ted-editor .cm-scroller {
+    overflow: auto;
+  }
+  .ted-status {
+    padding: 4px 16px;
+    font-size: 0.72rem;
+    color: var(--einheit-fg3, #555);
+    border-top: 1px solid var(--einheit-border, #333);
+    display: flex;
+    gap: 16px;
+  }
+  .ted-status .ted-saved {
+    color: var(--einheit-good, #03dac5);
+  }
+</style>
+
+<script src="/takt-assets/cm6/codemirror.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  var CM = window.CM;
+  if (!CM) return;
+
+  var apiUrl = '{{ takt_api_url }}';
+  var files = {};
+  var currentFile = null;
+  var editor = null;
+  var dirty = false;
+
+  var fileList = document.getElementById('ted-file-list');
+  var editorHost = document.getElementById('ted-editor');
+  var fileLabel = document.getElementById('ted-file-label');
+  var statusBar = document.getElementById('ted-status');
+  var searchInput = document.getElementById('ted-search');
+  var clearBtn = document.getElementById('ted-search-clear');
+
+  function cssVar(name, fb) {
+    return getComputedStyle(document.documentElement)
+        .getPropertyValue(name).trim() || fb;
+  }
+
+  var psychotropicTheme = CM.EditorView.theme({
+    '&': {
+      backgroundColor: cssVar('--einheit-bg', '#101010'),
+      color: cssVar('--einheit-fg', '#e0e0e0'),
+    },
+    '.cm-content': { caretColor: cssVar('--einheit-accent', '#bb86fc') },
+    '.cm-cursor': { borderLeftColor: cssVar('--einheit-accent', '#bb86fc') },
+    '.cm-activeLine': {
+      backgroundColor: 'color-mix(in srgb, ' +
+          cssVar('--einheit-accent', '#bb86fc') +
+          ' 5%, transparent)',
+    },
+    '.cm-selectionBackground, ::selection': {
+      backgroundColor: cssVar('--einheit-bg2', '#283238') + ' !important',
+    },
+    '.cm-gutters': {
+      backgroundColor: cssVar('--einheit-bg1', '#151515'),
+      color: cssVar('--einheit-fg3', '#555'),
+      borderRight: '1px solid ' + cssVar('--einheit-border', '#333'),
+    },
+    '.cm-activeLineGutter': {
+      backgroundColor: 'color-mix(in srgb, ' +
+          cssVar('--einheit-accent', '#bb86fc') +
+          ' 8%, transparent)',
+    },
+  }, {dark: true});
+
+  var t = CM.tags;
+  var psychotropicHighlight = CM.HighlightStyle.define([
+    {tag: t.heading1,
+     color: cssVar('--einheit-accent', '#bb86fc'),
+     fontWeight: 'bold', fontSize: '1.3em'},
+    {tag: t.heading2,
+     color: cssVar('--einheit-accent', '#bb86fc'),
+     fontWeight: 'bold', fontSize: '1.15em'},
+    {tag: [t.heading3, t.heading4, t.heading5, t.heading6],
+     color: cssVar('--einheit-accent', '#bb86fc'),
+     fontWeight: 'bold'},
+    {tag: t.emphasis,
+     color: cssVar('--einheit-warn', '#ffb74d'),
+     fontStyle: 'italic'},
+    {tag: t.strong,
+     color: cssVar('--einheit-fg', '#e0e0e0'),
+     fontWeight: 'bold'},
+    {tag: t.link,
+     color: cssVar('--einheit-info', '#82aaff'),
+     textDecoration: 'underline'},
+    {tag: t.url,
+     color: cssVar('--einheit-info', '#82aaff')},
+    {tag: [t.monospace, t.processingInstruction],
+     color: cssVar('--einheit-good', '#03dac5')},
+    {tag: t.quote,
+     color: cssVar('--einheit-fg2', '#888'),
+     fontStyle: 'italic'},
+    {tag: t.strikethrough,
+     textDecoration: 'line-through'},
+    {tag: [t.keyword, t.operator],
+     color: cssVar('--einheit-accent', '#bb86fc')},
+    {tag: [t.string, t.inserted],
+     color: cssVar('--einheit-good', '#03dac5')},
+    {tag: [t.number, t.bool],
+     color: cssVar('--einheit-warn', '#ffb74d')},
+    {tag: [t.propertyName, t.attributeName],
+     color: cssVar('--einheit-info', '#82aaff')},
+    {tag: t.comment,
+     color: cssVar('--einheit-fg3', '#555'),
+     fontStyle: 'italic'},
+    {tag: t.meta,
+     color: cssVar('--einheit-fg3', '#7a8b94')},
+    {tag: t.invalid,
+     color: cssVar('--einheit-bad', '#cf6679')},
+  ]);
+
+  function langForFile(name) {
+    if (!name) return [];
+    if (name.endsWith('.md')) return [CM.markdown()];
+    if (name.endsWith('.yaml') ||
+        name.endsWith('.yml')) return [CM.yaml()];
+    return [];
+  }
+
+  function initEditor(content, filename) {
+    if (editor) editor.destroy();
+    var state = CM.EditorState.create({
+      doc: content || '',
+      extensions: [
+        CM.lineNumbers(),
+        CM.highlightActiveLine(),
+        CM.highlightActiveLineGutter(),
+        CM.drawSelection(),
+        CM.history(),
+        CM.indentOnInput(),
+        CM.bracketMatching(),
+        CM.foldGutter(),
+        CM.highlightSelectionMatches(),
+        CM.syntaxHighlighting(psychotropicHighlight),
+        CM.syntaxHighlighting(CM.defaultHighlightStyle,
+            {fallback: true}),
+        ...langForFile(filename),
+        CM.keymap.of([
+          ...CM.defaultKeymap,
+          ...CM.historyKeymap,
+          ...CM.searchKeymap,
+          ...CM.foldKeymap,
+          CM.indentWithTab,
+          {key: 'Mod-s', run: function() {
+            saveFile(); return true;
+          }},
+        ]),
+        psychotropicTheme,
+        CM.EditorView.updateListener.of(function(v) {
+          if (v.docChanged) {
+            dirty = true;
+            updateStatus();
+          }
+        }),
+      ],
+    });
+    editor = new CM.EditorView({
+      state: state, parent: editorHost,
+    });
+  }
+
+  function updateStatus() {
+    if (!currentFile) {
+      statusBar.innerHTML = '';
+      return;
+    }
+    var parts = [];
+    if (dirty) parts.push('modified');
+    else parts.push('<span class="ted-saved">saved</span>');
+    if (editor) {
+      var pos = editor.state.selection.main.head;
+      var line = editor.state.doc.lineAt(pos);
+      parts.push('Ln ' + line.number +
+                  ', Col ' + (pos - line.from + 1));
+    }
+    statusBar.innerHTML = parts.join(
+        '<span style="opacity:0.3">│</span>');
+  }
+
+  function loadFileList() {
+    files = {};
+    fetch(apiUrl + '/api/files')
+        .then(function(r) { return r.json(); })
+        .then(function(r) {
+          var list = (r.data || {}).files || [];
+          list.forEach(function(f) {
+            files[f.path] = {
+              section: f.section,
+              name: f.path.split('/').pop(),
+              path: f.path,
+            };
+          });
+          renderFileList('');
+        });
+  }
+
+  var sectionOrder = [
+    'project', 'templates', 'context',
+  ];
+
+  function renderFileList(query) {
+    var q = (query || '').toLowerCase();
+    clearBtn.style.display = q ? '' : 'none';
+    var sections = {};
+    Object.keys(files).forEach(function(key) {
+      var f = files[key];
+      if (q && key.toLowerCase().indexOf(q) < 0)
+        return;
+      if (!sections[f.section])
+        sections[f.section] = [];
+      sections[f.section].push({key: key, f: f});
+    });
+
+    var html = '';
+    sectionOrder.forEach(function(sec) {
+      var items = sections[sec];
+      if (!items || !items.length) return;
+      html += '<div class="ted-section">' + sec +
+              '</div>';
+      items.forEach(function(item) {
+        var cls = item.key === currentFile
+            ? ' active' : '';
+        html += '<div class="ted-file' + cls +
+                '" data-key="' + item.key +
+                '" onclick="taktEditor.openFile(\'' +
+                item.key + '\')">' +
+                item.f.name + '</div>';
+      });
+    });
+    fileList.innerHTML = html ||
+        '<div class="ted-section">no matches</div>';
+  }
+
+  function openFile(key) {
+    if (dirty && currentFile) {
+      if (!confirm('Discard unsaved changes?')) return;
+    }
+    var f = files[key];
+    if (!f) return;
+    currentFile = key;
+    renderFileList(searchInput.value);
+
+    fileLabel.innerHTML =
+        '<span class="ted-section-name">' +
+        f.section +
+        '</span> / <span class="ted-file-name">' +
+        f.name + '</span>';
+
+    fetch(apiUrl + '/api/files/' + f.path)
+        .then(function(r) { return r.json(); })
+        .then(function(r) {
+          initEditor((r.data || {}).content || '',
+                     f.name);
+          dirty = false;
+          updateStatus();
+        });
+  }
+
+  function saveFile() {
+    if (!currentFile || !editor) return;
+    var f = files[currentFile];
+    if (!f) return;
+    var content = editor.state.doc.toString();
+    fetch(apiUrl + '/api/files/' + f.path, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: content}),
+    }).then(function() {
+      dirty = false;
+      updateStatus();
+    });
+  }
+
+  function doSearch(q) {
+    if (!q || q.length < 2) {
+      renderFileList(q);
+      return;
+    }
+    fetch(apiUrl + '/api/search?q=' +
+        encodeURIComponent(q))
+        .then(function(r) { return r.json(); })
+        .then(function(r) {
+          var results = (r.data || {}).results || [];
+          var html = '';
+          results.forEach(function(res) {
+            var key = res.section + '/' + res.file;
+            var cls = key === currentFile
+                ? ' active' : '';
+            var match = res.match === 'content'
+                ? '<span class="ted-match">(' +
+                  res.lines.length + ' hits)</span>'
+                : '';
+            html += '<div class="ted-file' + cls +
+                    '" data-key="' + key +
+                    '" onclick="taktEditor.openFile(\'' +
+                    key + '\')">' +
+                    res.file + match + '</div>';
+            if (!files[key]) {
+              files[key] = {
+                section: res.section,
+                name: res.file,
+              };
+            }
+          });
+          fileList.innerHTML = html ||
+              '<div class="ted-section">no matches</div>';
+        });
+  }
+
+  var searchTimer = null;
+  function search(q) {
+    clearTimeout(searchTimer);
+    clearBtn.style.display = q ? '' : 'none';
+    searchTimer = setTimeout(function() {
+      if (q.length >= 2) doSearch(q);
+      else renderFileList(q);
+    }, 200);
+  }
+
+  function clearSearch() {
+    searchInput.value = '';
+    clearBtn.style.display = 'none';
+    renderFileList('');
+    searchInput.focus();
+  }
+
+  window.taktEditor = {
+    openFile: openFile,
+    search: search,
+    clearSearch: clearSearch,
+  };
+
+  initEditor('', '');
+  loadFileList();
+  updateStatus();
+})();
+</script>

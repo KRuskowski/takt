@@ -348,6 +348,7 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
   auto Nav() const -> std::vector<ui::NavEntry> override {
     return {
         {"/", "Dashboard", "dashboard", "monitor"},
+        {"/editor", "Editor", "editor", "square-pen"},
         {"/workspaces", "Workspaces", "workspaces",
          "git-branch"},
         {"/pipeline", "Pipeline", "pipeline",
@@ -417,6 +418,45 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
           {"runs", RunRows(*runs)},
           {"targets", TargetRows(*targets)},
           {"agents", *agents},
+          {"takt_api_url", client_cfg_.base_url},
+      };
+      auto r = ui::Render(*eng, req, args);
+      if (!r) {
+        return ui::RenderError(*eng, req, 500,
+                               "render_failed",
+                               r.error().message);
+      }
+      return std::move(*r);
+    });
+
+    // -- takt-specific assets --
+    auto takt_assets_dir =
+        std::filesystem::read_symlink("/proc/self/exe")
+            .parent_path().parent_path().string()
+        + "/assets";
+    CROW_ROUTE(app, "/takt-assets/<path>")
+    ([takt_assets_dir](const crow::request &,
+                       std::string path) {
+      if (path.find("..") != std::string::npos) {
+        return crow::response(400);
+      }
+      auto full = takt_assets_dir + "/" + path;
+      crow::response r;
+      r.set_static_file_info_unsafe(full);
+      if (path.ends_with(".js")) {
+        r.set_header("Content-Type",
+            "application/javascript; charset=utf-8");
+      }
+      return r;
+    });
+
+    // -- Editor --
+    CROW_ROUTE(app, "/editor")
+    ([eng, this](const crow::request &req) {
+      ui::RenderArgs args;
+      args.fragment = "takt/editor";
+      args.layout = "layout";
+      args.data = {
           {"takt_api_url", client_cfg_.base_url},
       };
       auto r = ui::Render(*eng, req, args);
