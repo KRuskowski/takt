@@ -217,6 +217,8 @@ def create_workspace(name, repos):
   ctx_dest = ws_dir / "context"
   if CONTEXT_DIR.is_dir():
     shutil.copytree(CONTEXT_DIR, ctx_dest)
+  # Install pre-commit hooks.
+  _install_hooks(ws_dir, repos)
   return ws_dir
 
 
@@ -330,6 +332,49 @@ def _build_section(repos):
   if not sections:
     return "Follow each repo's CLAUDE.md for build steps."
   return "\n\n".join(sections)
+
+
+_PRE_COMMIT_HOOK = """\
+#!/bin/sh
+# Installed by takt. Runs checks before commit.
+TAKT_DIR="{takt_dir}"
+REPO_NAME="$(basename "$(pwd)")"
+if [ -x "$TAKT_DIR/.venv/bin/python3" ]; then
+  "$TAKT_DIR/.venv/bin/python3" -c "
+import sys, json
+sys.path.insert(0, '$TAKT_DIR')
+from lib.checks import check_build, check_secrets
+ws = '$(dirname "$(pwd)")'
+r = check_secrets(ws, ['$REPO_NAME'])
+if r['status'] == 'fail':
+    print('takt pre-commit: secrets detected!')
+    for h in r.get('hits', []):
+        print(f'  {{h[\"line\"][:80]}}')
+    sys.exit(1)
+"
+fi
+"""
+
+
+def _install_hooks(ws_dir, repos):
+  """Install takt pre-commit hooks in workspace repos.
+
+  Args:
+    ws_dir: Path to the workspace directory.
+    repos: List of repo names.
+  """
+  takt_dir = str(
+    Path(__file__).resolve().parent.parent
+  )
+  for repo in repos:
+    hooks_dir = ws_dir / repo / ".git" / "hooks"
+    if not hooks_dir.exists():
+      continue
+    hook = hooks_dir / "pre-commit"
+    hook.write_text(
+      _PRE_COMMIT_HOOK.format(takt_dir=takt_dir)
+    )
+    hook.chmod(0o755)
 
 
 def _generate_workspace_claude_md(ws_dir, name, repos,

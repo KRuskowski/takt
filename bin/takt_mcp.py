@@ -367,5 +367,51 @@ def set_active_account(account: str) -> str:
   )
 
 
+@mcp.tool()
+def workspace_health(name: str) -> str:
+  """Full health report for a workspace.
+
+  Checks freshness (commits behind master), secrets in
+  the diff, diff size, and includes the last pipeline
+  run result. Any Claude session can ask "how's this
+  workspace doing?" without touching files.
+
+  Args:
+    name: Workspace name.
+  """
+  from lib.checks import workspace_health as _health
+  ws_path = WORKSPACES_DIR / name
+  if not ws_path.exists():
+    return json.dumps({
+      "error": f"Workspace '{name}' not found."
+    })
+  result = _health(str(ws_path))
+  result["workspace"] = name
+  return json.dumps(result, default=str)
+
+
+@mcp.tool()
+def workspace_last_run(name: str) -> str:
+  """Read the last pipeline run result for a workspace.
+
+  Returns status, step summaries, and error tails from
+  .takt/last-run.json in the workspace directory.
+
+  Args:
+    name: Workspace name.
+  """
+  result_path = (
+    WORKSPACES_DIR / name / ".takt" / "last-run.json"
+  )
+  if not result_path.exists():
+    return json.dumps({
+      "error": f"No run results for '{name}'."
+    })
+  try:
+    return result_path.read_text()
+  except Exception as e:
+    return json.dumps({"error": str(e)})
+
+
 if __name__ == "__main__":
   mcp.run()

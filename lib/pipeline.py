@@ -27,6 +27,9 @@ from lib.git_utils import (
   get_log,
   push_branch,
 )
+from pathlib import Path
+
+from lib.config import WORKSPACES_DIR
 from lib.notify import notify
 from lib.protocol import serialize_sdk_message
 from lib import db
@@ -37,6 +40,57 @@ from lib.worktree import (
 )
 
 log = logging.getLogger("takt.pipeline")
+
+
+def write_run_result(workspace, run_id, db_path=None):
+  """Write pipeline result to workspace .takt/ dir.
+
+  Creates ~/dev/workspaces/<ws>/.takt/last-run.json with
+  run status, step summaries, and error details so
+  workspace agents can read it.
+
+  Args:
+    workspace: Workspace name.
+    run_id: Completed run ID.
+    db_path: Override for testing.
+  """
+  ws_dir = WORKSPACES_DIR / workspace
+  if not ws_dir.exists():
+    return
+  takt_dir = ws_dir / ".takt"
+  takt_dir.mkdir(exist_ok=True)
+
+  run = db.get_run(run_id, db_path=db_path)
+  steps = db.get_run_steps(run_id, db_path=db_path)
+
+  step_summaries = []
+  for s in steps:
+    summary = {
+      "name": s.get("role") or s.get("script", ""),
+      "status": s["status"],
+    }
+    if s["status"] == "failed":
+      output = db.get_output(
+        s["id"], from_line=0, db_path=db_path,
+      )
+      summary["tail"] = output[-20:] if output else []
+    step_summaries.append(summary)
+
+  result = {
+    "run_id": run_id,
+    "workspace": workspace,
+    "status": run["status"],
+    "started_at": run.get("started_at"),
+    "finished_at": run.get("finished_at"),
+    "steps": step_summaries,
+  }
+
+  result_path = takt_dir / "last-run.json"
+  result_path.write_text(json.dumps(result, indent=2))
+  log.info(
+    "Wrote run result to %s (%s)",
+    result_path, run["status"],
+  )
 
 
 # -- Ref snapshot utilities (from pipeline_watch.py) --
@@ -293,11 +347,139 @@ def script_merge_upstream(run, config):
   }
 
 
+def script_check_stubs(run, config):
+  """Scan workspace repos for stub patterns in the diff.
+
+  Checks only lines added since the branch diverged from the
+  default branch. Flags TODO, FIXME, NotImplementedError,
+  bare pass, empty bodies, etc.
+
+  Config options:
+    mode: "diff" (default, only new lines) or "full" (all files)
+    fail_on_new: true (default) — fail the step if new stubs found
+
+  Args:
+    run: Run dict from db.
+    config: Step config dict.
+
+  Returns:
+    Result dict with hits, summary, and pass/fail status.
+  """
+  from lib.stub_finder import (
+    scan_directory,
+    scan_git_diff,
+    format_hits,
+  )
+  repos = json.loads(run["repos_json"])
+  repos_config = load_repos_config()
+  all_repos = repos_config.get("repos", {})
+  mode = config.get("mode", "diff")
+  fail_on_new = config.get("fail_on_new", True)
+  workspace = run["workspace"]
+  all_hits = []
+  for repo in repos:
+    cfg = all_repos.get(repo, {})
+    default_br = cfg.get("default_branch", "main")
+    wt_dir = run.get("worktree_dir")
+    if wt_dir:
+      repo_path = f"{wt_dir}/{repo}"
+    else:
+      repo_path = get_repo_path(cfg.get("path", repo))
+    repo_path = str(repo_path)
+    if mode == "diff":
+      result = scan_git_diff(
+        repo_path, base=f"origin/{default_br}",
+      )
+    else:
+      result = scan_directory(repo_path)
+    for h in result["new_hits"]:
+      h["repo"] = repo
+    all_hits.extend(result["new_hits"])
+  total = len(all_hits)
+  if all_hits:
+    log.warning(
+      "Stub check: %d stub(s) found in %s:\n%s",
+      total, workspace, format_hits(all_hits),
+    )
+  else:
+    log.info("Stub check: clean (%s)", workspace)
+  status = "fail" if (fail_on_new and total > 0) else "pass"
+  return {
+    "status": status,
+    "hits": all_hits,
+    "summary": {"total": total},
+  }
+
+
 # Registry of built-in script steps.
+def _make_check_step(check_fn):
+  """Wrap a lib.checks function as a pipeline step."""
+  def step(run, config):
+    repos = json.loads(run["repos_json"])
+    workspace = run["workspace"]
+    wt_dir = run.get("worktree_dir")
+    if wt_dir:
+      ws_path = wt_dir
+    else:
+      ws_path = str(WORKSPACES_DIR / workspace)
+    result = check_fn(ws_path, repos, **{
+      k: v for k, v in config.items()
+      if k not in ("step", "role", "script")
+    })
+    return {
+      "status": result["status"],
+      "summary": result.get("summary", ""),
+      "detail": result,
+    }
+  return step
+
+
+def _make_check_step_no_kwargs(check_fn):
+  """Wrap a check that only takes ws_path + repos."""
+  def step(run, config):
+    repos = json.loads(run["repos_json"])
+    workspace = run["workspace"]
+    wt_dir = run.get("worktree_dir")
+    ws_path = wt_dir if wt_dir else str(
+      WORKSPACES_DIR / workspace
+    )
+    result = check_fn(ws_path, repos)
+    return {
+      "status": result["status"],
+      "summary": result.get("summary", ""),
+      "detail": result,
+    }
+  return step
+
+
+from lib.checks import (
+  check_build,
+  check_diff_size,
+  check_freshness,
+  check_secrets,
+  check_tests,
+)
+
 SCRIPT_REGISTRY = {
   "push_to_github": script_push_to_github,
   "create_pr": script_create_pr,
   "merge_upstream": script_merge_upstream,
+  "check_stubs": script_check_stubs,
+  "check_freshness": _make_check_step_no_kwargs(
+    check_freshness,
+  ),
+  "check_build": _make_check_step_no_kwargs(
+    check_build,
+  ),
+  "check_tests": _make_check_step_no_kwargs(
+    check_tests,
+  ),
+  "check_secrets": _make_check_step_no_kwargs(
+    check_secrets,
+  ),
+  "check_diff_size": _make_check_step(
+    check_diff_size,
+  ),
 }
 
 
@@ -463,6 +645,17 @@ class PipelineExecutor:
     run_status = db.advance_run(
       run_id, db_path=self._db_path,
     )
+    # Write result to workspace for agent pickup.
+    if run_status in ("passed", "failed", "cancelled"):
+      try:
+        write_run_result(
+          workspace, run_id, db_path=self._db_path,
+        )
+      except Exception as e:
+        log.warning(
+          "Failed to write run result for %s: %s",
+          workspace, e,
+        )
     # Teardown worktrees.
     if run_dir and repos:
       try:
