@@ -8,10 +8,17 @@ manage targets, trigger runs, etc.
 
 import json
 import os
+import sys
 import urllib.request
 import urllib.error
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_DIR))
 
 from mcp.server.fastmcp import FastMCP
+
+WORKSPACES_DIR = PROJECT_DIR.parent / "workspaces"
 
 TAKT_API = os.environ.get(
   "TAKT_API_URL", "http://127.0.0.1:7433"

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -51,7 +52,9 @@ class CliPty {
 
   auto Spawn(const std::string &path,
              const std::vector<std::string> &args,
-             const std::string &cwd = {}) -> bool {
+             const std::string &cwd = {},
+             const std::map<std::string, std::string>
+                 &env = {}) -> bool {
     if (running_) return true;
     int master = -1;
     pid_t pid = ::forkpty(
@@ -61,6 +64,8 @@ class CliPty {
       if (!cwd.empty()) ::chdir(cwd.c_str());
       ::setenv("TERM", "xterm-256color", 1);
       ::setenv("LANG", "C.UTF-8", 1);
+      for (auto &[k, v] : env)
+        ::setenv(k.c_str(), v.c_str(), 1);
       std::vector<char *> argv;
       for (auto &a : args)
         argv.push_back(const_cast<char *>(a.c_str()));
@@ -101,7 +106,9 @@ class CliPty {
           }
           {
             std::lock_guard lk(sink_mu_);
-            if (sink_) sink_(chunk);
+            if (sink_) {
+              try { sink_(chunk); } catch (...) {}
+            }
           }
         } else if (n == 0) {
           break;
@@ -121,7 +128,9 @@ class CliPty {
       }
       {
         std::lock_guard lk(sink_mu_);
-        if (sink_) sink_(hint);
+        if (sink_) {
+          try { sink_(hint); } catch (...) {}
+        }
       }
     });
     return true;
@@ -133,7 +142,9 @@ class CliPty {
       std::lock_guard lk(buf_mu_);
       replay = scrollback_;
     }
-    for (auto &chunk : replay) sink(chunk);
+    for (auto &chunk : replay) {
+      try { sink(chunk); } catch (...) {}
+    }
     {
       std::lock_guard lk(sink_mu_);
       sink_ = std::move(sink);
@@ -324,11 +335,58 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
  public:
   explicit TaktUiAdapter(TaktClientConfig cfg)
       : client_cfg_(cfg), client_(std::move(cfg)) {
-    // Resolve takt-cli path: same directory as our binary.
     namespace fs = std::filesystem;
     auto self = fs::read_symlink("/proc/self/exe");
+    auto takt_dir = self.parent_path().parent_path();
     cli_path_ =
         (self.parent_path() / "takt-cli").string();
+    // Read active account's claude_home from takt.yaml.
+    auto yaml_path = takt_dir / "config/takt.yaml";
+    if (fs::exists(yaml_path)) {
+      std::ifstream f(yaml_path);
+      std::string line;
+      std::string active;
+      std::map<std::string, std::string> homes;
+      std::string cur_account;
+      while (std::getline(f, line)) {
+        if (line.find("active_account:") !=
+            std::string::npos) {
+          auto pos = line.find(':');
+          active = line.substr(pos + 1);
+          while (!active.empty() &&
+                 active[0] == ' ')
+            active.erase(0, 1);
+        }
+        if (line.find("    ") == 0 &&
+            line.find("claude_home:") ==
+                std::string::npos &&
+            line.find(':') != std::string::npos &&
+            line.find("label:") == std::string::npos) {
+          auto pos = line.find(':');
+          cur_account = line.substr(4, pos - 4);
+        }
+        if (line.find("claude_home:") !=
+            std::string::npos) {
+          auto pos = line.find(':');
+          auto val = line.substr(pos + 1);
+          while (!val.empty() && val[0] == ' ')
+            val.erase(0, 1);
+          if (!cur_account.empty())
+            homes[cur_account] = val;
+        }
+      }
+      auto it = homes.find(active);
+      if (it != homes.end()) {
+        auto path = it->second;
+        if (path.starts_with("~/")) {
+          const char *h = std::getenv("HOME");
+          if (h) path = std::string(h) +
+              path.substr(1);
+        }
+        claude_config_dir_ =
+            fs::weakly_canonical(path).string();
+      }
+    }
   }
 
   ~TaktUiAdapter() override {
@@ -1122,7 +1180,7 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
               return true;
             })
         .onopen(
-            [pty_map, conn_map, pty_mu](
+            [pty_map, conn_map, pty_mu, this](
                 crow::websocket::connection &conn) {
               std::lock_guard lk(*pty_mu);
               auto *p = static_cast<std::string *>(
@@ -1141,11 +1199,15 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                 auto cwd =
                     "/home/karl/dev/workspaces/"
                     + name;
+                std::map<std::string, std::string> env;
+                if (!claude_config_dir_.empty())
+                  env["CLAUDE_CONFIG_DIR"] =
+                      claude_config_dir_;
                 pty->Spawn("tmux",
                     {"tmux", "new-session", "-A",
                      "-s", session, "claude",
                      "--dangerously-skip-permissions"},
-                    cwd);
+                    cwd, env);
               }
               pty->Attach(
                   [&conn](std::string_view c) {
@@ -1308,6 +1370,7 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
   std::thread poller_;
   std::atomic<bool> poller_stop_{false};
   std::string cli_path_;
+  std::string claude_config_dir_;
 };
 
 }  // namespace
