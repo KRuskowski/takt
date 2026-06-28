@@ -175,23 +175,26 @@ sudo python3 ~/dev/takt/bin/clone_vm.py \
 
 Clone IPs start at `10.101.0.100+`. Details: `context/vm-templates.md`
 
-## 9. Install takt-service
+## 9. Install takt services
 
-The background service handles pipeline watching and agent execution. Output persists across TUI disconnects.
+The setup script handles everything: venv, C++ build, systemd services, /etc/hosts, MCP server.
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp ~/dev/takt/config/takt-service.service \
-  ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable takt-service
-systemctl --user start takt-service
+python3 ~/dev/takt/bin/setup_takt.py
 ```
+
+This installs three services:
+- **takt-service** (user) — REST API on port 7433
+- **einheit-ui** (user) — web UI on port 7542, binds to 127.0.0.1
+- **takt-socat** (system) — port 80→7542 redirect, binds to 127.0.0.1
+
+All services bind to localhost only — the UI is not reachable from the network.
 
 Verify:
 ```bash
-systemctl --user status takt-service
-journalctl --user -u takt-service -f
+systemctl --user status takt-service einheit-ui
+sudo systemctl status takt-socat
+curl http://takt/  # should return 200
 ```
 
 ## 10. Verify the setup
