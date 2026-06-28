@@ -2,9 +2,7 @@
 
 ## Overview
 
-`bin/takt.py` launches a Textual TUI (`TaktApp`)
-with tabbed layout: Dashboard, Trigger, Settings, plus dynamic
-agent tabs for inline Claude agents.
+`bin/takt.py` launches a Textual TUI (`TaktApp`) with tabbed layout: Dashboard, Trigger, Settings, plus dynamic agent tabs for inline Claude agents.
 
 ## Layout
 
@@ -22,29 +20,15 @@ agent tabs for inline Claude agents.
 
 ### Dashboard tab
 
-Existing 6-panel grid (agents, workspaces, pipeline grid,
-pipeline events, targets, PRs). Extracted into
-`tui/tabs/dashboard_tab.py`.
+Existing 6-panel grid (agents, workspaces, pipeline grid, pipeline events, targets, PRs). Extracted into `tui/tabs/dashboard_tab.py`.
 
 ### Agents tab
 
-Static tab with all inline agents. Top half: DataTable
-listing agent ID, model, state, turns, cost. Bottom half:
-RichLog showing selected agent's streaming output. Polls
-registry every 2s. Selecting a row switches the viewer.
-Output is buffered on each runner so switching agents
-replays full history. Implemented in
-`tui/tabs/agents_tab.py`.
+Static tab with all inline agents. Top half: DataTable listing agent ID, model, state, turns, cost. Bottom half: RichLog showing selected agent's streaming output. Polls registry every 2s. Selecting a row switches the viewer. Output is buffered on each runner so switching agents replays full history. Implemented in `tui/tabs/agents_tab.py`.
 
 ### Pipeline tab
 
-Inline pipeline editor for defining per-workspace step
-sequences. Select a workspace, add/remove/reorder steps.
-Agent steps get a model selector (sonnet/opus/haiku);
-script steps hide the model row. Role text is editable
-in a TextArea below the steps table. Save writes to
-`pipeline_steps` in SQLite; model choice persists in
-the step's `config_json` column.
+Inline pipeline editor for defining per-workspace step sequences. Select a workspace, add/remove/reorder steps. Agent steps get a model selector (sonnet/opus/haiku); script steps hide the model row. Role text is editable in a TextArea below the steps table. Save writes to `pipeline_steps` in SQLite; model choice persists in the step's `config_json` column.
 
 ```
 Workspace: [Select ▾ feature-auth]
@@ -62,43 +46,25 @@ Role: Test Agent
                          [Save] [Delete Pipeline]
 ```
 
-Model Select + label hidden for script steps. The model
-flows from `pipeline_steps.config_json` through
-`steps.config_json` (copied at run creation) to
-`AgentInfo.model` in the executor.
+Model Select + label hidden for script steps. The model flows from `pipeline_steps.config_json` through `steps.config_json` (copied at run creation) to `AgentInfo.model` in the executor.
 
 Implemented in `tui/tabs/pipeline_tab.py`.
 
 ### Targets tab
 
-Full target management. DataTable showing all non-template
-targets (Name, Type, Host, State, Claimed By) with auto-
-refresh every 10s. Action buttons: Claim (opens
-ClaimTargetScreen), Release (confirm + release_lock),
-Start/Stop (virsh start/shutdown via worker), Clone (opens
-CloneTargetScreen modal then runs clone_vm.py), Delete
-(confirm then runs clone_vm.py delete). Refuses to delete
-templates. Hardware targets get a notification instead of
-virsh commands. Implemented in `tui/tabs/targets_tab.py`.
+Full target management. DataTable showing all non-template targets (Name, Type, Host, State, Claimed By) with auto- refresh every 10s. Action buttons: Claim (opens ClaimTargetScreen), Release (confirm + release_lock), Start/Stop (virsh start/shutdown via worker), Clone (opens CloneTargetScreen modal then runs clone_vm.py), Delete (confirm then runs clone_vm.py delete). Refuses to delete templates. Hardware targets get a notification instead of virsh commands. Implemented in `tui/tabs/targets_tab.py`.
 
 ### Trigger tab
 
-Workflow action buttons + stages table + run history.
-Buttons: Trigger Stage, Push to GitHub, New Workspace,
-Add Stage. Each opens a modal screen.
+Workflow action buttons + stages table + run history. Buttons: Trigger Stage, Push to GitHub, New Workspace, Add Stage. Each opens a modal screen.
 
 ### Settings tab
 
-Read-only config display: default model select, repos
-table, targets table, poll interval. Model selection
-persists to `config/tui_settings.yaml`.
+Read-only config display: default model select, repos table, targets table, poll interval. Model selection persists to `config/tui_settings.yaml`.
 
 ### Agent tabs
 
-Dynamic tabs created when pipeline markers trigger or
-manual trigger. Each tab streams Claude agent output
-via `claude-code-sdk`. Status bar shows state, model,
-cost, turns. Tab title gets icon on completion (✓/✗).
+Dynamic tabs created when pipeline markers trigger or manual trigger. Each tab streams Claude agent output via `claude-code-sdk`. Status bar shows state, model, cost, turns. Tab title gets icon on completion (✓/✗).
 
 ## File Structure
 
@@ -135,35 +101,23 @@ config/
 
 ## Agent Execution
 
-`lib/agent_runner.py`: AgentRunner wraps `claude-code-sdk`
-`query()`. Each agent is one async query call with
-`bypassPermissions`. AgentInfo tracks state, cost, turns.
+`lib/agent_runner.py`: AgentRunner wraps `claude-code-sdk` `query()`. Each agent is one async query call with `bypassPermissions`. AgentInfo tracks state, cost, turns.
 
-`lib/agent_registry.py`: Module-level dict `{id: AgentRunner}`.
-Functions: register/unregister/get/is_running/list_active.
+`lib/agent_registry.py`: Module-level dict `{id: AgentRunner}`. Functions: register/unregister/get/is_running/list_active.
 
-`tui/widgets/agent_output.py`: Converts SDK messages
-(TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBlock,
-ResultMessage) to Rich Text for RichLog display.
+`tui/widgets/agent_output.py`: Converts SDK messages (TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBlock, ResultMessage) to Rich Text for RichLog display.
 
 ## Pipeline Integration
 
-`tui/widgets/pipeline.py` scans for `.pipeline-push` and
-`.upstream-sync` markers and launches agents inline via
-`app.launch_agent()` instead of kitty tabs.
+`tui/widgets/pipeline.py` scans for `.pipeline-push` and `.upstream-sync` markers and launches agents inline via `app.launch_agent()` instead of kitty tabs.
 
-`bin/pipeline_watch.py` is unchanged — still works standalone
-with kitty as fallback when TUI is not running.
+`bin/pipeline_watch.py` is unchanged — still works standalone with kitty as fallback when TUI is not running.
 
 ## Polling Architecture
 
-All polling uses `@work(thread=True)` workers since git and
-file operations are blocking. Workers post results back to
-the main thread via `app.call_from_thread()`.
+All polling uses `@work(thread=True)` workers since git and file operations are blocking. Workers post results back to the main thread via `app.call_from_thread()`.
 
-Agent streaming uses `@work(thread=False)` (async, SDK
-iterators). Multiple agents run in parallel via separate
-OS subprocesses.
+Agent streaming uses `@work(thread=False)` (async, SDK iterators). Multiple agents run in parallel via separate OS subprocesses.
 
 | Panel      | Interval | Data source                        |
 |------------|----------|------------------------------------|
@@ -187,18 +141,13 @@ OS subprocesses.
 
 ## Modal Screens
 
-- **CreateWorkspaceScreen**: Input for name + SelectionList
-  of repos from repos.yaml.
+- **CreateWorkspaceScreen**: Input for name + SelectionList of repos from repos.yaml.
 - **ClaimTargetScreen**: Input for workspace name.
 - **ConfirmScreen**: Reusable yes/no dialog.
-- **TriggerStageScreen**: Select workspace + role, writes
-  `.pipeline-push` markers, launches inline agent.
-- **PushGithubScreen**: Select workspace, runs
-  push_to_github.py.
-- **CloneTargetScreen**: Select template, input name +
-  IP. Returns (template, name, ip) tuple.
-- **AddStageScreen**: Select workspace + role, calls
-  create_stage().
+- **TriggerStageScreen**: Select workspace + role, writes `.pipeline-push` markers, launches inline agent.
+- **PushGithubScreen**: Select workspace, runs push_to_github.py.
+- **CloneTargetScreen**: Select template, input name + IP. Returns (template, name, ip) tuple.
+- **AddStageScreen**: Select workspace + role, calls create_stage().
 
 ## Dependencies
 

@@ -25,38 +25,30 @@ $acceptance_criteria
 $git_rules
 
 ## Scope
-**In-scope repos** (make changes here):
-$in_scope_repos
+**In-scope repos** (make changes here): $in_scope_repos
 
-**Reference repos** (read-only context):
-$reference_repos
+**Reference repos** (read-only context): $reference_repos
 
 ## Deployment Target
-Each workspace gets an exclusive VM for building and running.
-Claim your target before deploying:
+Each workspace gets an exclusive VM for building and running. Claim your target before deploying:
 
 ```bash
 takt target claim <vm-name> $workspace_name
 takt target run <vm-name> "<command>"
 ```
 
-Available VMs: dev-01, dev-02, dev-03
-(10.101.0.10-12, Debian 13, user: worker)
+Available targets: run `~/dev/takt/bin/target.py list` for the live inventory and current claims. Templates are read-only — clone via `~/dev/takt/bin/clone_vm.py` for parallel work; clone IPs start at 10.101.0.100.
 
-- ALWAYS deploy and run services on your claimed VM,
-  never on the host
-- Use `takt target run` or SSH directly
-  (`ssh worker@<ip>`)
-- Release the target when done:
-  `takt target release <vm-name>`
+- ALWAYS deploy and run services on your claimed VM, never on the host
+- Use `takt target run` or SSH directly (`ssh worker@<ip>`)
+- Release the target when done: `takt target release <vm-name>`
 - If all VMs are claimed, report the blocker and stop
 
 ## Building
 $build_section
 
 ## Context Packets
-Read these files for background as needed:
-$context_packets
+Read these files for background as needed: $context_packets
 
 ## Repos in This Workspace
 | Repo | Default Branch | Push Order |

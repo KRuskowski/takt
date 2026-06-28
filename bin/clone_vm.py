@@ -151,15 +151,26 @@ def _reconfigure_debian(clone_disk, name, ip):
       "sudo apt install libguestfs-tools"
     )
 
-  # Update /etc/network/interfaces for the new IP.
-  sed_ip = (
-    f"s/address [0-9.]*/address {ip}/g"
+  # Update IP in whichever network config the image uses.
+  # Debian 13 (trixie) cloud images use netplan
+  # (/etc/netplan/50-cloud-init.yaml). Older Debian images and
+  # bare-metal-style configs use /etc/network/interfaces.
+  ip_update = (
+    "if [ -f /etc/netplan/50-cloud-init.yaml ]; then "
+    f"  sed -i 's|[0-9.]\\+/20|{ip}/20|g' "
+    "     /etc/netplan/50-cloud-init.yaml; "
+    "fi; "
+    "if [ -f /etc/network/interfaces ]; then "
+    f"  sed -i 's/address [0-9.]\\+/address {ip}/g' "
+    "     /etc/network/interfaces; "
+    "fi; "
+    "true"
   )
   _run([
     "virt-customize",
     "-a", str(clone_disk),
     "--hostname", name,
-    "--run-command", f"sed -i '{sed_ip}' /etc/network/interfaces",
+    "--run-command", ip_update,
     "--run-command",
     "rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub",
     "--run-command", "ssh-keygen -A",

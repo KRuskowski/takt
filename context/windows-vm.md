@@ -29,42 +29,31 @@ sudo python3 bin/setup_win_vm.py
 python3 bin/provision_win_vm.py win-01
 ```
 
-Setup script: `bin/setup_win_vm.py`
-Provisioning script: `bin/provision_win_vm.py`
+Setup script: `bin/setup_win_vm.py` Provisioning script: `bin/provision_win_vm.py`
 
 ## Autounattend Reference
 
-The autounattend.xml is generated as a Python f-string in
-`bin/setup_win_vm.py:_generate_autounattend_xml`. It runs
-three passes:
+The autounattend.xml is generated as a Python f-string in `bin/setup_win_vm.py:_generate_autounattend_xml`. It runs three passes:
 
-- **windowsPE**: GPT partitioning (EFI + MSR + Windows),
-  loads VirtIO drivers from CD-ROM, selects Pro edition
+- **windowsPE**: GPT partitioning (EFI + MSR + Windows), loads VirtIO drivers from CD-ROM, selects Pro edition
 - **specialize**: Sets hostname to `win-01`
-- **oobeSystem**: Creates `worker` admin account, disables
-  Windows Firewall, sets static IP, installs OpenSSH Server,
-  writes SSH pubkey, sets PowerShell as default shell,
-  disables Defender realtime and sleep/hibernate
+- **oobeSystem**: Creates `worker` admin account, disables Windows Firewall, sets static IP, installs OpenSSH Server, writes SSH pubkey, sets PowerShell as default shell, disables Defender realtime and sleep/hibernate
 
-The autounattend ISO uses volume label `OEMDRV` which
-Windows auto-searches during setup.
+The autounattend ISO uses volume label `OEMDRV` which Windows auto-searches during setup.
 
 ## Installed Software
 
 After provisioning (`bin/provision_win_vm.py`):
 
-- **VS 2022 Build Tools** with VCTools workload + CMake
-  component (`cl.exe`, `cmake`, `msbuild`)
+- **VS 2022 Build Tools** with VCTools workload + CMake component (`cl.exe`, `cmake`, `msbuild`)
 - **Git for Windows** (`C:\Program Files\Git\cmd\git.exe`)
 - **OpenSSH Server** (PowerShell as default shell)
 
-VS environment (cl.exe, link.exe, etc.) is auto-loaded on
-SSH login via PowerShell profile that sources `vcvars64.bat`.
+VS environment (cl.exe, link.exe, etc.) is auto-loaded on SSH login via PowerShell profile that sources `vcvars64.bat`.
 
 ## Samba Share
 
-Host exports `~/dev` as `[dev]` share via Samba.
-Guest maps it as `W:` drive (`\\10.101.0.1\dev`).
+Host exports `~/dev` as `[dev]` share via Samba. Guest maps it as `W:` drive (`\\10.101.0.1\dev`).
 
 To update the Samba password:
 ```bash
@@ -79,8 +68,7 @@ net use W: \\10.101.0.1\dev /persistent:yes
 
 ## USB Passthrough
 
-The VM has an xHCI (USB 3.0) controller. To pass through
-a specific USB device at runtime:
+The VM has an xHCI (USB 3.0) controller. To pass through a specific USB device at runtime:
 
 ```bash
 # Find the device
@@ -109,8 +97,7 @@ EOF
 )
 ```
 
-For persistent passthrough (survives reboot), add a
-`<hostdev>` element to the VM's libvirt XML:
+For persistent passthrough (survives reboot), add a `<hostdev>` element to the VM's libvirt XML:
 ```bash
 virsh edit win-01
 ```
@@ -119,19 +106,11 @@ virsh edit win-01
 
 The setup script handles these UEFI-specific quirks:
 
-- **Boot order**: Uses `boot.order=1` on the CD-ROM and
-  `boot.order=2` on the disk (UEFI ignores `<boot dev>`
-  in `<os>`)
-- **CD boot keypress**: UEFI shows "Press any key to boot
-  from CD" — the script sends `virsh send-key KEY_ENTER`
-  after a 3s delay
-- **VirtIO drivers**: Only `viostor\w11\amd64` and
-  `NetKVM\w11\amd64` paths (the `amd64\w11` top-level
-  path contains duplicate viostor that causes 0x80070103)
-- **AutoLogon count**: Set to 3 (profile setup consumes
-  initial auto-logons before FirstLogonCommands run)
-- **Parent dir permissions**: `libvirt-qemu` needs `o+x`
-  on parent dirs to access images in `~/`
+- **Boot order**: Uses `boot.order=1` on the CD-ROM and `boot.order=2` on the disk (UEFI ignores `<boot dev>` in `<os>`)
+- **CD boot keypress**: UEFI shows "Press any key to boot from CD" — the script sends `virsh send-key KEY_ENTER` after a 3s delay
+- **VirtIO drivers**: Only `viostor\w11\amd64` and `NetKVM\w11\amd64` paths (the `amd64\w11` top-level path contains duplicate viostor that causes 0x80070103)
+- **AutoLogon count**: Set to 3 (profile setup consumes initial auto-logons before FirstLogonCommands run)
+- **Parent dir permissions**: `libvirt-qemu` needs `o+x` on parent dirs to access images in `~/`
 
 ## Recovery
 

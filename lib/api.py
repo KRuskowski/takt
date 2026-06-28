@@ -121,6 +121,35 @@ def build_app(service):
     "/api/templates/{name}", handle_put_template,
   )
 
+  # Shell tab state.
+  app.router.add_get(
+    "/api/shell/tabs", handle_get_shell_tabs,
+  )
+  app.router.add_put(
+    "/api/shell/tabs", handle_put_shell_tabs,
+  )
+
+  # Context files.
+  app.router.add_get(
+    "/api/context", handle_list_context,
+  )
+  app.router.add_get(
+    "/api/context/{name}", handle_get_context,
+  )
+  app.router.add_put(
+    "/api/context/{name}", handle_put_context,
+  )
+
+  # Pipeline roles.
+  app.router.add_get(
+    "/api/roles", handle_list_roles,
+  )
+
+  # Search.
+  app.router.add_get(
+    "/api/search", handle_search,
+  )
+
   # Agent usage + accounts.
   app.router.add_get(
     "/api/agent/usage", handle_agent_usage,
@@ -694,6 +723,166 @@ async def handle_set_active_account(request):
     "status": "ok",
     "data": {"active": account},
   })
+
+
+# -- Shell tab state --
+
+async def handle_get_shell_tabs(request):
+  """GET /api/shell/tabs — read persisted open tabs."""
+  from lib.config import STATE_DIR
+  path = STATE_DIR / "shell_tabs.json"
+  if not path.exists():
+    return web.json_response(
+      {"status": "ok",
+       "data": {"tabs": [], "active": "mngmt"}},
+    )
+  try:
+    state = json.loads(path.read_text())
+    if isinstance(state, list):
+      state = {"tabs": state, "active": "mngmt"}
+  except Exception:
+    state = {"tabs": [], "active": "mngmt"}
+  return web.json_response(
+    {"status": "ok", "data": state},
+  )
+
+
+async def handle_put_shell_tabs(request):
+  """PUT /api/shell/tabs — persist open tabs."""
+  from lib.config import STATE_DIR
+  body = await request.json()
+  state = {
+    "tabs": body.get("tabs", []),
+    "active": body.get("active", "mngmt"),
+  }
+  path = STATE_DIR / "shell_tabs.json"
+  path.write_text(json.dumps(state))
+  return web.json_response(
+    {"status": "ok", "data": state},
+  )
+
+
+# -- Context files --
+
+async def handle_list_context(request):
+  """GET /api/context — list context directory files."""
+  from lib.config import CONTEXT_DIR
+  if not CONTEXT_DIR.exists():
+    return web.json_response(
+      {"status": "ok", "data": {"files": []}},
+    )
+  files = sorted(
+    f.name for f in CONTEXT_DIR.iterdir()
+    if f.is_file()
+  )
+  return web.json_response(
+    {"status": "ok", "data": {"files": files}},
+  )
+
+
+async def handle_get_context(request):
+  """GET /api/context/:name — read a context file."""
+  from lib.config import CONTEXT_DIR
+  name = request.match_info["name"]
+  if "/" in name or "\\" in name:
+    return web.json_response(
+      {"status": "error", "message": "invalid name"},
+      status=400,
+    )
+  path = CONTEXT_DIR / name
+  if not path.exists():
+    return web.json_response(
+      {"status": "error", "message": "not found"},
+      status=404,
+    )
+  content = path.read_text()
+  return web.json_response(
+    {"status": "ok", "data": {"content": content}},
+  )
+
+
+async def handle_put_context(request):
+  """PUT /api/context/:name — write a context file."""
+  from lib.config import CONTEXT_DIR
+  name = request.match_info["name"]
+  if "/" in name or "\\" in name:
+    return web.json_response(
+      {"status": "error", "message": "invalid name"},
+      status=400,
+    )
+  body = await request.json()
+  content = body.get("content", "")
+  path = CONTEXT_DIR / name
+  path.write_text(content)
+  return web.json_response(
+    {"status": "ok", "data": {"name": name}},
+  )
+
+
+# -- Pipeline roles --
+
+async def handle_list_roles(request):
+  """GET /api/roles — list pipeline roles with text."""
+  from lib.config import parse_pipeline_roles_full
+  loop = asyncio.get_running_loop()
+  roles = await loop.run_in_executor(
+    None, parse_pipeline_roles_full,
+  )
+  return web.json_response(
+    {"status": "ok", "data": {"roles": roles}},
+  )
+
+
+# -- Search --
+
+async def handle_search(request):
+  """GET /api/search?q=term — search context + templates."""
+  from lib.config import CONTEXT_DIR, TEMPLATES_DIR
+  query = request.query.get("q", "").lower().strip()
+  if not query:
+    return web.json_response(
+      {"status": "ok", "data": {"results": []}},
+    )
+  results = []
+  dirs = [
+    ("context", CONTEXT_DIR),
+    ("templates", TEMPLATES_DIR),
+  ]
+  for section, d in dirs:
+    if not d.exists():
+      continue
+    for f in sorted(d.iterdir()):
+      if not f.is_file():
+        continue
+      try:
+        text = f.read_text()
+      except Exception:
+        continue
+      if query in f.name.lower():
+        results.append({
+          "section": section,
+          "file": f.name,
+          "match": "filename",
+          "lines": [],
+        })
+        continue
+      matches = []
+      for i, line in enumerate(text.splitlines()):
+        if query in line.lower():
+          matches.append({
+            "line": i + 1,
+            "text": line.strip()[:120],
+          })
+      if matches:
+        results.append({
+          "section": section,
+          "file": f.name,
+          "match": "content",
+          "lines": matches[:5],
+        })
+  return web.json_response(
+    {"status": "ok", "data": {"results": results}},
+  )
 
 
 # -- SSE handler --

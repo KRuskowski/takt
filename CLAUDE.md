@@ -3,18 +3,14 @@
 - sign you commits
 - use google style guide, 80 character limit, 2 space indends
 - if you write scripts use python
-- keep CLAUDE.md concise — put details in `context/` files
-  and reference them by filepath from here
-- NEVER run interactive auth (`gh auth login`, `ssh-add`,
-  etc). If credentials are missing, report the blocker and
-  stop. The operator handles authentication.
+- keep CLAUDE.md concise — put details in `context/` files and reference them by filepath from here
+- NEVER run interactive auth (`gh auth login`, `ssh-add`, etc). If credentials are missing, report the blocker and stop. The operator handles authentication.
 
 # takt Tools
 
 ## Workspace Management (`bin/workspace.py`)
 
-Create isolated workspaces with local clones for multi-repo
-tasks. Workspace name = branch name across all repos.
+Create isolated workspaces with local clones for multi-repo tasks. Workspace name = branch name across all repos.
 
 ```bash
 # Create a workspace
@@ -41,23 +37,39 @@ bin/workspace.py runs feature-auth
 
 ## takt-service (`bin/takt_service.py`)
 
-Persistent background service for pipeline watching and
-agent execution. All state in SQLite (`.state/takt.db`).
-Uses ZMQ for IPC (ROUTER/DEALER for commands, PUB/SUB
-for broadcasts).
+Persistent background service for pipeline watching and agent execution. All state in SQLite (`.state/takt.db`). Uses ZMQ for IPC (ROUTER/DEALER for commands, PUB/SUB for broadcasts). REST API on port 7433.
 
 ```bash
-# Start the service
+# Start/stop/logs
 systemctl --user start takt-service
-
-# View logs
+systemctl --user status takt-service
 journalctl --user -u takt-service -f
 ```
 
+## einheit-ui (`config/einheit-ui.service`)
+
+Web UI server (C++/Crow) serving at `http://takt/` (port 7542). Runs the takt adapter with shell and editor support.
+
+```bash
+systemctl --user start einheit-ui
+systemctl --user status einheit-ui
+journalctl --user -u einheit-ui -f
+```
+
+Port 80 redirect via socat (system service):
+
+```bash
+sudo systemctl start takt-socat
+sudo systemctl status takt-socat
+```
+
+## MCP Server (`bin/takt_mcp.py`)
+
+FastMCP server wrapping the takt REST API. Configured in `.mcp.json` — available to all Claude sessions in this project. Exposes workspace, target, pipeline, run, template, context, repo, agent, and account tools.
+
 ## Pipeline Watcher (`bin/pipeline_watch.py`)
 
-Thin CLI for branch change detection using `lib/pipeline.py`
-and `lib/db.py`.
+Thin CLI for branch change detection using `lib/pipeline.py` and `lib/db.py`.
 
 ```bash
 # Single poll cycle
@@ -69,9 +81,7 @@ bin/pipeline_watch.py --reset
 
 ## Target Management (`bin/target.py`)
 
-Manage build/test targets (VMs and hardware) with exclusive
-locking. Templates (deb-01, win-01) are read-only — use
-`bin/clone_vm.py` to create clones.
+Manage build/test targets (VMs and hardware) with exclusive locking. Templates (deb-01, win-01) are read-only — use `bin/clone_vm.py` to create clones.
 
 ```bash
 # List targets (shows [template] tag)
@@ -94,8 +104,7 @@ bin/target.py status deb-02
 
 ## VM Cloning (`bin/clone_vm.py`)
 
-Create/delete qcow2-backed clones from templates. Requires
-sudo. Details: `context/vm-templates.md`
+Create/delete qcow2-backed clones from templates. Requires sudo. Details: `context/vm-templates.md`
 
 ```bash
 # Create a clone
@@ -108,11 +117,7 @@ sudo python3 bin/clone_vm.py delete deb-02
 
 ## Dashboard (`bin/takt.py`)
 
-Tabbed TUI: Dashboard (monitoring panels), Trigger
-(workflow actions), Settings, plus dynamic agent tabs.
-Connects to takt-service for agent execution and pipeline
-events. Falls back to local execution without service.
-Details: `context/dashboard.md`
+Tabbed TUI: Dashboard (monitoring panels), Trigger (workflow actions), Settings, plus dynamic agent tabs. Connects to takt-service for agent execution and pipeline events. Falls back to local execution without service. Details: `context/dashboard.md`
 
 ## Push to GitHub (`bin/push_to_github.py`)
 
@@ -131,25 +136,17 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 
 # Key Concepts
 
-- **Root repos**: `~/dev/root/<repo>` — local mirrors of
-  GitHub.
-- **Workspaces**: `~/dev/workspaces/<name>/` — clones of
-  root repos for isolated work. Origin = root repo.
-- **Pipeline**: Ordered sequence of steps (agents or
-  scripts) defined in SQLite per workspace. Steps run
-  sequentially in temporary worktrees from root repos.
-- **Runs**: `~/dev/runs/<ws>-<run_id>/<repo>` — git
-  worktrees created for each pipeline run.
+- **Root repos**: `~/dev/root/<repo>` — local mirrors of GitHub.
+- **Workspaces**: `~/dev/workspaces/<name>/` — clones of root repos for isolated work. Origin = root repo.
+- **Pipeline**: Ordered sequence of steps (agents or scripts) defined in SQLite per workspace. Steps run sequentially in temporary worktrees from root repos.
+- **Runs**: `~/dev/runs/<ws>-<run_id>/<repo>` — git worktrees created for each pipeline run.
 - **Workspace name = branch name** across all repos.
-- **Agents never push to GitHub.** takt handles all
-  pipeline orchestration, pushes, and PR creation.
-- **State**: All pipeline state in `.state/takt.db`
-  (SQLite, WAL mode).
+- **Agents never push to GitHub.** takt handles all pipeline orchestration, pushes, and PR creation.
+- **State**: All pipeline state in `.state/takt.db` (SQLite, WAL mode).
 
 # Config Files
 
-- `config/repos.yaml` — managed repo registry with push
-  order
+- `config/repos.yaml` — managed repo registry with push order
 - `config/targets.yaml` — target inventory (VMs + hardware)
 - `templates/` — CLAUDE.md templates and role snippets
 - `context/` — architecture and decision docs

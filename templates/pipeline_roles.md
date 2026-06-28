@@ -1,9 +1,6 @@
 # Pipeline Role Templates
 
-Role snippets for pipeline agent steps. Each agent runs
-in a temporary worktree. Agents do NOT manage git remotes,
-push to GitHub, or handle markers — takt handles all
-pipeline orchestration.
+Role snippets for pipeline agent steps. Each agent runs in a temporary worktree. Agents do NOT manage git remotes, push to GitHub, or handle markers — takt handles all pipeline orchestration.
 
 ---
 ---
@@ -34,8 +31,7 @@ Guidelines:
 
 ## Feature Agent
 
-Implement functionality per task description. Write results
-to `.stage-result.json`:
+Implement functionality per task description. Write results to `.stage-result.json`:
 ```json
 {"status": "pass|fail", "summary": "..."}
 ```
@@ -49,8 +45,7 @@ Guidelines:
 
 ## Docs Agent
 
-Update documentation for code changes. Write results to
-`.stage-result.json`:
+Update documentation for code changes. Write results to `.stage-result.json`:
 ```json
 {"status": "pass|fail", "summary": "..."}
 ```
@@ -64,8 +59,7 @@ Guidelines:
 
 ## Refactor Agent
 
-Improve code structure without changing behavior. Write
-results to `.stage-result.json`:
+Improve code structure without changing behavior. Write results to `.stage-result.json`:
 ```json
 {"status": "pass|fail", "summary": "..."}
 ```
@@ -79,8 +73,7 @@ Guidelines:
 
 ## Deploy/QA Agent
 
-Build, deploy, and verify changes on targets. Write
-results to `.stage-result.json`:
+Build, deploy, and verify changes on targets. Write results to `.stage-result.json`:
 ```json
 {"status": "pass|fail", "summary": "...", "targets": []}
 ```

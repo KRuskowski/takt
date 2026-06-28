@@ -1,0 +1,21 @@
+[Unit]
+Description=einheit-ui web server (takt adapter)
+After=network.target takt-service.service
+
+[Service]
+Type=simple
+ExecStart=%h/dev/workspaces/takt-ui/ui/build/einheit-ui \
+  --adapter takt \
+  --takt-url http://127.0.0.1:7433 \
+  --shell \
+  --shell-launcher %h/dev/workspaces/takt-ui/ui/build/einheit-shell-launcher \
+  --shell-cli %h/dev/workspaces/takt-ui/ui/build/einheit-ui \
+  --shell-no-locked \
+  --editor
+Restart=on-failure
+RestartSec=5
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/dev/workspaces/takt-ui/ui
+
+[Install]
+WantedBy=default.target

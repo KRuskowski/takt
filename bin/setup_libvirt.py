@@ -2,8 +2,8 @@
 """Automated QEMU/KVM + libvirt setup for VM build targets.
 
 Installs packages, configures networking, generates SSH keys,
-and provisions a Debian 12 cloud VM. Requires sudo. Idempotent
-— skips steps that are already done.
+and provisions a Debian 13 (trixie) cloud VM. Requires sudo.
+Idempotent — skips steps that are already done.
 
 Network: 10.101.0.0/20 with host at 10.101.0.1 acting as
 the NAT gateway to the outside.
@@ -36,8 +36,8 @@ VM_IP = "10.101.0.20"
 VM_USER = "worker"
 
 CLOUD_IMAGE_URL = (
-  "https://cloud.debian.org/images/cloud/bookworm/latest/"
-  "debian-12-generic-amd64.qcow2"
+  "https://cloud.debian.org/images/cloud/trixie/latest/"
+  "debian-13-generic-amd64.qcow2"
 )
 IMAGES_DIR = Path("/var/lib/libvirt/images")
 
@@ -306,13 +306,13 @@ def write_cloud_init_configs(tmpdir):
 
 def download_cloud_image():
   """Download the Debian cloud image if not present."""
-  image_path = IMAGES_DIR / "debian-12-generic-amd64.qcow2"
+  image_path = IMAGES_DIR / "debian-13-generic-amd64.qcow2"
   if image_path.exists():
     print(f"[ok] Cloud image already exists: {image_path}")
     return image_path
 
   IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-  print("[..] Downloading Debian 12 cloud image...")
+  print("[..] Downloading Debian 13 cloud image...")
   run(["wget", "-q", "--show-progress", "-O", str(image_path),
        CLOUD_IMAGE_URL])
   print(f"[ok] Cloud image downloaded: {image_path}")
@@ -366,7 +366,7 @@ def create_cloud_init_iso(tmpdir):
 
 
 def create_vm():
-  """Provision the Debian VM using virt-install."""
+  """Provision the Debian 13 VM using virt-install."""
   if vm_exists(VM_NAME):
     print(f"[ok] VM '{VM_NAME}' already exists")
     return
@@ -388,8 +388,9 @@ def create_vm():
     "--memory", str(VM_RAM_MB),
     "--disk", f"path={disk_path},format=qcow2",
     "--disk", f"path={cidata_iso},device=cdrom",
-    "--os-variant", "debian12",
+    "--os-variant", "debian13",
     "--network", f"network={NETWORK_NAME}",
+    "--boot", "uefi",
     "--graphics", "none",
     "--console", "pty,target_type=serial",
     "--noautoconsole",

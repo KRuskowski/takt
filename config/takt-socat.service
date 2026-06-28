@@ -1,0 +1,12 @@
+[Unit]
+Description=socat port 80 to einheit-ui (7542)
+After=network.target einheit-ui.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/socat TCP-LISTEN:80,fork,reuseaddr TCP:127.0.0.1:7542
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

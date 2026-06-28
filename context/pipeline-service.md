@@ -2,10 +2,7 @@
 
 ## Overview
 
-Pipeline agents run as a persistent background service
-(`takt-service`) that survives TUI disconnects. The TUI
-attaches/detaches freely — agent output is persisted and
-replayed on reconnect.
+Pipeline agents run as a persistent background service (`takt-service`) that survives TUI disconnects. The TUI attaches/detaches freely — agent output is persisted and replayed on reconnect.
 
 ## Architecture
 
@@ -46,13 +43,9 @@ The TUI settings tab has Start/Stop/Restart buttons.
 
 Two socket pairs:
 
-1. **ROUTER/DEALER** — request/reply commands.
-   Service binds ROUTER on `ipc://.state/takt-cmd.sock`.
-   TUI connects DEALER.
+1. **ROUTER/DEALER** — request/reply commands. Service binds ROUTER on `ipc://.state/takt-cmd.sock`. TUI connects DEALER.
 
-2. **PUB/SUB** — broadcast events.
-   Service binds PUB on `ipc://.state/takt-pub.sock`.
-   TUI connects SUB with topic filtering.
+2. **PUB/SUB** — broadcast events. Service binds PUB on `ipc://.state/takt-pub.sock`. TUI connects SUB with topic filtering.
 
 ### Commands (DEALER -> ROUTER -> DEALER)
 
@@ -69,8 +62,7 @@ Two socket pairs:
 {"cmd": "poll_now"}
 ```
 
-Replies: `{"status": "ok", "data": {...}}` or
-`{"status": "error", "message": "..."}`.
+Replies: `{"status": "ok", "data": {...}}` or `{"status": "error", "message": "..."}`.
 
 ### PUB Topics
 
@@ -93,27 +85,20 @@ Valid values: `sonnet`, `opus`, `haiku`. Default: `sonnet`.
 Data flow:
 1. Pipeline tab writes model to `pipeline_steps.config_json`
 2. `db.create_run` copies `config_json` to `steps` table
-3. `PipelineExecutor.run_agent_step` reads `config.model`,
-   passes to `AgentInfo(model=...)`
+3. `PipelineExecutor.run_agent_step` reads `config.model`, passes to `AgentInfo(model=...)`
 4. `AgentRunner` passes model to `ClaudeCodeOptions`
-5. `list_agents` maps short names to full IDs for display
-   (sonnet → claude-sonnet-4-6, etc.)
+5. `list_agents` maps short names to full IDs for display (sonnet → claude-sonnet-4-6, etc.)
 
 ## Output Persistence
 
-Agent output persisted to `.state/agents/<id>/output.jsonl`
-(append-only JSONL). Agent metadata in
-`.state/agents/<id>/info.json`. On TUI connect,
-`replay_output` returns stored lines; live output publishes
-to `agent.output.<id>`.
+Agent output persisted to `.state/agents/<id>/output.jsonl` (append-only JSONL). Agent metadata in `.state/agents/<id>/info.json`. On TUI connect, `replay_output` returns stored lines; live output publishes to `agent.output.<id>`.
 
 Output line format:
 ```json
 {"line_no": 0, "kind": "text", "content": "...", "meta": {}}
 ```
 
-Kinds: `text`, `tool_use`, `tool_result`, `thinking`,
-`result`, `system`, `error`.
+Kinds: `text`, `tool_use`, `tool_result`, `thinking`, `result`, `system`, `error`.
 
 ## Stage Triggers
 
@@ -125,10 +110,7 @@ When a stage receives a push, the watcher:
 
 ## Upstream Sync
 
-When a root repo's default branch advances, the watcher
-writes `.upstream-sync` markers in every active workspace
-that uses the repo. On the next poll, a sync agent merges
-upstream into the workspace branch.
+When a root repo's default branch advances, the watcher writes `.upstream-sync` markers in every active workspace that uses the repo. On the next poll, a sync agent merges upstream into the workspace branch.
 
 Marker location: `~/dev/workspaces/<ws>/<repo>/.upstream-sync`
 
@@ -137,8 +119,7 @@ Marker location: `~/dev/workspaces/<ws>/<repo>/.upstream-sync`
 Stage repos have origin configured as push-only:
 - Fetch URL: `/dev/null` (blocks `git fetch/pull origin`)
 - Push URL: next stage or root repo (normal push works)
-- Incoming changes arrive via post-receive hook
-  (`receive.denyCurrentBranch=updateInstead`)
+- Incoming changes arrive via post-receive hook (`receive.denyCurrentBranch=updateInstead`)
 
 ## Key Files
 

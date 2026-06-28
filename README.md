@@ -1,26 +1,15 @@
-<p align="center">
-  <img src="graphics/takt.plain.darkmode.svg" width="280" alt="takt" />
-</p>
+<p align="center"> <img src="graphics/takt.plain.darkmode.svg" width="280" alt="takt" /> </p>
 
-Multi-agent pipeline orchestration for running Claude Code
-agents across multi-repo projects.
+Multi-agent pipeline orchestration for running Claude Code agents across multi-repo projects.
 
 ## What it does
 
-- Creates isolated **workspaces** (local clones + branches)
-  for parallel agent work across multiple repos
-- Defines **pipelines** per workspace — ordered sequences
-  of agent steps (with per-step model selection) and
-  script steps (push, PR creation, upstream merge)
-- Runs pipelines via a **background service** that watches
-  for branch changes and executes steps in temporary
-  worktrees
-- Manages **deployment targets** (VMs and hardware) with
-  exclusive locking and qcow2-backed VM cloning
-- Runs **meta agents** for cross-cutting tasks (CLAUDE.md
-  generation, pipeline setup, role template improvement)
-- Provides a **desktop GUI** (Tauri + React), **TUI**
-  (Textual), **REST/SSE API**, and **CLI** for management
+- Creates isolated **workspaces** (local clones + branches) for parallel agent work across multiple repos
+- Defines **pipelines** per workspace — ordered sequences of agent steps (with per-step model selection) and script steps (push, PR creation, upstream merge)
+- Runs pipelines via a **background service** that watches for branch changes and executes steps in temporary worktrees
+- Manages **deployment targets** (VMs and hardware) with exclusive locking and qcow2-backed VM cloning
+- Runs **meta agents** for cross-cutting tasks (CLAUDE.md generation, pipeline setup, role template improvement)
+- Provides a **desktop GUI** (Tauri + React), **TUI** (Textual), **REST/SSE API**, and **CLI** for management
 
 ![takt GUI](screenshots/takt.png)
 
@@ -41,58 +30,34 @@ GitHub (upstream)
 
 ### Data flow
 
-1. **Pull**: GitHub -> root repos (fetch via service or
-   manual `git pull`)
-2. **Clone**: root repos -> workspace clones
-   (`workspace.py create`)
-3. **Work**: agent modifies workspace clones, pushes to
-   root repo (its origin)
-4. **Watch**: takt-service detects branch changes in root
-   repos, creates pipeline runs
-5. **Execute**: pipeline steps run sequentially in
-   temporary worktrees — agents via Claude Code SDK,
-   scripts via Python functions
-6. **Push**: operator reviews and pushes from root repos
-   to GitHub (`push_to_github.py`)
+1. **Pull**: GitHub -> root repos (fetch via service or manual `git pull`)
+2. **Clone**: root repos -> workspace clones (`workspace.py create`)
+3. **Work**: agent modifies workspace clones, pushes to root repo (its origin)
+4. **Watch**: takt-service detects branch changes in root repos, creates pipeline runs
+5. **Execute**: pipeline steps run sequentially in temporary worktrees — agents via Claude Code SDK, scripts via Python functions
+6. **Push**: operator reviews and pushes from root repos to GitHub (`push_to_github.py`)
 
 ### Design principles
 
-- **Workspace name = branch name** across all repos. One
-  identifier ties together repos, tools, and git history.
-- **No direct GitHub push.** Agents push to origin (root
-  repo) only. Human operator gates what reaches GitHub.
-- **All state in SQLite.** Pipeline definitions, runs,
-  steps, agent output, and branch refs live in
-  `.state/takt.db` (WAL mode).
-- **Per-step model selection.** Each agent step can run
-  with a different Claude model (sonnet/opus/haiku).
-- **Progressive context disclosure.** CLAUDE.md files are
-  lean and point to context packets. Agents fetch what
-  they need rather than loading everything upfront.
-- **Pooled targets.** Deployment targets (VMs, hardware)
-  are shared resources with exclusive locking. Agents
-  claim, use, and release.
+- **Workspace name = branch name** across all repos. One identifier ties together repos, tools, and git history.
+- **No direct GitHub push.** Agents push to origin (root repo) only. Human operator gates what reaches GitHub.
+- **All state in SQLite.** Pipeline definitions, runs, steps, agent output, and branch refs live in `.state/takt.db` (WAL mode).
+- **Per-step model selection.** Each agent step can run with a different Claude model (sonnet/opus/haiku).
+- **Progressive context disclosure.** CLAUDE.md files are lean and point to context packets. Agents fetch what they need rather than loading everything upfront.
+- **Pooled targets.** Deployment targets (VMs, hardware) are shared resources with exclusive locking. Agents claim, use, and release.
 
 ## Interfaces
 
 ### Desktop GUI (Tauri + React)
 
-Built with Tauri, React, and Chakra UI. Tabs for
-Dashboard, Agents, Pipeline, Workspaces, Deployments,
-Meta Agents, and Settings.
+Built with Tauri, React, and Chakra UI. Tabs for Dashboard, Agents, Pipeline, Workspaces, Deployments, Meta Agents, and Settings.
 
-- **Workspaces**: repo status, inline CLAUDE.md editor,
-  pipeline stage prompt editor, workspace settings
-- **Pipeline**: runs with step output streaming via SSE,
-  workspace filter, trigger button
-- **Deployments**: target inventory, VM lifecycle, claim/
-  release
-- **Meta Agents**: run history, cost tracking, output
-  streaming
-- **Settings**: shared template editor (pipeline roles,
-  workspace/repo CLAUDE.md templates)
-- **Command bar**: shell-style command input with
-  zsh-style tab completion cycling
+- **Workspaces**: repo status, inline CLAUDE.md editor, pipeline stage prompt editor, workspace settings
+- **Pipeline**: runs with step output streaming via SSE, workspace filter, trigger button
+- **Deployments**: target inventory, VM lifecycle, claim/ release
+- **Meta Agents**: run history, cost tracking, output streaming
+- **Settings**: shared template editor (pipeline roles, workspace/repo CLAUDE.md templates)
+- **Command bar**: shell-style command input with zsh-style tab completion cycling
 
 ```bash
 cd gui && npm run tauri dev
@@ -100,9 +65,7 @@ cd gui && npm run tauri dev
 
 ### TUI (Textual)
 
-Terminal dashboard with live panels for workspaces,
-agents, pipeline runs, and targets. Connects to
-takt-service via ZMQ.
+Terminal dashboard with live panels for workspaces, agents, pipeline runs, and targets. Connects to takt-service via ZMQ.
 
 ```bash
 bin/takt.py
@@ -110,8 +73,7 @@ bin/takt.py
 
 ### REST/SSE API
 
-The background service exposes a REST API on port 7433
-with SSE for real-time events.
+The background service exposes a REST API on port 7433 with SSE for real-time events.
 
 ```bash
 curl http://localhost:7433/api/workspaces
@@ -160,33 +122,20 @@ bin/push_to_github.py feature-auth
 
 ## Pipeline
 
-Pipelines are ordered sequences of steps defined per
-workspace. Steps are either **agent** (Claude Code via
-SDK) or **script** (built-in Python functions).
+Pipelines are ordered sequences of steps defined per workspace. Steps are either **agent** (Claude Code via SDK) or **script** (built-in Python functions).
 
 Built-in scripts:
-- `push_to_github` — push branch to GitHub in dependency
-  order
+- `push_to_github` — push branch to GitHub in dependency order
 - `create_pr` — create GitHub PRs via `gh` CLI
-- `merge_upstream` — fetch and merge default branch into
-  workspace branch
+- `merge_upstream` — fetch and merge default branch into workspace branch
 
-Agent steps run with a configurable model
-(sonnet/opus/haiku) and get a role prompt from
-`templates/pipeline_roles.md`. Per-step custom prompts
-can be edited inline in the Workspaces tab. Results are
-written to `.stage-result.json` in the worktree.
+Agent steps run with a configurable model (sonnet/opus/haiku) and get a role prompt from `templates/pipeline_roles.md`. Per-step custom prompts can be edited inline in the Workspaces tab. Results are written to `.stage-result.json` in the worktree.
 
 ## Deployment targets
 
-Targets are VMs and hardware registered in
-`config/targets.yaml`. Template VMs are read-only base
-images — agents work on clones.
+Targets are VMs and hardware registered in `config/targets.yaml`. Template VMs are read-only base images — agents work on clones.
 
-Clones use qcow2 backing files (fast to create,
-space-efficient — only store diffs from the template).
-VMs use KVM with `-cpu host` for near-native performance
-and mount `~/dev` via Samba for zero-copy source access.
+Clones use qcow2 backing files (fast to create, space-efficient — only store diffs from the template). VMs use KVM with `-cpu host` for near-native performance and mount `~/dev` via Samba for zero-copy source access.
 
 ```bash
 # Create a clone from a template

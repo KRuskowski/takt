@@ -4,14 +4,11 @@
 
 **Status**: Accepted
 
-**Context**: Need a way to tie together multiple repos working on
-the same feature/task.
+**Context**: Need a way to tie together multiple repos working on the same feature/task.
 
-**Decision**: The workspace name IS the branch name. All repos in
-a workspace use the same branch name.
+**Decision**: The workspace name IS the branch name. All repos in a workspace use the same branch name.
 
-**Consequences**: Simple mental model. One identifier to track
-across repos, tools, and git history.
+**Consequences**: Simple mental model. One identifier to track across repos, tools, and git history.
 
 ---
 
@@ -19,15 +16,11 @@ across repos, tools, and git history.
 
 **Status**: Accepted
 
-**Context**: Agents need to push code, but we need a human
-gatekeeper before changes reach GitHub.
+**Context**: Agents need to push code, but we need a human gatekeeper before changes reach GitHub.
 
-**Decision**: Agents push to origin (root repo at ~/dev/root/<repo>).
-The operator reviews and pushes to GitHub manually via
-`push_to_github.py`.
+**Decision**: Agents push to origin (root repo at ~/dev/root/<repo>). The operator reviews and pushes to GitHub manually via `push_to_github.py`.
 
-**Consequences**: Two-hop push (workspace -> root -> GitHub).
-Adds safety at the cost of one extra step.
+**Consequences**: Two-hop push (workspace -> root -> GitHub). Adds safety at the cost of one extra step.
 
 ---
 
@@ -35,14 +28,11 @@ Adds safety at the cost of one extra step.
 
 **Status**: Accepted
 
-**Context**: Agents need to persist progress between sessions and
-hand off context to the next pipeline stage.
+**Context**: Agents need to persist progress between sessions and hand off context to the next pipeline stage.
 
-**Decision**: Session state lives at the bottom of the workspace
-CLAUDE.md file. Agent always sees task + progress in one read.
+**Decision**: Session state lives at the bottom of the workspace CLAUDE.md file. Agent always sees task + progress in one read.
 
-**Consequences**: No separate state files to manage. CLAUDE.md
-gets longer over time but stays self-contained.
+**Consequences**: No separate state files to manage. CLAUDE.md gets longer over time but stays self-contained.
 
 ---
 
@@ -52,11 +42,9 @@ gets longer over time but stays self-contained.
 
 **Context**: Need isolated working copies for parallel agents.
 
-**Decision**: Workspaces are `git clone` from root repos (local
-filesystem clones). Origin of a workspace clone = root repo.
+**Decision**: Workspaces are `git clone` from root repos (local filesystem clones). Origin of a workspace clone = root repo.
 
-**Consequences**: Fast clones (local filesystem), natural git
-push path back to root repos. Each workspace is fully isolated.
+**Consequences**: Fast clones (local filesystem), natural git push path back to root repos. Each workspace is fully isolated.
 
 ---
 
@@ -64,14 +52,11 @@ push path back to root repos. Each workspace is fully isolated.
 
 **Status**: Accepted
 
-**Context**: Build/test targets (VMs, hardware) are RAM-limited.
-Can't run one per workspace.
+**Context**: Build/test targets (VMs, hardware) are RAM-limited. Can't run one per workspace.
 
-**Decision**: Targets are pooled resources with file-based locks
-for exclusive access. Agents claim, use, and release.
+**Decision**: Targets are pooled resources with file-based locks for exclusive access. Agents claim, use, and release.
 
-**Consequences**: Only one agent can use a target at a time.
-Agents must handle claim failures gracefully.
+**Consequences**: Only one agent can use a target at a time. Agents must handle claim failures gracefully.
 
 ---
 
@@ -79,11 +64,8 @@ Agents must handle claim failures gracefully.
 
 **Status**: Accepted
 
-**Context**: Loading too much context upfront wastes tokens and
-confuses agents.
+**Context**: Loading too much context upfront wastes tokens and confuses agents.
 
-**Decision**: CLAUDE.md files are lean (<150 lines). They point
-to context packets and code files. Agents fetch what they need.
+**Decision**: CLAUDE.md files are lean (<150 lines). They point to context packets and code files. Agents fetch what they need.
 
-**Consequences**: Agents may need extra reads but get more
-relevant context. CLAUDE.md stays readable.
+**Consequences**: Agents may need extra reads but get more relevant context. CLAUDE.md stays readable.
