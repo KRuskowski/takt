@@ -312,7 +312,9 @@
       else term.write(new TextDecoder().decode(ev.data));
     });
     ws.addEventListener('close', function() {
-      term.write('\r\n\x1b[33m[session ended]\x1b[0m\r\n');
+      term.write(
+        '\r\n\x1b[33m[disconnected — reload to '
+        + 'reconnect]\x1b[0m\r\n');
     });
     term.onData(send);
 
@@ -560,6 +562,25 @@
   };
 
   restoreTabs();
+
+  // Ctrl+Tab / Ctrl+Shift+Tab to cycle tabs.
+  // Alt+1..9 to jump to tab by index.
+  document.addEventListener('keydown', function(e) {
+    if (e.shiftKey && e.ctrlKey &&
+        (e.key === 'ArrowLeft' ||
+         e.key === 'ArrowRight')) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      var keys = Object.keys(tabs);
+      if (keys.length < 2) return;
+      var idx = keys.indexOf(activeTab);
+      var next = e.key === 'ArrowLeft'
+          ? (idx - 1 + keys.length) % keys.length
+          : (idx + 1) % keys.length;
+      switchTab(keys[next]);
+      saveState();
+    }
+  }, true);
 
   var saved = localStorage.getItem('takt-split-height');
   if (saved) top.style.height = saved + 'px';

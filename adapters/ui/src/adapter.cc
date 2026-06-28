@@ -57,8 +57,11 @@ class CliPty {
                  &env = {}) -> bool {
     if (running_) return true;
     int master = -1;
+    struct winsize ws{};
+    ws.ws_row = 24;
+    ws.ws_col = 120;
     pid_t pid = ::forkpty(
-        &master, nullptr, nullptr, nullptr);
+        &master, nullptr, nullptr, &ws);
     if (pid < 0) return false;
     if (pid == 0) {
       if (!cwd.empty()) ::chdir(cwd.c_str());
@@ -88,7 +91,17 @@ class CliPty {
           break;
         }
         if (rc == 0) continue;
-        if (p.revents & (POLLERR | POLLHUP)) break;
+        if (p.revents & (POLLERR | POLLHUP)) {
+          int st = 0;
+          auto wr = ::waitpid(child_, &st, WNOHANG);
+          ::dprintf(STDERR_FILENO,
+              "PTY: POLLHUP child=%d waitpid=%d "
+              "status=%d exit=%d signal=%d\n",
+              child_, (int)wr, st,
+              WIFEXITED(st) ? WEXITSTATUS(st) : -1,
+              WIFSIGNALED(st) ? WTERMSIG(st) : 0);
+          break;
+        }
         if (!(p.revents & POLLIN)) continue;
         ssize_t n = ::read(master_, buf, sizeof(buf));
         if (n > 0) {
@@ -111,10 +124,15 @@ class CliPty {
             }
           }
         } else if (n == 0) {
+          ::dprintf(STDERR_FILENO, "PTY: read EOF\n");
           break;
         } else {
-          if (errno != EINTR && errno != EAGAIN)
+          if (errno != EINTR && errno != EAGAIN) {
+            ::dprintf(STDERR_FILENO,
+                "PTY: read error %s\n",
+                strerror(errno));
             break;
+          }
         }
       }
       running_ = false;
@@ -186,6 +204,14 @@ class CliPty {
     if (!running_.exchange(false) && master_ < 0
         && child_ < 0)
       return;
+    // Null the sink first so the reader thread
+    // won't call a dead connection during teardown.
+    {
+      std::lock_guard lk(sink_mu_);
+      sink_ = nullptr;
+    }
+    if (master_ >= 0) { ::close(master_); master_ = -1; }
+    if (reader_.joinable()) reader_.join();
     if (child_ > 0) {
       ::kill(child_, SIGTERM);
       for (int i = 0; i < 25; ++i) {
@@ -201,16 +227,263 @@ class CliPty {
       reaped:
       child_ = -1;
     }
-    if (master_ >= 0) { ::close(master_); master_ = -1; }
-    if (reader_.joinable()) reader_.join();
-    {
-      std::lock_guard lk(sink_mu_);
-      sink_ = nullptr;
-    }
   }
 
  private:
   int master_ = -1;
+  pid_t child_ = -1;
+  std::atomic<bool> running_{false};
+  std::thread reader_;
+  std::mutex sink_mu_;
+  Sink sink_;
+  std::mutex buf_mu_;
+  std::deque<std::string> scrollback_;
+  size_t scrollback_size_ = 0;
+};
+
+/// Bridge to a tmux session via control mode (-C).
+/// No PTY needed — uses pipes. The tmux session is
+/// fully independent; this just observes and sends input.
+class TmuxBridge {
+ public:
+  using Sink = std::function<void(std::string_view)>;
+  static constexpr size_t kScrollback = 64 * 1024;
+
+  ~TmuxBridge() { Close(); }
+
+  /// Ensure a detached tmux session exists, then
+  /// connect to it via control mode.
+  auto Start(const std::string &session,
+             const std::string &cwd,
+             const std::string &cmd,
+             const std::map<std::string, std::string>
+                 &env = {}) -> bool {
+    if (running_) return true;
+    session_ = session;
+    // Create detached session if it doesn't exist.
+    auto create = "tmux has-session -t " + session
+        + " 2>/dev/null || tmux new-session -d"
+        " -s " + session + " -c " + cwd + " " + cmd;
+    for (auto &[k, v] : env) {
+      ::setenv(k.c_str(), v.c_str(), 1);
+    }
+    ::system(create.c_str());
+    for (auto &[k, v] : env) {
+      ::unsetenv(k.c_str());
+    }
+    // Open pipes for control mode.
+    int to_tmux[2], from_tmux[2];
+    if (::pipe(to_tmux) < 0 ||
+        ::pipe(from_tmux) < 0)
+      return false;
+    pid_t pid = ::fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+      ::dup2(to_tmux[0], STDIN_FILENO);
+      ::dup2(from_tmux[1], STDOUT_FILENO);
+      ::dup2(from_tmux[1], STDERR_FILENO);
+      ::close(to_tmux[0]);
+      ::close(to_tmux[1]);
+      ::close(from_tmux[0]);
+      ::close(from_tmux[1]);
+      ::setenv("TERM", "xterm-256color", 1);
+      ::execlp("tmux", "tmux", "-C", "attach",
+               "-t", session.c_str(), nullptr);
+      ::_exit(127);
+    }
+    ::close(to_tmux[0]);
+    ::close(from_tmux[1]);
+    write_fd_ = to_tmux[1];
+    read_fd_ = from_tmux[0];
+    child_ = pid;
+    running_ = true;
+    // Reader thread: parse control mode output.
+    reader_ = std::thread([this] {
+      char buf[8192];
+      std::string line_buf;
+      while (running_) {
+        struct pollfd p{read_fd_, POLLIN, 0};
+        int rc = ::poll(&p, 1, 200);
+        if (rc < 0) {
+          if (errno == EINTR) continue;
+          break;
+        }
+        if (rc == 0) continue;
+        if (p.revents & (POLLERR | POLLHUP)) break;
+        if (!(p.revents & POLLIN)) continue;
+        ssize_t n = ::read(read_fd_, buf, sizeof(buf));
+        if (n <= 0) break;
+        line_buf.append(buf, n);
+        // Parse complete lines.
+        size_t pos;
+        while ((pos = line_buf.find('\n'))
+               != std::string::npos) {
+          auto line = line_buf.substr(0, pos);
+          line_buf.erase(0, pos + 1);
+          ParseLine(line);
+        }
+      }
+      running_ = false;
+    });
+    return true;
+  }
+
+  void Attach(Sink sink) {
+    std::deque<std::string> replay;
+    {
+      std::lock_guard lk(buf_mu_);
+      replay = scrollback_;
+    }
+    for (auto &chunk : replay) {
+      try { sink(chunk); } catch (...) {}
+    }
+    {
+      std::lock_guard lk(sink_mu_);
+      sink_ = std::move(sink);
+    }
+  }
+
+  void Detach() {
+    std::lock_guard lk(sink_mu_);
+    sink_ = nullptr;
+  }
+
+  auto IsRunning() const -> bool {
+    return running_.load();
+  }
+
+  void SendKeys(std::string_view input) {
+    if (!running_ || write_fd_ < 0) return;
+    // Escape single quotes for tmux command.
+    std::string escaped;
+    for (char c : input) {
+      if (c == '\'') escaped += "'\\''";
+      else if (c == '\\') escaped += "\\\\";
+      else escaped += c;
+    }
+    auto cmd = "send-keys -t " + session_
+        + " -l '" + escaped + "'\n";
+    auto r = ::write(write_fd_, cmd.data(), cmd.size());
+    (void)r;
+  }
+
+  void SendKey(const std::string &key) {
+    if (!running_ || write_fd_ < 0) return;
+    auto cmd = "send-keys -t " + session_
+        + " " + key + "\n";
+    auto r = ::write(write_fd_, cmd.data(), cmd.size());
+    (void)r;
+  }
+
+  void Resize(unsigned short rows,
+              unsigned short cols) {
+    if (!running_ || write_fd_ < 0) return;
+    auto cmd = std::format(
+        "refresh-client -C {},{}\n", cols, rows);
+    auto r = ::write(write_fd_, cmd.data(), cmd.size());
+    (void)r;
+  }
+
+  void Close() {
+    {
+      std::lock_guard lk(sink_mu_);
+      sink_ = nullptr;
+    }
+    running_ = false;
+    if (write_fd_ >= 0) {
+      ::close(write_fd_); write_fd_ = -1;
+    }
+    if (read_fd_ >= 0) {
+      ::close(read_fd_); read_fd_ = -1;
+    }
+    if (reader_.joinable()) reader_.join();
+    if (child_ > 0) {
+      ::kill(child_, SIGTERM);
+      int st;
+      ::waitpid(child_, &st, 0);
+      child_ = -1;
+    }
+  }
+
+ private:
+  void ParseLine(const std::string &line) {
+    // %output %pane-id data
+    if (line.starts_with("%output ")) {
+      auto space = line.find(' ', 8);
+      if (space == std::string::npos) return;
+      auto data = line.substr(space + 1);
+      // Unescape control mode escapes.
+      auto decoded = Unescape(data);
+      if (decoded.empty()) return;
+      {
+        std::lock_guard lk(buf_mu_);
+        scrollback_.push_back(decoded);
+        scrollback_size_ += decoded.size();
+        while (scrollback_size_ > kScrollback
+               && !scrollback_.empty()) {
+          scrollback_size_ -=
+              scrollback_.front().size();
+          scrollback_.pop_front();
+        }
+      }
+      {
+        std::lock_guard lk(sink_mu_);
+        if (sink_) {
+          try { sink_(decoded); } catch (...) {}
+        }
+      }
+    }
+  }
+
+  static auto Unescape(const std::string &s)
+      -> std::string {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+      if (s[i] == '\\' && i + 1 < s.size()) {
+        char c = s[i + 1];
+        if (c == '\\') { out += '\\'; ++i; }
+        else if (c == 'n') { out += '\n'; ++i; }
+        else if (c == 'r') { out += '\r'; ++i; }
+        else if (c == 't') { out += '\t'; ++i; }
+        else if (c == '0' && i + 3 < s.size()) {
+          // Octal: \0xx
+          char hi = s[i + 2], lo = s[i + 3];
+          if (hi >= '0' && hi <= '7' &&
+              lo >= '0' && lo <= '7') {
+            out += static_cast<char>(
+                (hi - '0') * 8 + (lo - '0'));
+            i += 3;
+          } else {
+            out += s[i];
+          }
+        } else if (c == '0') {
+          out += '\0'; ++i;
+        } else {
+          // \033 etc — octal escape
+          if (c >= '0' && c <= '3' &&
+              i + 3 < s.size()) {
+            int val = (c - '0') * 64;
+            val += (s[i + 2] - '0') * 8;
+            val += (s[i + 3] - '0');
+            out += static_cast<char>(val);
+            i += 3;
+          } else {
+            out += '\\';
+            out += c;
+            ++i;
+          }
+        }
+      } else {
+        out += s[i];
+      }
+    }
+    return out;
+  }
+
+  std::string session_;
+  int write_fd_ = -1;
+  int read_fd_ = -1;
   pid_t child_ = -1;
   std::atomic<bool> running_{false};
   std::thread reader_;
@@ -1121,6 +1394,7 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                     !data.empty() &&
                     data.front() == '{';
                 if (ctl) return;
+                s->Close();
                 s = std::make_shared<CliPty>();
                 s->Spawn(cli_path_,
                     {cli_path_, "--dark",
@@ -1165,12 +1439,22 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
               conn_map->erase(ci);
             });
 
-    // Workspace tabs: /ws/workspace/<name>
+    // Workspace tabs via tmux control mode.
+    // No PTY — pipes to `tmux -C attach`. The tmux
+    // session is fully independent.
+    auto tmux_map = std::make_shared<
+        std::map<std::string,
+                 std::shared_ptr<TmuxBridge>>>();
+    auto ws_conn_map = std::make_shared<
+        std::map<crow::websocket::connection *,
+                 std::string>>();
+    auto ws_mu = std::make_shared<std::mutex>();
+
     CROW_WEBSOCKET_ROUTE(app,
         "/ws/workspace/<string>")
         .onaccept(
-            [pty_mu](const crow::request &req,
-                     void **ud) -> bool {
+            [ws_mu](const crow::request &req,
+                    void **ud) -> bool {
               const std::string pfx =
                   "/ws/workspace/";
               auto url = std::string(req.url);
@@ -1180,9 +1464,9 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
               return true;
             })
         .onopen(
-            [pty_map, conn_map, pty_mu, this](
+            [tmux_map, ws_conn_map, ws_mu, this](
                 crow::websocket::connection &conn) {
-              std::lock_guard lk(*pty_mu);
+              std::lock_guard lk(*ws_mu);
               auto *p = static_cast<std::string *>(
                   conn.userdata());
               std::string name;
@@ -1191,40 +1475,42 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
               if (name.empty()) {
                 conn.close("no name"); return;
               }
-              (*conn_map)[&conn] = name;
-              auto &pty = (*pty_map)[name];
-              if (!pty) pty = std::make_shared<CliPty>();
-              if (!pty->IsRunning()) {
+              (*ws_conn_map)[&conn] = name;
+              auto &bridge = (*tmux_map)[name];
+              if (!bridge)
+                bridge =
+                    std::make_shared<TmuxBridge>();
+              if (!bridge->IsRunning()) {
                 auto session = "ws-" + name;
                 auto cwd =
                     "/home/karl/dev/workspaces/"
                     + name;
-                std::map<std::string, std::string> env;
+                std::map<std::string, std::string>
+                    env;
                 if (!claude_config_dir_.empty())
                   env["CLAUDE_CONFIG_DIR"] =
                       claude_config_dir_;
-                pty->Spawn("tmux",
-                    {"tmux", "new-session", "-A",
-                     "-s", session, "claude",
-                     "--dangerously-skip-permissions"},
-                    cwd, env);
+                bridge->Start(session, cwd,
+                    "claude"
+                    " --dangerously-skip-permissions",
+                    env);
               }
-              pty->Attach(
+              bridge->Attach(
                   [&conn](std::string_view c) {
                     conn.send_text(std::string(c));
                   });
             })
         .onmessage(
-            [pty_map, conn_map, pty_mu](
+            [tmux_map, ws_conn_map, ws_mu](
                 crow::websocket::connection &conn,
                 const std::string &data,
                 bool is_binary) {
-              std::lock_guard lk(*pty_mu);
-              auto ci = conn_map->find(&conn);
-              if (ci == conn_map->end()) return;
-              auto pi = pty_map->find(ci->second);
-              if (pi == pty_map->end()) return;
-              auto &s = pi->second;
+              std::lock_guard lk(*ws_mu);
+              auto ci = ws_conn_map->find(&conn);
+              if (ci == ws_conn_map->end()) return;
+              auto bi = tmux_map->find(ci->second);
+              if (bi == tmux_map->end()) return;
+              auto &b = bi->second;
               bool ctl = !is_binary &&
                   !data.empty() &&
                   data.front() == '{';
@@ -1234,7 +1520,7 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                       data);
                   if (j.value("type", "") ==
                       "resize") {
-                    s->Resize(
+                    b->Resize(
                         j.value<unsigned short>(
                             "rows", 24),
                         j.value<unsigned short>(
@@ -1243,19 +1529,19 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                   }
                 } catch (...) {}
               }
-              s->Write(data);
+              b->SendKeys(data);
             })
         .onclose(
-            [pty_map, conn_map, pty_mu](
+            [tmux_map, ws_conn_map, ws_mu](
                 crow::websocket::connection &conn,
                 const std::string &, uint16_t) {
-              std::lock_guard lk(*pty_mu);
-              auto ci = conn_map->find(&conn);
-              if (ci == conn_map->end()) return;
-              auto pi = pty_map->find(ci->second);
-              if (pi != pty_map->end() && pi->second)
-                pi->second->Detach();
-              conn_map->erase(ci);
+              std::lock_guard lk(*ws_mu);
+              auto ci = ws_conn_map->find(&conn);
+              if (ci == ws_conn_map->end()) return;
+              auto bi = tmux_map->find(ci->second);
+              if (bi != tmux_map->end() && bi->second)
+                bi->second->Detach();
+              ws_conn_map->erase(ci);
             });
   }
 
