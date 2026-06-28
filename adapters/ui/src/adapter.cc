@@ -261,16 +261,17 @@ class TmuxBridge {
     if (running_) return true;
     session_ = session;
     // Create detached session if it doesn't exist.
+    // Use -e to pass env vars into the session so
+    // claude picks up credentials.
+    std::string env_flags;
+    for (auto &[k, v] : env) {
+      env_flags += " -e " + k + "=" + v;
+    }
     auto create = "tmux has-session -t " + session
         + " 2>/dev/null || tmux new-session -d"
-        " -s " + session + " -c " + cwd + " " + cmd;
-    for (auto &[k, v] : env) {
-      ::setenv(k.c_str(), v.c_str(), 1);
-    }
+        + env_flags + " -s " + session
+        + " -c " + cwd + " " + cmd;
     ::system(create.c_str());
-    for (auto &[k, v] : env) {
-      ::unsetenv(k.c_str());
-    }
     // Open pipes for control mode.
     int to_tmux[2], from_tmux[2];
     if (::pipe(to_tmux) < 0 ||
@@ -306,31 +307,42 @@ class TmuxBridge {
         opts.data(), opts.size());
     (void)r2;
     // Reader thread: parse control mode output.
+    // Batches output and flushes every 50ms to avoid
+    // overwhelming the WebSocket with rapid small writes.
     reader_ = std::thread([this] {
       char buf[8192];
       std::string line_buf;
+      auto last_flush = std::chrono::steady_clock::now();
       while (running_) {
         struct pollfd p{read_fd_, POLLIN, 0};
-        int rc = ::poll(&p, 1, 200);
+        int rc = ::poll(&p, 1, 50);
         if (rc < 0) {
           if (errno == EINTR) continue;
           break;
         }
-        if (rc == 0) continue;
         if (p.revents & (POLLERR | POLLHUP)) break;
-        if (!(p.revents & POLLIN)) continue;
-        ssize_t n = ::read(read_fd_, buf, sizeof(buf));
-        if (n <= 0) break;
-        line_buf.append(buf, n);
-        // Parse complete lines.
-        size_t pos;
-        while ((pos = line_buf.find('\n'))
-               != std::string::npos) {
-          auto line = line_buf.substr(0, pos);
-          line_buf.erase(0, pos + 1);
-          ParseLine(line);
+        if (rc > 0 && (p.revents & POLLIN)) {
+          ssize_t n = ::read(read_fd_, buf,
+                             sizeof(buf));
+          if (n <= 0) break;
+          line_buf.append(buf, n);
+          size_t pos;
+          while ((pos = line_buf.find('\n'))
+                 != std::string::npos) {
+            auto line = line_buf.substr(0, pos);
+            line_buf.erase(0, pos + 1);
+            ParseLine(line);
+          }
+        }
+        // Flush batched output every 50ms.
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_flush >=
+            std::chrono::milliseconds(50)) {
+          FlushPending();
+          last_flush = now;
         }
       }
+      FlushPending();
       running_ = false;
     });
     return true;
@@ -417,6 +429,12 @@ class TmuxBridge {
 
  private:
   void ParseLine(const std::string &line) {
+    if (line.starts_with("%exit")) {
+      ::dprintf(STDERR_FILENO,
+          "TMUX: got %%exit for %s\n",
+          session_.c_str());
+      return;
+    }
     // %output %pane-id data
     if (line.starts_with("%output ")) {
       auto space = line.find(' ', 8);
@@ -437,10 +455,23 @@ class TmuxBridge {
         }
       }
       {
-        std::lock_guard lk(sink_mu_);
-        if (sink_) {
-          try { sink_(decoded); } catch (...) {}
-        }
+        std::lock_guard lk(pending_mu_);
+        pending_ += decoded;
+      }
+    }
+  }
+
+  void FlushPending() {
+    std::string batch;
+    {
+      std::lock_guard lk(pending_mu_);
+      if (pending_.empty()) return;
+      batch.swap(pending_);
+    }
+    {
+      std::lock_guard lk(sink_mu_);
+      if (sink_) {
+        try { sink_(batch); } catch (...) {}
       }
     }
   }
@@ -502,7 +533,31 @@ class TmuxBridge {
   std::mutex buf_mu_;
   std::deque<std::string> scrollback_;
   size_t scrollback_size_ = 0;
+  std::mutex pending_mu_;
+  std::string pending_;
 };
+
+/// Safe WebSocket sender. Captures the connection by
+/// pointer with a shared alive flag. The onclose handler
+/// sets the flag to false so in-flight sink calls
+/// from reader threads are no-ops.
+struct SafeSender {
+  crow::websocket::connection *conn;
+  std::shared_ptr<std::atomic<bool>> alive;
+
+  void operator()(std::string_view data) const {
+    if (alive->load(std::memory_order_acquire))
+      conn->send_text(std::string(data));
+  }
+};
+
+auto MakeSafeSink(crow::websocket::connection &conn)
+    -> std::pair<SafeSender,
+                 std::shared_ptr<std::atomic<bool>>> {
+  auto alive = std::make_shared<
+      std::atomic<bool>>(true);
+  return {SafeSender{&conn, alive}, alive};
+}
 
 /// Build a badge context for a status string.
 auto StatusSemantic(const std::string &s) -> std::string {
@@ -1349,6 +1404,10 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
     auto conn_map = std::make_shared<
         std::map<crow::websocket::connection *,
                  std::string>>();
+    // alive flags per connection — set false in onclose.
+    auto alive_map = std::make_shared<
+        std::map<crow::websocket::connection *,
+                 std::shared_ptr<std::atomic<bool>>>>();
     auto pty_mu = std::make_shared<std::mutex>();
 
     // CLI tabs: /cli/ws/<id>
@@ -1364,7 +1423,8 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
               return true;
             })
         .onopen(
-            [pty_map, conn_map, pty_mu, this](
+            [pty_map, conn_map, alive_map,
+             pty_mu, this](
                 crow::websocket::connection &conn) {
               std::lock_guard lk(*pty_mu);
               auto *p = static_cast<std::string *>(
@@ -1376,6 +1436,8 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                 conn.close("no id"); return;
               }
               (*conn_map)[&conn] = id;
+              auto [sink, alive] = MakeSafeSink(conn);
+              (*alive_map)[&conn] = alive;
               auto &pty = (*pty_map)[id];
               if (!pty) pty = std::make_shared<CliPty>();
               if (!pty->IsRunning()) {
@@ -1383,13 +1445,11 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                     {cli_path_, "--dark",
                      "--color", "always"});
               }
-              pty->Attach(
-                  [&conn](std::string_view c) {
-                    conn.send_text(std::string(c));
-                  });
+              pty->Attach(sink);
             })
         .onmessage(
-            [pty_map, conn_map, pty_mu, this](
+            [pty_map, conn_map, alive_map,
+             pty_mu, this](
                 crow::websocket::connection &conn,
                 const std::string &data,
                 bool is_binary) {
@@ -1409,11 +1469,9 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                 s->Spawn(cli_path_,
                     {cli_path_, "--dark",
                      "--color", "always"});
-                s->Attach(
-                    [&conn](std::string_view c) {
-                      conn.send_text(
-                          std::string(c));
-                    });
+                auto [sk, al] = MakeSafeSink(conn);
+                (*alive_map)[&conn] = al;
+                s->Attach(sk);
                 return;
               }
               bool ctl = !is_binary &&
@@ -1423,24 +1481,30 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                 try {
                   auto j = nlohmann::json::parse(
                       data);
-                  if (j.value("type", "") ==
-                      "resize") {
+                  auto type = j.value("type", "");
+                  if (type == "resize") {
                     s->Resize(
                         j.value<unsigned short>(
                             "rows", 24),
                         j.value<unsigned short>(
                             "cols", 80));
-                    return;
                   }
                 } catch (...) {}
+                return;
               }
               s->Write(data);
             })
         .onclose(
-            [pty_map, conn_map, pty_mu](
+            [pty_map, conn_map, alive_map, pty_mu](
                 crow::websocket::connection &conn,
                 const std::string &, uint16_t) {
               std::lock_guard lk(*pty_mu);
+              auto ai = alive_map->find(&conn);
+              if (ai != alive_map->end()) {
+                ai->second->store(false,
+                    std::memory_order_release);
+                alive_map->erase(ai);
+              }
               auto ci = conn_map->find(&conn);
               if (ci == conn_map->end()) return;
               auto pi = pty_map->find(ci->second);
@@ -1458,6 +1522,9 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
     auto ws_conn_map = std::make_shared<
         std::map<crow::websocket::connection *,
                  std::string>>();
+    auto ws_alive_map = std::make_shared<
+        std::map<crow::websocket::connection *,
+                 std::shared_ptr<std::atomic<bool>>>>();
     auto ws_mu = std::make_shared<std::mutex>();
 
     CROW_WEBSOCKET_ROUTE(app,
@@ -1474,7 +1541,8 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
               return true;
             })
         .onopen(
-            [tmux_map, ws_conn_map, ws_mu, this](
+            [tmux_map, ws_conn_map, ws_alive_map,
+             ws_mu, this](
                 crow::websocket::connection &conn) {
               std::lock_guard lk(*ws_mu);
               auto *p = static_cast<std::string *>(
@@ -1486,6 +1554,8 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                 conn.close("no name"); return;
               }
               (*ws_conn_map)[&conn] = name;
+              auto [sink, alive] = MakeSafeSink(conn);
+              (*ws_alive_map)[&conn] = alive;
               auto &bridge = (*tmux_map)[name];
               if (!bridge)
                 bridge =
@@ -1505,10 +1575,7 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                     " --dangerously-skip-permissions",
                     env);
               }
-              bridge->Attach(
-                  [&conn](std::string_view c) {
-                    conn.send_text(std::string(c));
-                  });
+              bridge->Attach(sink);
             })
         .onmessage(
             [tmux_map, ws_conn_map, ws_mu](
@@ -1528,24 +1595,31 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                 try {
                   auto j = nlohmann::json::parse(
                       data);
-                  if (j.value("type", "") ==
-                      "resize") {
+                  auto type = j.value("type", "");
+                  if (type == "resize") {
                     b->Resize(
                         j.value<unsigned short>(
                             "rows", 24),
                         j.value<unsigned short>(
                             "cols", 80));
-                    return;
                   }
                 } catch (...) {}
+                return;
               }
               b->SendKeys(data);
             })
         .onclose(
-            [tmux_map, ws_conn_map, ws_mu](
+            [tmux_map, ws_conn_map, ws_alive_map,
+             ws_mu](
                 crow::websocket::connection &conn,
                 const std::string &, uint16_t) {
               std::lock_guard lk(*ws_mu);
+              auto ai = ws_alive_map->find(&conn);
+              if (ai != ws_alive_map->end()) {
+                ai->second->store(false,
+                    std::memory_order_release);
+                ws_alive_map->erase(ai);
+              }
               auto ci = ws_conn_map->find(&conn);
               if (ci == ws_conn_map->end()) return;
               auto bi = tmux_map->find(ci->second);

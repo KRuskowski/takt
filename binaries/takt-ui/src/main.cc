@@ -124,6 +124,8 @@ auto main(int argc, char **argv) -> int {
       std::move(ecfg));
 
   crow::SimpleApp crow_app;
+  // WebSocket connections idle during long AI responses.
+  crow_app.timeout(255);
   einheit::ui::ServerConfig scfg;
   scfg.bind_addr = bind_addr;
   scfg.port = port;
