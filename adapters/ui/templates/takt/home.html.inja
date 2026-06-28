@@ -1,0 +1,559 @@
+{# Split-pane layout: dashboard top, CLI tabs bottom,
+   draggable resize handle between them.
+   mngmt tab runs takt-cli. Workspace tabs run claude
+   in the workspace directory via tmux. #}
+<script>document.querySelector('.app-main').classList.add('app-viewport');</script>
+
+<div class="takt-split" id="takt-split" hx-boost="false">
+  <div class="takt-top" id="takt-top">
+    {% include "takt/dashboard" %}
+  </div>
+  <div class="takt-handle" id="takt-handle">
+    <div class="takt-handle-pill"></div>
+  </div>
+  <div class="takt-bottom" id="takt-bottom">
+    <div class="takt-term-host" id="takt-term-host"></div>
+    <div class="takt-tabs" id="takt-tabs">
+      <button class="takt-tab-add"
+              onclick="taktShell.showPicker()"
+              title="open workspace">+</button>
+    </div>
+  </div>
+</div>
+
+<div class="takt-ws-overlay" id="takt-ws-overlay"
+     style="display:none"
+     onclick="if(event.target===this)taktShell.hidePicker()">
+  <div class="takt-ws-dialog">
+    <input type="text" class="takt-ws-search"
+           id="takt-ws-filter"
+           placeholder="open workspace…"
+           autocomplete="off"
+           oninput="taktShell.filterWs(this.value)">
+    <div class="takt-ws-results" id="takt-ws-list"></div>
+  </div>
+</div>
+
+<style>
+  .takt-split {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+  .takt-top {
+    overflow-y: auto;
+    padding: 12px 16px;
+    min-height: 80px;
+    flex-shrink: 0;
+  }
+  .takt-handle {
+    height: 9px;
+    cursor: row-resize;
+    flex-shrink: 0;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-top: 1px solid var(--einheit-border, #333);
+  }
+  .takt-handle-pill {
+    width: 48px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--einheit-fg3, #555);
+    transition: background 0.15s;
+  }
+  .takt-handle:hover .takt-handle-pill,
+  .takt-handle.dragging .takt-handle-pill {
+    background: var(--einheit-accent, #bb86fc);
+  }
+  .takt-bottom {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 120px;
+    overflow: hidden;
+  }
+  .takt-term-host {
+    flex: 1;
+    background: var(--einheit-bg, #101010);
+    overflow: hidden;
+    position: relative;
+  }
+  .takt-tabs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    background: var(--einheit-bg1, #151515);
+    border-top: 1px solid var(--einheit-border, #333);
+    flex-shrink: 0;
+    min-height: 36px;
+  }
+  .takt-tab {
+    background: var(--einheit-bg2, #1e1e1e);
+    border: 1px solid var(--einheit-border, #333);
+    border-radius: 3px;
+    color: var(--einheit-fg2, #888);
+    font-size: 0.78rem;
+    font-family: inherit;
+    padding: 3px 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.12s, color 0.12s,
+                border-color 0.12s;
+    white-space: nowrap;
+  }
+  .takt-tab.active {
+    background: color-mix(in srgb,
+        var(--einheit-accent, #bb86fc) 15%,
+        var(--einheit-bg2, #1e1e1e));
+    color: var(--einheit-fg, #e0e0e0);
+    border-color: color-mix(in srgb,
+        var(--einheit-accent, #bb86fc) 40%,
+        var(--einheit-border, #333));
+  }
+  .takt-tab:not(.active):hover {
+    background: var(--einheit-bg, #181818);
+    color: var(--einheit-fg, #ccc);
+    border-color: var(--einheit-fg3, #555);
+  }
+  .takt-tab .takt-tab-close {
+    font-size: 13px;
+    line-height: 1;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    opacity: 0.3;
+    transition: opacity 0.12s, background 0.12s;
+  }
+  .takt-tab:hover .takt-tab-close {
+    opacity: 0.7;
+  }
+  .takt-tab .takt-tab-close:hover {
+    background: var(--einheit-bad, #cf6679);
+    color: #fff;
+    opacity: 1;
+  }
+  .takt-tab-add {
+    background: none;
+    border: 1px dashed var(--einheit-border, #333);
+    border-radius: 3px;
+    color: var(--einheit-fg3, #555);
+    font-size: 0.9rem;
+    padding: 3px 10px;
+    cursor: pointer;
+    transition: color 0.12s, background 0.12s,
+                border-color 0.12s;
+  }
+  .takt-tab-add:hover {
+    color: var(--einheit-fg, #e0e0e0);
+    background: var(--einheit-bg2, #1e1e1e);
+    border-color: var(--einheit-fg3, #555);
+  }
+  .takt-term-pane {
+    position: absolute;
+    inset: 0;
+    padding: 4px;
+  }
+  .takt-term-pane[hidden] {
+    display: none;
+  }
+
+  /* Workspace picker overlay */
+  .takt-ws-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 15vh;
+  }
+  .takt-ws-dialog {
+    background: var(--einheit-bg2, #1e1e1e);
+    border: 1px solid var(--einheit-border, #333);
+    border-radius: 8px;
+    width: 400px;
+    max-height: 60vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  }
+  .takt-ws-search {
+    background: var(--einheit-bg, #101010);
+    border: none;
+    border-bottom: 1px solid var(--einheit-border, #333);
+    color: var(--einheit-fg, #e0e0e0);
+    padding: 12px 16px;
+    font-size: 0.95rem;
+    border-radius: 8px 8px 0 0;
+    outline: none;
+  }
+  .takt-ws-results {
+    overflow-y: auto;
+    max-height: 50vh;
+  }
+  .takt-ws-item {
+    padding: 8px 16px;
+    cursor: pointer;
+    color: var(--einheit-fg, #e0e0e0);
+    font-size: 0.9rem;
+  }
+  .takt-ws-item:hover,
+  .takt-ws-item.selected {
+    background: var(--einheit-bg, #101010);
+  }
+</style>
+
+<link rel="stylesheet" href="/assets/xterm/xterm.css">
+<script src="/assets/xterm/xterm.js"></script>
+<script src="/assets/xterm/xterm-addon-fit.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  var workspaces = {{ workspaces }};
+
+  function cssVar(name, fb) {
+    var v = getComputedStyle(document.documentElement)
+                .getPropertyValue(name).trim();
+    return v || fb;
+  }
+
+  var palette = {
+    background: cssVar('--einheit-bg', '#101010'),
+    foreground: cssVar('--einheit-fg', '#e0e0e0'),
+    cursor: cssVar('--einheit-accent', '#bb86fc'),
+    cursorAccent: cssVar('--einheit-bg', '#101010'),
+    selectionBackground: cssVar('--einheit-bg2', '#283238'),
+    black: cssVar('--einheit-bg2', '#283238'),
+    red: cssVar('--einheit-bad', '#cf6679'),
+    green: cssVar('--einheit-good', '#03dac5'),
+    yellow: cssVar('--einheit-warn', '#ffb74d'),
+    blue: cssVar('--einheit-info', '#82aaff'),
+    magenta: cssVar('--einheit-accent', '#bb86fc'),
+    cyan: cssVar('--einheit-info', '#82aaff'),
+    white: cssVar('--einheit-fg', '#e0e0e0'),
+    brightBlack: cssVar('--einheit-fg3', '#7a8b94'),
+    brightRed: cssVar('--einheit-bad', '#cf6679'),
+    brightGreen: cssVar('--einheit-good', '#03dac5'),
+    brightYellow: cssVar('--einheit-warn', '#ffb74d'),
+    brightBlue: cssVar('--einheit-info', '#82aaff'),
+    brightMagenta: cssVar('--einheit-accent', '#bb86fc'),
+    brightCyan: cssVar('--einheit-info', '#82aaff'),
+    brightWhite: cssVar('--einheit-fg', '#e0e0e0'),
+  };
+
+  var tabs = {};
+  var activeTab = null;
+  var tabBar = document.getElementById('takt-tabs');
+  var termHost = document.getElementById('takt-term-host');
+  var pickerIdx = -1;
+
+  function createTermPane(id, wsPath) {
+    var pane = document.createElement('div');
+    pane.className = 'takt-term-pane';
+    pane.id = 'pane-' + id;
+    pane.hidden = true;
+    termHost.appendChild(pane);
+
+    var term = new Terminal({
+      cursorBlink: false,
+      cursorStyle: 'bar',
+      cursorWidth: 2,
+      fontFamily: '"Fira Code", ui-monospace, monospace',
+      fontSize: 13,
+      scrollback: 5000,
+      allowProposedApi: true,
+      theme: palette,
+    });
+    term.open(pane);
+
+    var fit = null;
+    if (window.FitAddon && window.FitAddon.FitAddon) {
+      fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+    }
+
+    var wsUrl = (location.protocol === 'https:'
+        ? 'wss://' : 'ws://') + location.host + wsPath;
+    var ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+
+    function send(d) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(d);
+    }
+    function tryFit() {
+      if (!fit) return;
+      try { fit.fit(); } catch(e) {}
+    }
+    function notifyResize() {
+      send(JSON.stringify({
+        type: 'resize',
+        cols: term.cols, rows: term.rows,
+      }));
+    }
+
+    ws.addEventListener('open', function() {
+      tryFit(); notifyResize(); term.focus();
+    });
+    ws.addEventListener('message', function(ev) {
+      if (typeof ev.data === 'string') term.write(ev.data);
+      else term.write(new TextDecoder().decode(ev.data));
+    });
+    ws.addEventListener('close', function() {
+      term.write('\r\n\x1b[33m[session ended]\x1b[0m\r\n');
+    });
+    term.onData(send);
+
+    if (window.ResizeObserver) {
+      var ro = new ResizeObserver(function() {
+        tryFit(); notifyResize();
+      });
+      ro.observe(pane);
+    }
+
+    return { term: term, fit: fit, ws: ws, pane: pane };
+  }
+
+  function createTab(id, label, wsPath, closeable) {
+    if (tabs[id]) { switchTab(id); return; }
+    var pty = createTermPane(id, wsPath);
+
+    var btn = document.createElement('button');
+    btn.className = 'takt-tab';
+    btn.dataset.tab = id;
+    btn.onclick = function() { switchTab(id); };
+    btn.textContent = label;
+    if (closeable) {
+      var close = document.createElement('span');
+      close.className = 'takt-tab-close';
+      close.textContent = '×';
+      close.onclick = function(e) {
+        e.stopPropagation();
+        closeTab(id);
+      };
+      btn.appendChild(close);
+    }
+    var addBtn = tabBar.querySelector('.takt-tab-add');
+    tabBar.insertBefore(btn, addBtn);
+
+    tabs[id] = {
+      term: pty.term, fit: pty.fit, ws: pty.ws,
+      pane: pty.pane, btn: btn,
+    };
+    switchTab(id);
+  }
+
+  function switchTab(id) {
+    if (!tabs[id]) return;
+    if (activeTab && tabs[activeTab]) {
+      tabs[activeTab].pane.hidden = true;
+      tabs[activeTab].btn.classList.remove('active');
+    }
+    activeTab = id;
+    tabs[id].pane.hidden = false;
+    tabs[id].btn.classList.add('active');
+    requestAnimationFrame(function() {
+      if (tabs[id].fit) {
+        try { tabs[id].fit.fit(); } catch(e) {}
+      }
+      tabs[id].term.focus();
+    });
+  }
+
+  function closeTab(id) {
+    if (id === 'mngmt') return;
+    if (!tabs[id]) return;
+    if (tabs[id].ws) tabs[id].ws.close();
+    tabs[id].term.dispose();
+    tabs[id].pane.remove();
+    tabs[id].btn.remove();
+    delete tabs[id];
+    var keys = Object.keys(tabs);
+    if (activeTab === id && keys.length > 0) {
+      switchTab(keys[keys.length - 1]);
+    }
+  }
+
+  function openWorkspace(name) {
+    createTab(name, name,
+      '/ws/workspace/' + name, true);
+    hidePicker();
+  }
+
+  // -- Workspace picker --
+  var overlay = document.getElementById('takt-ws-overlay');
+  var filterInput = document.getElementById('takt-ws-filter');
+  var wsList = document.getElementById('takt-ws-list');
+
+  function showPicker() {
+    overlay.style.display = 'flex';
+    filterInput.value = '';
+    filterWs('');
+    pickerIdx = -1;
+    setTimeout(function() { filterInput.focus(); }, 50);
+  }
+
+  function hidePicker() {
+    overlay.style.display = 'none';
+  }
+
+  function filterWs(q) {
+    q = q.toLowerCase();
+    var html = '';
+    workspaces.forEach(function(ws, i) {
+      var name = ws.name || ws;
+      if (q && name.toLowerCase().indexOf(q) < 0) return;
+      html += '<div class="takt-ws-item" data-name="' +
+        name + '" onclick="taktShell.openWorkspace(\'' +
+        name + '\')">' + name + '</div>';
+    });
+    wsList.innerHTML = html || '<div class="takt-ws-item" style="color:var(--einheit-fg2)">no matches</div>';
+    pickerIdx = -1;
+  }
+
+  filterInput.addEventListener('keydown', function(e) {
+    var items = wsList.querySelectorAll(
+        '.takt-ws-item[data-name]');
+    if (e.key === 'Escape') {
+      hidePicker(); e.preventDefault(); return;
+    }
+    if (e.key === 'ArrowDown') {
+      pickerIdx = Math.min(pickerIdx + 1,
+          items.length - 1);
+      updatePickerSelection(items);
+      e.preventDefault();
+    } else if (e.key === 'ArrowUp') {
+      pickerIdx = Math.max(pickerIdx - 1, 0);
+      updatePickerSelection(items);
+      e.preventDefault();
+    } else if (e.key === 'Enter') {
+      if (pickerIdx >= 0 && pickerIdx < items.length) {
+        openWorkspace(items[pickerIdx].dataset.name);
+      } else if (items.length === 1) {
+        openWorkspace(items[0].dataset.name);
+      }
+      e.preventDefault();
+    }
+  });
+
+  function updatePickerSelection(items) {
+    items.forEach(function(el, i) {
+      el.classList.toggle('selected', i === pickerIdx);
+    });
+    if (pickerIdx >= 0 && items[pickerIdx]) {
+      items[pickerIdx].scrollIntoView({block: 'nearest'});
+    }
+  }
+
+  // -- Resize handle --
+  var split = document.getElementById('takt-split');
+  var top = document.getElementById('takt-top');
+  var handle = document.getElementById('takt-handle');
+  var dragging = false;
+
+  handle.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    dragging = true;
+    handle.classList.add('dragging');
+    document.addEventListener('mousemove', onDrag);
+    document.addEventListener('mouseup', onDragEnd);
+  });
+
+  function onDrag(e) {
+    if (!dragging) return;
+    var rect = split.getBoundingClientRect();
+    var y = e.clientY - rect.top;
+    y = Math.max(80, Math.min(rect.height - 120, y));
+    top.style.height = y + 'px';
+    Object.keys(tabs).forEach(function(id) {
+      if (!tabs[id].pane.hidden && tabs[id].fit) {
+        try { tabs[id].fit.fit(); } catch(e) {}
+      }
+    });
+  }
+
+  function onDragEnd() {
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.removeEventListener('mousemove', onDrag);
+    document.removeEventListener('mouseup', onDragEnd);
+    Object.keys(tabs).forEach(function(id) {
+      if (!tabs[id].pane.hidden && tabs[id].fit) {
+        try { tabs[id].fit.fit(); } catch(e) {}
+        var t = tabs[id];
+        if (t.ws && t.ws.readyState === WebSocket.OPEN) {
+          t.ws.send(JSON.stringify({
+            type: 'resize',
+            cols: t.term.cols, rows: t.term.rows,
+          }));
+        }
+      }
+    });
+  }
+
+  function saveState() {
+    var open = [];
+    Object.keys(tabs).forEach(function(id) {
+      if (id !== 'mngmt') open.push(id);
+    });
+    var body = JSON.stringify({
+      tabs: open, active: activeTab || 'mngmt',
+    });
+    fetch('{{ takt_api_url }}/api/shell/tabs', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: body,
+    }).catch(function() {});
+    localStorage.setItem('takt-split-height',
+        top.offsetHeight);
+  }
+
+  function restoreTabs() {
+    createTab('mngmt', 'mngmt', '/cli/ws/mngmt', false);
+    fetch('{{ takt_api_url }}/api/shell/tabs')
+        .then(function(r) { return r.json(); })
+        .then(function(r) {
+          var state = r.data || {};
+          var open = state.tabs || [];
+          var act = state.active || 'mngmt';
+          open.forEach(function(name) {
+            createTab(name, name,
+                '/ws/workspace/' + name, true);
+          });
+          if (tabs[act]) switchTab(act);
+        })
+        .catch(function() {});
+  }
+
+  window.taktShell = {
+    switchTab: function(id) {
+      switchTab(id); saveState();
+    },
+    closeTab: function(id) {
+      closeTab(id); saveState();
+    },
+    openWorkspace: function(name) {
+      openWorkspace(name); saveState();
+    },
+    showPicker: showPicker,
+    hidePicker: hidePicker,
+    filterWs: filterWs,
+  };
+
+  restoreTabs();
+
+  var saved = localStorage.getItem('takt-split-height');
+  if (saved) top.style.height = saved + 'px';
+  window.addEventListener('beforeunload', saveState);
+})();
+</script>

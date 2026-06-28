@@ -1,0 +1,50 @@
+<section class="card">
+  <h2 class="card-title">targets</h2>
+  <div class="card-body">
+{% if length(targets) > 0 %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>name</th>
+          <th>type</th>
+          <th>host</th>
+          <th>status</th>
+          <th class="right">action</th>
+        </tr>
+      </thead>
+      <tbody>
+{% for t in targets %}
+        <tr>
+          <td>{{ t.name }}{% if t.template %} <span class="badge badge-info">template</span>{% endif %}</td>
+          <td>{{ t.type }}</td>
+          <td>{{ t.host }}</td>
+          <td>
+{% if t.claimed_by != "" %}
+            <span class="badge badge-warn">{{ t.claimed_by }}</span>
+{% else %}
+            <span class="badge badge-good">free</span>
+{% endif %}
+          </td>
+          <td class="right">
+{% if t.claimed_by != "" %}
+            <button class="btn btn-ghost btn-sm"
+              hx-post="/targets/{{ t.name }}/release"
+              hx-swap="none">release</button>
+{% else %}
+{% if not t.template %}
+            <form hx-post="/targets/{{ t.name }}/claim" hx-swap="none" class="inline-form" style="display:inline">
+              <input type="text" name="workspace" placeholder="workspace" style="width:10ch" required>
+              <button type="submit" class="btn btn-ghost btn-sm">claim</button>
+            </form>
+{% endif %}
+{% endif %}
+          </td>
+        </tr>
+{% endfor %}
+      </tbody>
+    </table>
+{% else %}
+    <div class="empty">no targets configured</div>
+{% endif %}
+  </div>
+</section>

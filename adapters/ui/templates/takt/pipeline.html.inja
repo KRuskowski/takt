@@ -1,0 +1,36 @@
+<section class="card">
+  <h2 class="card-title">pipelines</h2>
+  <div class="card-body">
+{% if length(pipelines) > 0 %}
+{% for p in pipelines %}
+    <h3>{{ p.workspace }}</h3>
+{% if length(p.steps) > 0 %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>seq</th>
+          <th>name</th>
+          <th>type</th>
+          <th class="right">timeout</th>
+        </tr>
+      </thead>
+      <tbody>
+{% for s in p.steps %}
+        <tr>
+          <td>{{ s.seq }}</td>
+          <td>{{ s.name }}</td>
+          <td>{{ s.step_type }}</td>
+          <td class="right">{{ s.timeout_secs }}s</td>
+        </tr>
+{% endfor %}
+      </tbody>
+    </table>
+{% else %}
+    <div class="empty">no steps defined</div>
+{% endif %}
+{% endfor %}
+{% else %}
+    <div class="empty">no workspaces with pipelines</div>
+{% endif %}
+  </div>
+</section>

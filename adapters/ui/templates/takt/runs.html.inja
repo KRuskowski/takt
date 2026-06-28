@@ -1,0 +1,12 @@
+<section class="card">
+  <h2 class="card-title">pipeline runs</h2>
+  <div class="card-body">
+    <form hx-post="/runs/trigger" hx-swap="none" class="inline-form">
+      <input type="text" name="workspace" placeholder="workspace name" required>
+      <button type="submit" class="btn btn-primary btn-sm">trigger run</button>
+    </form>
+  </div>
+  <div class="card-body" id="runs-table">
+    {% include "takt/runs_table" %}
+  </div>
+</section>

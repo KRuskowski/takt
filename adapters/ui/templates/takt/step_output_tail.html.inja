@@ -1,0 +1,9 @@
+{% for e in entries %}
+<div class="log-entry log-{{ lower(e.level) }}">
+  <span class="log-ts">{{ e.timestamp }}</span>
+  <span class="log-msg">{{ e.message }}</span>
+</div>
+{% endfor %}
+{% if step_finished %}
+<div hx-swap-oob="outerHTML:[hx-trigger='every 3s']"></div>
+{% endif %}

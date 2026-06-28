@@ -1,0 +1,43 @@
+<section class="card">
+  <h2 class="card-title">step — {{ step.name }}</h2>
+  <div class="card-body">
+    <dl class="status-grid">
+      <dt>status</dt>
+      <dd><span class="badge badge-{{ step.status_semantic }}">{{ step.status }}</span></dd>
+      <dt>type</dt>
+      <dd>{{ step.step_type }}</dd>
+{% if existsIn(step, "started_at") %}
+      <dt>started</dt>
+      <dd>{{ step.started_at }}</dd>
+{% endif %}
+{% if existsIn(step, "finished_at") %}
+      <dt>finished</dt>
+      <dd>{{ step.finished_at }}</dd>
+{% endif %}
+{% if existsIn(step, "cost_usd") %}
+      <dt>cost</dt>
+      <dd>${{ step.cost_usd }}</dd>
+{% endif %}
+{% if existsIn(step, "num_turns") %}
+      <dt>turns</dt>
+      <dd>{{ step.num_turns }}</dd>
+{% endif %}
+    </dl>
+    <p><a class="btn btn-ghost" href="/runs/{{ run_id }}">← back to run</a></p>
+  </div>
+</section>
+
+<section class="card">
+  <h2 class="card-title">output</h2>
+  <div class="card-body">
+    <div class="log-list" id="step-log">
+      {% include "partials/log_entry" %}
+    </div>
+{% if step.status == "running" or step.status == "queued" %}
+    <div hx-get="/runs/{{ run_id }}/steps/{{ step.id }}/tail?from={{ next_line }}"
+         hx-trigger="every 3s"
+         hx-target="#step-log"
+         hx-swap="beforeend"></div>
+{% endif %}
+  </div>
+</section>

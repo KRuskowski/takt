@@ -1,0 +1,43 @@
+<section class="card">
+  <h2 class="card-title">workspaces</h2>
+  <div class="card-body">
+    <form hx-post="/workspaces/create" hx-swap="none" class="inline-form">
+      <input type="text" name="name" placeholder="workspace name" required>
+      <input type="text" name="repos" placeholder="repos (space-separated)" required>
+      <button type="submit" class="btn btn-primary btn-sm">create</button>
+    </form>
+  </div>
+  <div class="card-body">
+{% if length(workspaces) > 0 %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>name</th>
+          <th>branch</th>
+          <th>repos</th>
+          <th class="right">count</th>
+          <th class="right">action</th>
+        </tr>
+      </thead>
+      <tbody>
+{% for ws in workspaces %}
+        <tr>
+          <td><a href="/workspaces/{{ ws.name }}">{{ ws.name }}</a></td>
+          <td>{{ ws.branch }}</td>
+          <td>{{ ws.repos }}</td>
+          <td class="right">{{ ws.repo_count }}</td>
+          <td class="right">
+            <button class="btn btn-danger btn-sm"
+              hx-delete="/workspaces/{{ ws.name }}"
+              hx-swap="none"
+              hx-confirm="Delete workspace {{ ws.name }}?">delete</button>
+          </td>
+        </tr>
+{% endfor %}
+      </tbody>
+    </table>
+{% else %}
+    <div class="empty">no workspaces</div>
+{% endif %}
+  </div>
+</section>

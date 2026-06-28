@@ -1,0 +1,34 @@
+{% if length(agents) > 0 %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>workspace</th>
+      <th>name</th>
+      <th>status</th>
+      <th>model</th>
+      <th class="right">turns</th>
+      <th class="right">cost</th>
+      <th class="right"></th>
+    </tr>
+  </thead>
+  <tbody>
+{% for a in agents %}
+    <tr>
+      <td>{{ a.workspace }}</td>
+      <td>{{ a.name }}</td>
+      <td><span class="badge badge-{{ a.status_semantic }}">{{ a.status }}</span></td>
+      <td>{{ a.model }}</td>
+      <td class="right">{{ a.num_turns }}</td>
+      <td class="right">{% if existsIn(a, "cost_usd") %}${{ a.cost_usd }}{% else %}—{% endif %}</td>
+      <td class="right">
+{% if existsIn(a, "run_id") and existsIn(a, "id") %}
+        <a class="btn btn-ghost btn-sm" href="/runs/{{ a.run_id }}/steps/{{ a.id }}">output</a>
+{% endif %}
+      </td>
+    </tr>
+{% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">no active agents</div>
+{% endif %}

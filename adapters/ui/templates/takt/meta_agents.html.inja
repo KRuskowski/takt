@@ -1,0 +1,49 @@
+<section class="card">
+  <h2 class="card-title">meta agents</h2>
+  <div class="card-body">
+    <form hx-post="/meta-agents/create" hx-swap="none" class="inline-form">
+      <input type="text" name="name" placeholder="agent name" required>
+      <input type="text" name="prompt" placeholder="prompt" required>
+      <select name="model">
+        <option value="sonnet">sonnet</option>
+        <option value="opus">opus</option>
+        <option value="haiku">haiku</option>
+      </select>
+      <button type="submit" class="btn btn-primary btn-sm">create</button>
+    </form>
+  </div>
+  <div class="card-body">
+{% if length(agents) > 0 %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>name</th>
+          <th>model</th>
+          <th>description</th>
+          <th class="right">action</th>
+        </tr>
+      </thead>
+      <tbody>
+{% for a in agents %}
+        <tr>
+          <td>{{ a.name }}</td>
+          <td>{{ a.model }}</td>
+          <td>{{ a.description }}</td>
+          <td class="right">
+            <button class="btn btn-ghost btn-sm"
+              hx-post="/meta-agents/{{ a.id }}/run"
+              hx-swap="none">run</button>
+            <button class="btn btn-danger btn-sm"
+              hx-delete="/meta-agents/{{ a.id }}"
+              hx-swap="none"
+              hx-confirm="Delete agent {{ a.name }}?">delete</button>
+          </td>
+        </tr>
+{% endfor %}
+      </tbody>
+    </table>
+{% else %}
+    <div class="empty">no meta agents — create one above</div>
+{% endif %}
+  </div>
+</section>

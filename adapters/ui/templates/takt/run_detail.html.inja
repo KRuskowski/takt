@@ -1,0 +1,61 @@
+<section class="card">
+  <h2 class="card-title">run #{{ run.id }} — {{ run.workspace }}</h2>
+  <div class="card-body">
+    <dl class="status-grid">
+      <dt>status</dt>
+      <dd><span class="badge badge-{{ run.status_semantic }}">{{ run.status }}</span></dd>
+      <dt>trigger</dt>
+      <dd>{{ run.trigger }}</dd>
+      <dt>created</dt>
+      <dd>{{ run.created_at }}</dd>
+{% if existsIn(run, "started_at") %}
+      <dt>started</dt>
+      <dd>{{ run.started_at }}</dd>
+{% endif %}
+{% if existsIn(run, "finished_at") %}
+      <dt>finished</dt>
+      <dd>{{ run.finished_at }}</dd>
+{% endif %}
+    </dl>
+{% if run.status == "running" or run.status == "queued" %}
+    <p>
+      <button class="btn btn-danger btn-sm"
+        hx-post="/runs/{{ run.id }}/cancel"
+        hx-swap="none"
+        hx-confirm="Cancel run #{{ run.id }}?">cancel run</button>
+    </p>
+{% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <h2 class="card-title">steps</h2>
+  <div class="card-body">
+{% if length(steps) > 0 %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>seq</th>
+          <th>name</th>
+          <th>type</th>
+          <th>status</th>
+          <th class="right">cost</th>
+        </tr>
+      </thead>
+      <tbody>
+{% for s in steps %}
+        <tr>
+          <td>{{ s.seq }}</td>
+          <td><a href="/runs/{{ run.id }}/steps/{{ s.id }}">{{ s.name }}</a></td>
+          <td>{{ s.step_type }}</td>
+          <td><span class="badge badge-{{ s.status_semantic }}">{{ s.status }}</span></td>
+          <td class="right">{% if existsIn(s, "cost_usd") %}${{ s.cost_usd }}{% else %}—{% endif %}</td>
+        </tr>
+{% endfor %}
+      </tbody>
+    </table>
+{% else %}
+    <div class="empty">no steps</div>
+{% endif %}
+  </div>
+</section>

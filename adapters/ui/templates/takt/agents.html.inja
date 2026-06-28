@@ -1,0 +1,6 @@
+<section class="card">
+  <h2 class="card-title">agents</h2>
+  <div class="card-body" id="agents-table">
+    {% include "takt/agents_table" %}
+  </div>
+</section>

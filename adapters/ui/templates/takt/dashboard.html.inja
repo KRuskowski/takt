@@ -1,0 +1,81 @@
+<div class="grid-2col">
+  <section class="card" id="dashboard-summary">
+    {% include "takt/dashboard_summary" %}
+  </section>
+
+  <section class="card">
+    <h2 class="card-title">recent runs</h2>
+    <div class="card-body" id="runs-table">
+      {% include "takt/runs_table" %}
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 class="card-title">workspaces</h2>
+    <div class="card-body">
+{% if length(workspaces) > 0 %}
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>name</th>
+            <th>branch</th>
+            <th class="right">repos</th>
+            <th class="right"></th>
+          </tr>
+        </thead>
+        <tbody>
+{% for ws in workspaces %}
+          <tr>
+            <td><a href="/workspaces/{{ ws.name }}">{{ ws.name }}</a></td>
+            <td>{{ ws.branch }}</td>
+            <td class="right">{{ ws.repo_count }}</td>
+            <td class="right">
+              <button class="btn btn-ghost btn-sm"
+                hx-post="/runs/trigger"
+                hx-vals='{"workspace":"{{ ws.name }}"}'
+                hx-swap="none">run</button>
+            </td>
+          </tr>
+{% endfor %}
+        </tbody>
+      </table>
+{% else %}
+      <div class="empty">no workspaces</div>
+{% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 class="card-title">targets</h2>
+    <div class="card-body">
+{% if length(targets) > 0 %}
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>name</th>
+            <th>type</th>
+            <th>claimed by</th>
+          </tr>
+        </thead>
+        <tbody>
+{% for t in targets %}
+          <tr>
+            <td>{{ t.name }}</td>
+            <td>{{ t.type }}</td>
+            <td>
+{% if t.claimed_by != "" %}
+              <span class="badge badge-warn">{{ t.claimed_by }}</span>
+{% else %}
+              <span class="badge badge-good">free</span>
+{% endif %}
+            </td>
+          </tr>
+{% endfor %}
+        </tbody>
+      </table>
+{% else %}
+      <div class="empty">no targets</div>
+{% endif %}
+    </div>
+  </section>
+</div>

@@ -1,0 +1,6 @@
+<section class="card">
+  <h2 class="card-title">settings</h2>
+  <div class="card-body">
+    {% include "partials/status" %}
+  </div>
+</section>

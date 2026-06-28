@@ -1,0 +1,5 @@
+<h2 class="card-title">overview</h2>
+<div class="card-body">
+  {% set rows = summary %}
+  {% include "partials/status" %}
+</div>

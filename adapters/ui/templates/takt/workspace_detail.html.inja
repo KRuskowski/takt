@@ -1,0 +1,27 @@
+<section class="card">
+  <h2 class="card-title">workspace — {{ name }}</h2>
+  <div class="card-body">
+{% if length(repos) > 0 %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>repo</th>
+          <th>branch</th>
+          <th>status</th>
+        </tr>
+      </thead>
+      <tbody>
+{% for r in repos %}
+        <tr>
+          <td>{{ r.repo }}</td>
+          <td>{{ r.branch }}</td>
+          <td><span class="badge badge-{{ r.status_semantic }}">{{ r.status }}</span></td>
+        </tr>
+{% endfor %}
+      </tbody>
+    </table>
+{% else %}
+    <div class="empty">no repos in workspace</div>
+{% endif %}
+  </div>
+</section>
