@@ -116,10 +116,14 @@ auto main(int argc, char **argv) -> int {
       force_light ||
       (!force_dark && render::DetectLightTerminal());
 
+  ::setenv("EINHEIT_BRAND", "takt", 0);
+  auto logo_path = ResolveTaktDir() + "/assets/banner.txt";
+  ::setenv("EINHEIT_LOGO_PATH", logo_path.c_str(), 0);
+
   shell::Shell s;
   s.tx = std::move(*tx);
   s.caps = caps;
-  s.learning_mode = true;
+  s.learning_mode = false;
   s.theme = render::PickTheme(caps, prefer_light);
 
   (void)RegisterGlobals(s.tree);

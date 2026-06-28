@@ -6,6 +6,7 @@ dashboard can share the same logic.
 
 import shutil
 import subprocess
+from pathlib import Path
 from string import Template
 
 from lib.config import (
