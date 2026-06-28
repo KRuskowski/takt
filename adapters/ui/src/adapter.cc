@@ -297,6 +297,14 @@ class TmuxBridge {
     read_fd_ = from_tmux[0];
     child_ = pid;
     running_ = true;
+    // Set initial size and tell tmux to use the
+    // largest client's size for this session.
+    Resize(24, 120);
+    auto opts = "set-option -t " + session
+        + " window-size largest\n";
+    auto r2 = ::write(write_fd_,
+        opts.data(), opts.size());
+    (void)r2;
     // Reader thread: parse control mode output.
     reader_ = std::thread([this] {
       char buf[8192];
@@ -379,7 +387,9 @@ class TmuxBridge {
               unsigned short cols) {
     if (!running_ || write_fd_ < 0) return;
     auto cmd = std::format(
-        "refresh-client -C {},{}\n", cols, rows);
+        "refresh-client -C {},{}\n"
+        "resize-window -t {} -x {} -y {}\n",
+        cols, rows, session_, cols, rows);
     auto r = ::write(write_fd_, cmd.data(), cmd.size());
     (void)r;
   }
