@@ -2,7 +2,14 @@
    draggable resize handle between them.
    mngmt tab runs takt-cli. Workspace tabs run claude
    in the workspace directory via tmux. #}
-<script>document.querySelector('.app-main').classList.add('app-viewport');</script>
+<script>
+document.querySelector('.app-main').classList.add('app-viewport');
+// Disconnect htmx event stream — OOB swaps from the
+// poller conflict with the billboard layout and can
+// trigger page reloads.
+var evtWs = document.querySelector('[ws-connect]');
+if (evtWs) evtWs.removeAttribute('ws-connect');
+</script>
 
 <div class="takt-split" id="takt-split" hx-boost="false">
   <div class="takt-top" id="takt-top">
@@ -256,28 +263,29 @@
     return v || fb;
   }
 
+  // Kitty palette — matches the operator's terminal.
   var palette = {
-    background: cssVar('--einheit-bg', '#101010'),
-    foreground: cssVar('--einheit-fg', '#e0e0e0'),
-    cursor: cssVar('--einheit-accent', '#bb86fc'),
-    cursorAccent: cssVar('--einheit-bg', '#101010'),
-    selectionBackground: cssVar('--einheit-bg2', '#283238'),
-    black: cssVar('--einheit-bg2', '#283238'),
-    red: cssVar('--einheit-bad', '#cf6679'),
-    green: cssVar('--einheit-good', '#03dac5'),
-    yellow: cssVar('--einheit-warn', '#ffb74d'),
-    blue: cssVar('--einheit-info', '#82aaff'),
-    magenta: cssVar('--einheit-accent', '#bb86fc'),
-    cyan: cssVar('--einheit-info', '#82aaff'),
-    white: cssVar('--einheit-fg', '#e0e0e0'),
-    brightBlack: cssVar('--einheit-fg3', '#7a8b94'),
-    brightRed: cssVar('--einheit-bad', '#cf6679'),
-    brightGreen: cssVar('--einheit-good', '#03dac5'),
-    brightYellow: cssVar('--einheit-warn', '#ffb74d'),
-    brightBlue: cssVar('--einheit-info', '#82aaff'),
-    brightMagenta: cssVar('--einheit-accent', '#bb86fc'),
-    brightCyan: cssVar('--einheit-info', '#82aaff'),
-    brightWhite: cssVar('--einheit-fg', '#e0e0e0'),
+    background: '#101010',
+    foreground: '#FDFCFC',
+    cursor: '#FDFCFC',
+    cursorAccent: '#101010',
+    selectionBackground: '#364050',
+    black:   '#000000',
+    red:     '#ff605a',
+    green:   '#b1e869',
+    yellow:  '#ead89c',
+    blue:    '#5da9f6',
+    magenta: '#e86aff',
+    cyan:    '#82fff6',
+    white:   '#DA8B3D',
+    brightBlack:   '#DA703E',
+    brightRed:     '#f58b7f',
+    brightGreen:   '#99DA3D',
+    brightYellow:  '#eee5b2',
+    brightBlue:    '#a5c7ff',
+    brightMagenta: '#ddaaff',
+    brightCyan:    '#b6fff9',
+    brightWhite:   '#fefffe',
   };
 
   var tabs = {};
@@ -341,15 +349,19 @@
     });
     ws.addEventListener('close', function(ev) {
       clearInterval(pingInterval);
-      console.log('WS close', wsPath, 'code:', ev.code,
-          'reason:', ev.reason, 'clean:', ev.wasClean);
-      var overlay = document.createElement('div');
-      overlay.className = 'takt-recon-overlay';
-      overlay.innerHTML =
-        '<button class="takt-recon-btn"'
-        + ' onclick="location.reload()">'
-        + 'reconnect</button>';
-      pane.appendChild(overlay);
+      // Show reconnect overlay on the terminal host,
+      // not the pane (which might be hidden).
+      var host = document.getElementById(
+          'takt-term-host');
+      if (!host.querySelector('.takt-recon-overlay')) {
+        var overlay = document.createElement('div');
+        overlay.className = 'takt-recon-overlay';
+        overlay.innerHTML =
+          '<button class="takt-recon-btn"'
+          + ' onclick="location.reload()">'
+          + 'reconnect</button>';
+        host.appendChild(overlay);
+      }
     });
     // Keep-alive ping every 30s to prevent timeout.
     var pingInterval = setInterval(function() {

@@ -269,7 +269,9 @@ class TmuxBridge {
     }
     auto create = "tmux has-session -t " + session
         + " 2>/dev/null || tmux new-session -d"
-        + env_flags + " -s " + session
+        + env_flags
+        + " -e TERM=xterm-256color"
+        + " -s " + session
         + " -c " + cwd + " " + cmd;
     ::system(create.c_str());
     // Open pipes for control mode.
@@ -302,7 +304,14 @@ class TmuxBridge {
     // largest client's size for this session.
     Resize(24, 120);
     auto opts = "set-option -t " + session
-        + " window-size largest\n";
+        + " window-size largest\n"
+        "set-option -g default-terminal"
+        " xterm-256color\n"
+        "set-option -sa terminal-overrides"
+        " ',xterm-256color:Tc:RGB'\n"
+        "set-option -sa terminal-features"
+        " ',xterm-256color:256:RGB'\n"
+        "set-option -g allow-passthrough on\n";
     auto r2 = ::write(write_fd_,
         opts.data(), opts.size());
     (void)r2;
@@ -334,10 +343,10 @@ class TmuxBridge {
             ParseLine(line);
           }
         }
-        // Flush batched output every 50ms.
+        // Flush batched output every 100ms.
         auto now = std::chrono::steady_clock::now();
         if (now - last_flush >=
-            std::chrono::milliseconds(50)) {
+            std::chrono::milliseconds(100)) {
           FlushPending();
           last_flush = now;
         }
@@ -765,25 +774,9 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
 
     StartPoller(events);
 
-    // Bind WebSocket topics for live updates.
-    events->Bind(ui::TopicBinding{
-        .topic = "takt.runs",
-        .fragment = "takt/runs_table",
-        .swap_target = "runs-table",
-        .swap_strategy = "outerHTML",
-    });
-    events->Bind(ui::TopicBinding{
-        .topic = "takt.dashboard",
-        .fragment = "takt/dashboard_summary",
-        .swap_target = "dashboard-summary",
-        .swap_strategy = "outerHTML",
-    });
-    events->Bind(ui::TopicBinding{
-        .topic = "takt.agents",
-        .fragment = "takt/agents_table",
-        .swap_target = "agents-table",
-        .swap_strategy = "outerHTML",
-    });
+    // No htmx OOB swap bindings — the billboard polls
+    // the API directly and terminal WebSockets must not
+    // be interrupted by event-driven page swaps.
 
     // -- Home: dashboard + CLI split pane --
     CROW_ROUTE(app, "/")
