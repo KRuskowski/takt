@@ -1,81 +1,276 @@
-<div class="grid-2col">
-  <section class="card" id="dashboard-summary">
-    {% include "takt/dashboard_summary" %}
-  </section>
+{# Stadium billboard — compact, information-dense, clickable.
+   Agents can show/hide panels. Workspaces and runs are
+   clickable to open tabs or navigate. #}
 
-  <section class="card">
-    <h2 class="card-title">recent runs</h2>
-    <div class="card-body" id="runs-table">
-      {% include "takt/runs_table" %}
+<div class="bb" id="takt-bb" data-api="{{ takt_api_url }}">
+  <div class="bb-bar">
+    <div class="bb-metrics">
+      <span class="bb-metric">
+        <span class="bb-metric-val" id="bb-ws-count">{{ length(workspaces) }}</span>
+        <span class="bb-metric-label">workspaces</span>
+      </span>
+      <span class="bb-metric">
+        <span class="bb-metric-val" id="bb-target-count">{{ length(targets) }}</span>
+        <span class="bb-metric-label">targets</span>
+      </span>
+      <span class="bb-metric">
+        <span class="bb-metric-val bb-metric-live" id="bb-run-count">0</span>
+        <span class="bb-metric-label">active</span>
+      </span>
+      <span class="bb-metric">
+        <span class="bb-metric-val" id="bb-agent-count">{{ length(agents) }}</span>
+        <span class="bb-metric-label">agents</span>
+      </span>
     </div>
-  </section>
+    <div class="bb-views">
+      <button class="bb-view active" data-panel="workspaces"
+              onclick="bbToggle('workspaces')">workspaces</button>
+      <button class="bb-view" data-panel="runs"
+              onclick="bbToggle('runs')">runs</button>
+      <button class="bb-view" data-panel="targets"
+              onclick="bbToggle('targets')">targets</button>
+    </div>
+  </div>
 
-  <section class="card">
-    <h2 class="card-title">workspaces</h2>
-    <div class="card-body">
-{% if length(workspaces) > 0 %}
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>name</th>
-            <th>branch</th>
-            <th class="right">repos</th>
-            <th class="right"></th>
-          </tr>
-        </thead>
-        <tbody>
+  <div class="bb-panel" id="bb-panel-workspaces">
+    <div class="bb-chips" id="bb-ws-chips">
 {% for ws in workspaces %}
-          <tr>
-            <td><a href="/workspaces/{{ ws.name }}">{{ ws.name }}</a></td>
-            <td>{{ ws.branch }}</td>
-            <td class="right">{{ ws.repo_count }}</td>
-            <td class="right">
-              <button class="btn btn-ghost btn-sm"
-                hx-post="/runs/trigger"
-                hx-vals='{"workspace":"{{ ws.name }}"}'
-                hx-swap="none">run</button>
-            </td>
-          </tr>
+      <button class="bb-chip"
+              onclick="taktShell.openWorkspace('{{ ws.name }}')"
+              title="{{ ws.branch }} · {{ ws.repo_count }} repos">
+        <span class="bb-chip-name">{{ ws.name }}</span>
+        <span class="bb-chip-detail">{{ ws.repo_count }}</span>
+      </button>
 {% endfor %}
-        </tbody>
-      </table>
-{% else %}
-      <div class="empty">no workspaces</div>
+{% if length(workspaces) == 0 %}
+      <span class="bb-empty">no workspaces</span>
 {% endif %}
     </div>
-  </section>
+  </div>
 
-  <section class="card">
-    <h2 class="card-title">targets</h2>
-    <div class="card-body">
-{% if length(targets) > 0 %}
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>name</th>
-            <th>type</th>
-            <th>claimed by</th>
-          </tr>
-        </thead>
-        <tbody>
-{% for t in targets %}
-          <tr>
-            <td>{{ t.name }}</td>
-            <td>{{ t.type }}</td>
-            <td>
-{% if t.claimed_by != "" %}
-              <span class="badge badge-warn">{{ t.claimed_by }}</span>
-{% else %}
-              <span class="badge badge-good">free</span>
-{% endif %}
-            </td>
-          </tr>
+  <div class="bb-panel" id="bb-panel-runs" style="display:none">
+    <div class="bb-run-list" id="bb-run-list">
+{% for r in runs %}
+      <div class="bb-run">
+        <span class="bb-run-id">#{{ r.id }}</span>
+        <span class="bb-run-ws">{{ r.workspace }}</span>
+        <span class="bb-badge bb-badge-{{ r.status_semantic }}">{{ r.status }}</span>
+      </div>
 {% endfor %}
-        </tbody>
-      </table>
-{% else %}
-      <div class="empty">no targets</div>
+{% if length(runs) == 0 %}
+      <span class="bb-empty">no runs</span>
 {% endif %}
     </div>
-  </section>
+  </div>
+
+  <div class="bb-panel" id="bb-panel-targets" style="display:none">
+    <div class="bb-chips" id="bb-target-chips">
+{% for t in targets %}
+      <span class="bb-chip bb-chip-target">
+        <span class="bb-chip-name">{{ t.name }}</span>
+{% if t.claimed_by != "" %}
+        <span class="bb-chip-detail bb-chip-claimed">{{ t.claimed_by }}</span>
+{% else %}
+        <span class="bb-chip-detail bb-chip-free">free</span>
+{% endif %}
+      </span>
+{% endfor %}
+    </div>
+  </div>
 </div>
+
+<style>
+  .bb {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-size: 0.82rem;
+  }
+  .bb-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--einheit-border, #333);
+    flex-shrink: 0;
+  }
+  .bb-metrics {
+    display: flex;
+    gap: 16px;
+  }
+  .bb-metric {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+  .bb-metric-val {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--einheit-fg, #e0e0e0);
+    font-variant-numeric: tabular-nums;
+  }
+  .bb-metric-live {
+    color: var(--einheit-good, #03dac5);
+  }
+  .bb-metric-label {
+    color: var(--einheit-fg3, #555);
+    font-size: 0.72rem;
+  }
+  .bb-views {
+    display: flex;
+    gap: 2px;
+  }
+  .bb-view {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--einheit-fg3, #555);
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.12s;
+  }
+  .bb-view.active {
+    color: var(--einheit-fg, #e0e0e0);
+    border-color: var(--einheit-border, #333);
+    background: var(--einheit-bg2, #1e1e1e);
+  }
+  .bb-view:hover {
+    color: var(--einheit-fg, #e0e0e0);
+  }
+  .bb-panel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+  }
+  .bb-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .bb-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--einheit-bg2, #1e1e1e);
+    border: 1px solid var(--einheit-border, #333);
+    border-radius: 3px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.78rem;
+    color: var(--einheit-fg, #e0e0e0);
+    transition: all 0.12s;
+  }
+  .bb-chip:hover {
+    border-color: var(--einheit-accent, #bb86fc);
+    background: color-mix(in srgb,
+        var(--einheit-accent, #bb86fc) 8%,
+        var(--einheit-bg2, #1e1e1e));
+  }
+  .bb-chip-name {
+    font-weight: 500;
+  }
+  .bb-chip-detail {
+    font-size: 0.7rem;
+    color: var(--einheit-fg3, #555);
+  }
+  .bb-chip-claimed {
+    color: var(--einheit-warn, #ffb74d);
+  }
+  .bb-chip-free {
+    color: var(--einheit-good, #03dac5);
+  }
+  .bb-chip-target {
+    cursor: default;
+  }
+  .bb-run-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .bb-run {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+  }
+  .bb-run-id {
+    color: var(--einheit-fg3, #555);
+    font-variant-numeric: tabular-nums;
+    min-width: 36px;
+  }
+  .bb-run-ws {
+    color: var(--einheit-fg, #e0e0e0);
+    flex: 1;
+  }
+  .bb-badge {
+    font-size: 0.7rem;
+    padding: 1px 6px;
+    border-radius: 2px;
+    font-weight: 500;
+  }
+  .bb-badge-good {
+    color: var(--einheit-good, #03dac5);
+    background: color-mix(in srgb,
+        var(--einheit-good, #03dac5) 12%, transparent);
+  }
+  .bb-badge-bad {
+    color: var(--einheit-bad, #cf6679);
+    background: color-mix(in srgb,
+        var(--einheit-bad, #cf6679) 12%, transparent);
+  }
+  .bb-badge-warn {
+    color: var(--einheit-warn, #ffb74d);
+    background: color-mix(in srgb,
+        var(--einheit-warn, #ffb74d) 12%, transparent);
+  }
+  .bb-badge-info {
+    color: var(--einheit-info, #82aaff);
+    background: color-mix(in srgb,
+        var(--einheit-info, #82aaff) 12%, transparent);
+  }
+  .bb-empty {
+    color: var(--einheit-fg3, #555);
+    font-style: italic;
+  }
+</style>
+
+<script>
+(function() {
+  var panels = ['workspaces', 'runs', 'targets'];
+  var buttons = document.querySelectorAll('.bb-view');
+
+  window.bbToggle = function(name) {
+    panels.forEach(function(p) {
+      var el = document.getElementById('bb-panel-' + p);
+      if (el) el.style.display = p === name ? '' : 'none';
+    });
+    buttons.forEach(function(b) {
+      b.classList.toggle('active',
+          b.dataset.panel === name);
+    });
+  };
+
+  // Poll for live metrics.
+  var api = document.getElementById('takt-bb')
+      .dataset.api;
+  function refresh() {
+    fetch(api + '/api/runs?limit=10')
+        .then(function(r) { return r.json(); })
+        .then(function(r) {
+          var runs = (r.data || {}).runs || r.data || [];
+          var active = 0;
+          runs.forEach(function(run) {
+            if (run.status === 'running') active++;
+          });
+          var el = document.getElementById('bb-run-count');
+          if (el) el.textContent = active;
+        }).catch(function() {});
+  }
+  refresh();
+  setInterval(refresh, 10000);
+})();
+</script>
