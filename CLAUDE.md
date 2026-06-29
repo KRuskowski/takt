@@ -65,7 +65,7 @@ sudo systemctl status takt-socat
 
 ## MCP Server (`bin/takt_mcp.py`)
 
-FastMCP server wrapping the takt REST API. Configured in `.mcp.json` — available to all Claude sessions in this project. Exposes workspace, target, pipeline, run, template, context, repo, agent, and account tools.
+FastMCP server wrapping the takt REST API. Installed at user scope via `claude mcp add -s user takt <venv-python> bin/takt_mcp.py` (stored in `~/.claude.json`) — available to all Claude sessions in every project, no per-project approval. Exposes workspace, target, pipeline, run, template, context, repo, agent, and account tools.
 
 ## Pipeline Watcher (`bin/pipeline_watch.py`)
 
