@@ -9,6 +9,7 @@ All notable changes to takt are recorded here. The format is based on [Keep a Ch
 - The takt tools now come with clearer, more detailed descriptions, so the assistant understands what each one does and when to use it (managing workspaces, claiming build/test machines, running pipelines, reading run results, and more).
 
 ### Fixed
+- Fixed a crash that took down the web UI when clicking **Reconnect** on a workspace's management tab. If a workspace terminal had ended on its own, reconnecting tore down the whole server (and every other open tab with it). The terminal connection is now safely cleaned up and restarted instead.
 - Build leftovers and cache folders are no longer tracked, keeping the project tidy.
 
 ## Earlier work

@@ -259,6 +259,20 @@ class TmuxBridge {
              const std::map<std::string, std::string>
                  &env = {}) -> bool {
     if (running_) return true;
+    // A previous run may have exited on its own (tmux
+    // died, pipe hangup) which sets running_ = false but
+    // leaves the reader thread joinable and the fds/child
+    // open. Reap that stale state first: move-assigning
+    // onto a still-joinable std::thread (below) would call
+    // std::terminate. This path is hit on reconnect.
+    if (reader_.joinable()) reader_.join();
+    if (write_fd_ >= 0) { ::close(write_fd_); write_fd_ = -1; }
+    if (read_fd_ >= 0) { ::close(read_fd_); read_fd_ = -1; }
+    if (child_ > 0) {
+      ::kill(child_, SIGTERM);
+      ::waitpid(child_, nullptr, 0);
+      child_ = -1;
+    }
     session_ = session;
     // Create detached session if it doesn't exist.
     // Use -e to pass env vars into the session so
