@@ -210,14 +210,25 @@ auto main(int argc, char **argv) -> int {
             crow_app, engine, ecfg2); !r) {
       std::cerr << std::format("editor adapter: {}\n",
                                r.error().message);
+      adapter.reset();
       return 1;
     }
     einheit::ui::SetLayoutEditorPath("/edit");
   }
 
-  if (auto r = einheit::ui::Run(crow_app, scfg); !r) {
+  auto run_result = einheit::ui::Run(crow_app, scfg);
+  // The adapter runs a background poller that publishes into
+  // `events`. Destroy the adapter here — while `events` and
+  // `crow_app` are still alive — so its poller thread is
+  // stopped and joined before those objects unwind at scope
+  // exit. `adapter` is declared before `events`, so without
+  // this it would be destroyed last, and the poller would
+  // race the EventStream's destruction and segfault locking a
+  // freed mutex on shutdown.
+  adapter.reset();
+  if (!run_result) {
     std::cerr << std::format("server: {}\n",
-                             r.error().message);
+                             run_result.error().message);
     return 1;
   }
   return 0;
