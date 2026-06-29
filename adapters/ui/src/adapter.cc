@@ -733,6 +733,8 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
         claude_config_dir_ =
             fs::weakly_canonical(path).string();
       }
+      spdlog::info("claude_config_dir = {}",
+          claude_config_dir_);
     }
   }
 
@@ -1560,9 +1562,6 @@ class TaktUiAdapter final : public ui::ProductUiAdapter {
                     + name;
                 std::map<std::string, std::string>
                     env;
-                if (!claude_config_dir_.empty())
-                  env["CLAUDE_CONFIG_DIR"] =
-                      claude_config_dir_;
                 bridge->Start(session, cwd,
                     "claude"
                     " --dangerously-skip-permissions",

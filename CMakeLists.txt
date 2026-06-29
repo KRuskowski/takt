@@ -12,6 +12,16 @@ set(EINHEIT_UI_BUILD_ADAPTERS OFF CACHE BOOL "" FORCE)
 set(EINHEIT_UI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
 include(FetchContent)
+
+FetchContent_Declare(inja
+  GIT_REPOSITORY https://github.com/pantor/inja.git
+  GIT_TAG v3.5.0
+  GIT_SHALLOW TRUE
+  PATCH_COMMAND ${CMAKE_COMMAND} -E env
+    sed -i "s/install(TARGETS nlohmann_json EXPORT injaTargets)/# patched out/" CMakeLists.txt
+  OVERRIDE_FIND_PACKAGE
+)
+
 FetchContent_Declare(einheit-ui
   GIT_REPOSITORY /home/karl/dev/root/ui.git
   GIT_TAG master

@@ -9,7 +9,7 @@ ExecStart=%h/dev/takt/build/takt-ui \
   --editor
 Restart=on-failure
 RestartSec=5
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.nvm/versions/node/v24.11.1/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h/dev/takt
 
 [Install]

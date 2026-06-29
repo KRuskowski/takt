@@ -134,15 +134,6 @@ auto main(int argc, char **argv) -> int {
   s.caller.user = "operator";
   s.caller.role = RoleGate::AdminOnly;
 
-  s.pre_dispatch = [](shell::Shell &,
-      const ParsedCommand &parsed) -> bool {
-    if (parsed.spec->path == "agent") {
-      RunAgent();
-      return true;
-    }
-    return false;
-  };
-
   const auto leftovers = app.remaining();
   if (!leftovers.empty()) {
     if (leftovers[0] == "agent") {

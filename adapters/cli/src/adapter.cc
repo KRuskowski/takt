@@ -13,6 +13,9 @@
 #include <string>
 #include <vector>
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include "einheit/cli/adapter.h"
 #include "einheit/cli/command_tree.h"
 #include "einheit/cli/protocol/envelope.h"
@@ -192,7 +195,7 @@ class TaktAdapter : public ProductAdapter {
     {
       CommandSpec c;
       c.path = "agent";
-      c.wire_command = "";
+      c.wire_command = "agent";
       c.help = "Enter the takt AI agent REPL";
       out.push_back(std::move(c));
     }
@@ -236,13 +239,28 @@ class TaktAdapter : public ProductAdapter {
                       const Response &response,
                       Renderer &renderer) const
       -> void override {
-    using cli::render::AddColumn;
-    using cli::render::AddRow;
-    using cli::render::Align;
-    using cli::render::Cell;
-    using cli::render::Priority;
-    using cli::render::RenderFormatted;
-    using cli::render::Semantic;
+    if (cmd.path == "agent") {
+      namespace fs = std::filesystem;
+      auto self = fs::read_symlink("/proc/self/exe");
+      auto takt_dir = self.parent_path()
+          .parent_path().string();
+      auto venv_py = takt_dir + "/.venv/bin/python3";
+      auto script = takt_dir + "/bin/takt_agent.py";
+      pid_t pid = ::fork();
+      if (pid < 0) {
+        renderer.Out() << "fork failed\n";
+        return;
+      }
+      if (pid == 0) {
+        ::chdir(takt_dir.c_str());
+        ::execlp(venv_py.c_str(), "python3",
+                 script.c_str(), nullptr);
+        ::_exit(127);
+      }
+      int st = 0;
+      ::waitpid(pid, &st, 0);
+      return;
+    }
 
     if (response.error) {
       cli::render::RenderError(
