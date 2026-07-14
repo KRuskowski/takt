@@ -68,6 +68,13 @@ class CliPty {
              const std::map<std::string, std::string>
                  &env = {}) -> bool {
     if (running_) return true;
+    if (reader_.joinable()) reader_.join();
+    if (master_ >= 0) { ::close(master_); master_ = -1; }
+    if (child_ > 0) {
+      ::kill(child_, SIGTERM);
+      ::waitpid(child_, nullptr, 0);
+      child_ = -1;
+    }
     int master = -1;
     struct winsize ws{};
     ws.ws_row = 24;
