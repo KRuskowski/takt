@@ -252,6 +252,14 @@ class TaktAdapter : public ProductAdapter {
         return;
       }
       if (pid == 0) {
+        // Close inherited fds (ZMQ sockets, etc.) so
+        // the agent's claude subprocess starts clean.
+        int max_fd = static_cast<int>(
+            ::sysconf(_SC_OPEN_MAX));
+        if (max_fd < 0) max_fd = 1024;
+        for (int fd = STDERR_FILENO + 1;
+             fd < max_fd; ++fd)
+          ::close(fd);
         ::chdir(takt_dir.c_str());
         ::execlp(venv_py.c_str(), "python3",
                  script.c_str(), nullptr);
