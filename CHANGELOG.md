@@ -11,6 +11,7 @@ All notable changes to takt are recorded here. The format is based on [Keep a Ch
 ### Fixed
 - Fixed a crash that took down the web UI when clicking **Reconnect** on a workspace's management tab. If a workspace terminal had ended on its own, reconnecting tore down the whole server (and every other open tab with it). The terminal connection is now safely cleaned up and restarted instead.
 - Fixed a crash during web UI shutdown/restart. The background status poller could outlive the event channel it published to, crashing the server as it stopped. Shutdown now stops the poller first, so restarts are clean.
+- Fixed the CLI and workspace terminals failing to connect in the web UI (immediate "reconnect" button). Spawned child processes (takt-cli, tmux) were inheriting the web server's listen socket, stealing incoming browser connections. Child processes now close inherited file descriptors before launching.
 - Build leftovers and cache folders are no longer tracked, keeping the project tidy.
 
 ## Earlier work

@@ -39,6 +39,18 @@
 namespace einheit::adapters::takt {
 namespace {
 
+// Close all fds above `keep` in a forked child so the
+// Crow listen socket (and anything else) isn't leaked to
+// spawned processes. Without this, takt-cli and tmux
+// inherit the port-7542 listener and steal connections.
+void CloseInheritedFds(int keep = STDERR_FILENO) {
+  int max_fd = static_cast<int>(
+      ::sysconf(_SC_OPEN_MAX));
+  if (max_fd < 0) max_fd = 1024;
+  for (int fd = keep + 1; fd < max_fd; ++fd)
+    ::close(fd);
+}
+
 /// Persistent PTY session with scrollback ring buffer.
 /// Survives WebSocket disconnects — the child stays alive
 /// and output is buffered. On reconnect the scrollback is
@@ -64,6 +76,7 @@ class CliPty {
         &master, nullptr, nullptr, &ws);
     if (pid < 0) return false;
     if (pid == 0) {
+      CloseInheritedFds();
       if (!cwd.empty()) ::chdir(cwd.c_str());
       ::setenv("TERM", "xterm-256color", 1);
       ::setenv("LANG", "C.UTF-8", 1);
@@ -287,7 +300,17 @@ class TmuxBridge {
         + " -e TERM=xterm-256color"
         + " -s " + session
         + " -c " + cwd + " " + cmd;
-    ::system(create.c_str());
+    // Fork instead of system() so we can close inherited
+    // fds — otherwise the tmux server inherits Crow's
+    // listen socket and steals browser connections.
+    pid_t setup = ::fork();
+    if (setup == 0) {
+      CloseInheritedFds();
+      ::execlp("/bin/sh", "sh", "-c",
+               create.c_str(), nullptr);
+      ::_exit(127);
+    }
+    if (setup > 0) ::waitpid(setup, nullptr, 0);
     // Open pipes for control mode.
     int to_tmux[2], from_tmux[2];
     if (::pipe(to_tmux) < 0 ||
@@ -299,10 +322,7 @@ class TmuxBridge {
       ::dup2(to_tmux[0], STDIN_FILENO);
       ::dup2(from_tmux[1], STDOUT_FILENO);
       ::dup2(from_tmux[1], STDERR_FILENO);
-      ::close(to_tmux[0]);
-      ::close(to_tmux[1]);
-      ::close(from_tmux[0]);
-      ::close(from_tmux[1]);
+      CloseInheritedFds();
       ::setenv("TERM", "xterm-256color", 1);
       ::execlp("tmux", "tmux", "-C", "attach",
                "-t", session.c_str(), nullptr);
