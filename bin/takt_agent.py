@@ -82,7 +82,6 @@ async def run_agent_async():
   label = agent_cfg["label"]
   claude_home = agent_cfg["claude_home"]
 
-  # Point claude-code-sdk at the right .claude dir.
   os.environ["CLAUDE_CONFIG_DIR"] = claude_home
 
   opts = ClaudeCodeOptions(
@@ -169,7 +168,8 @@ async def run_agent_async():
       spinner_task.cancel()
       if not got_text:
         sys.stdout.write(
-          "\r\x1b[2K\x1b[38;5;243m(no response)\x1b[0m\n"
+          "\r\x1b[2K\x1b[38;5;243m(no response)"
+          "\x1b[0m\n"
         )
       if turn_cost > 0:
         db.record_agent_usage(

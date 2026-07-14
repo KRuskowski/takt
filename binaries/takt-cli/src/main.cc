@@ -47,7 +47,7 @@ auto RunAgent() -> int {
          fd < max_fd; ++fd)
       ::close(fd);
     ::chdir(takt_dir.c_str());
-    ::execlp(venv_py.c_str(), "python3",
+    ::execlp(venv_py.c_str(), venv_py.c_str(),
              script.c_str(), nullptr);
     ::_exit(127);
   }
