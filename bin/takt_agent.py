@@ -186,16 +186,10 @@ async def run_agent_async():
     except Exception as e:
       spinner_active = False
       spinner_task.cancel()
-      err = str(e)
-      if "Unknown message type" in err:
-        if got_text:
-          sys.stdout.write("\n")
-          sys.stdout.flush()
-      else:
-        sys.stdout.write(
-          f"\x1b[31merror: {err}\x1b[0m\n"
-        )
-        sys.stdout.flush()
+      sys.stdout.write(
+        f"\x1b[31merror: {e}\x1b[0m\n"
+      )
+      sys.stdout.flush()
 
 
 def run_agent():

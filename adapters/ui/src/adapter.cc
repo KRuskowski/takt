@@ -205,7 +205,10 @@ class CliPty {
       ssize_t n = ::write(master_, d.data() + off,
                           d.size() - off);
       if (n < 0) {
-        if (errno == EINTR) continue;
+        if (errno == EINTR || errno == EAGAIN) {
+          ::usleep(1000);
+          continue;
+        }
         return;
       }
       off += n;
