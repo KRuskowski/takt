@@ -264,10 +264,15 @@ async def handle_list_workspaces(request):
 async def handle_create_workspace(request):
   """POST /api/workspaces — create workspace."""
   body = await request.json()
-  return await _call(request, "create_workspace", {
+  payload = {
     "name": body["name"],
     "repos": body["repos"],
-  })
+  }
+  if body.get("base_branch"):
+    payload["base_branch"] = body["base_branch"]
+  return await _call(
+    request, "create_workspace", payload,
+  )
 
 
 async def handle_delete_workspace(request):

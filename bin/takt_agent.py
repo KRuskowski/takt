@@ -37,6 +37,13 @@ directories. Use them to execute operations.
 Be concise. When listing items, summarize counts and key \
 details rather than dumping raw output.
 
+## Workspace Naming
+
+Workspace names MUST include the project name as a prefix \
+(e.g. `relay-appliance-cli`, not just `appliance-cli`). \
+This prevents confusion when multiple projects have \
+similarly named branches.
+
 ## Panel Control
 
 Above the terminal are toggleable monitoring panels. You \

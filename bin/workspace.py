@@ -28,8 +28,11 @@ from lib.workspace_ops import (
 
 def cmd_create(args):
   """Create a new workspace with local clones."""
+  base = args.base or None
   try:
-    ws_dir = create_workspace(args.name, args.repos)
+    ws_dir = create_workspace(
+      args.name, args.repos, base_branch=base,
+    )
   except FileExistsError as e:
     print(f"Error: {e}")
     sys.exit(1)
@@ -40,6 +43,8 @@ def cmd_create(args):
     print(f"Error cloning: {e}")
     sys.exit(1)
   print(f"Workspace created: {ws_dir}")
+  if base:
+    print(f"Base branch: {base}")
   print(f"Branch: {args.name}")
 
 
@@ -183,6 +188,10 @@ def main():
   )
   p_create.add_argument(
     "repos", nargs="+", help="Repos to include.",
+  )
+  p_create.add_argument(
+    "--base", default="",
+    help="Branch to cut from (default: repo default).",
   )
 
   # list

@@ -177,7 +177,7 @@ class TaktService:
     self._http_runner = web.AppRunner(self._http_app)
     await self._http_runner.setup()
     site = web.TCPSite(
-      self._http_runner, "0.0.0.0", self._api_port,
+      self._http_runner, "127.0.0.1", self._api_port,
     )
     await site.start()
     log.info(
@@ -607,18 +607,24 @@ class TaktService:
     run in background."""
     name = payload["name"]
     repos = payload["repos"]
+    base_branch = payload.get("base_branch")
     asyncio.ensure_future(
-      self._bg_create_workspace(name, repos)
+      self._bg_create_workspace(
+        name, repos, base_branch,
+      )
     )
     return {"workspace": name}
 
-  async def _bg_create_workspace(self, name, repos):
+  async def _bg_create_workspace(self, name, repos,
+                                 base_branch=None):
     """Background task for workspace creation."""
     loop = asyncio.get_event_loop()
     try:
       await loop.run_in_executor(
         None,
-        lambda: create_workspace(name, repos),
+        lambda: create_workspace(
+          name, repos, base_branch,
+        ),
       )
       msg = f"Created workspace '{name}'."
       await self._publish(

@@ -100,18 +100,22 @@ def workspace_status(name: str) -> str:
 
 @mcp.tool()
 def create_workspace(
-  name: str, repos: list[str],
+  name: str,
+  repos: list[str],
+  base_branch: str = "",
 ) -> str:
-  """Create a new workspace by cloning repos from ~/dev/root/ into ~/dev/workspaces/<name>/. Each clone gets a branch named after the workspace. Use list_repos to see available repos.
+  """Create a new workspace by cloning repos from ~/dev/root/ into ~/dev/workspaces/<name>/. Each clone gets a branch named after the workspace cut from base_branch. Use list_repos to see available repos. Workspace names MUST include the project name as a prefix (e.g. relay-appliance-cli, not just appliance-cli).
 
   Args:
     name: Workspace name (becomes the branch name).
     repos: List of repo names to clone.
+    base_branch: Branch to cut from. If empty, uses each repo's default branch.
   """
+  payload = {"name": name, "repos": repos}
+  if base_branch:
+    payload["base_branch"] = base_branch
   return json.dumps(
-    _api("POST", "/api/workspaces", {
-      "name": name, "repos": repos,
-    })
+    _api("POST", "/api/workspaces", payload)
   )
 
 

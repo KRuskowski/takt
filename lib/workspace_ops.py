@@ -151,12 +151,14 @@ def _resolve_repo_path(repo_name, repos_config):
   return cfg.get("path", repo_name)
 
 
-def create_workspace(name, repos):
+def create_workspace(name, repos, base_branch=None):
   """Create a new workspace with local clones.
 
   Args:
     name: Workspace (= branch) name.
     repos: List of repo names (keys from repos.yaml).
+    base_branch: Branch to cut from. If None, uses each
+      repo's default branch (from repos.yaml or detected).
 
   Returns:
     Path to the created workspace.
@@ -171,7 +173,7 @@ def create_workspace(name, repos):
     raise FileExistsError(
       f"Workspace '{name}' already exists at {ws_dir}"
     )
-  repos_config = load_repos_config().get("repos", {})
+  repos_config = load_repos_config()
   invalid = [
     r for r in repos
     if not validate_repo(
@@ -191,6 +193,13 @@ def create_workspace(name, repos):
       source = get_repo_path(disk_path)
       dest = ws_dir / repo_name
       clone_local(source, dest)
+      start = base_branch or repos_config.get(
+        repo_name, {},
+      ).get(
+        "default_branch",
+        get_default_branch(source),
+      )
+      run_git(["checkout", start], cwd=dest)
       create_branch(dest, name)
       init_submodules(dest)
       # Set git identity per-repo so agents commit
@@ -202,10 +211,6 @@ def create_workspace(name, repos):
       run_git(
         ["config", "user.email",
          "karl.ruskowski@optris.de"],
-        cwd=dest,
-      )
-      run_git(
-        ["config", "commit.gpgsign", "false"],
         cwd=dest,
       )
   except GitError:
@@ -291,7 +296,12 @@ def _build_git_rules(name):
     f"- Commit as: Karl Ruskowski "
     f"<karl.ruskowski@optris.de>\n"
     f"- Do NOT co-author commits\n"
-    f"- Do NOT sign commits (no GPG key)\n"
+    f"- SIGN every commit. GPG signing is configured "
+    f"globally.\n"
+    f"- If signing fails, STOP and ask Karl to run "
+    f"`unlock-keys`.\n"
+    f"  Never retry in a loop — each attempt pops a "
+    f"pinentry dialog.\n"
     f"- Push to origin only "
     f"(origin = root repo at ~/dev/root/<repo>)\n"
     f"- NEVER push to GitHub. The operator handles "
@@ -310,10 +320,13 @@ def _build_section(repos):
   Returns:
     Build instructions string.
   """
+  cmake_repos = (
+    "OTC.SDK", "OTC.Relay", "OTC.SDK.Server",
+    "OTC.SDK.View",
+  )
   sections = []
   for repo in repos:
-    if repo in ("OTC.Relay", "OTC.SDK.Server",
-                "OTC.SDK.View"):
+    if repo in cmake_repos:
       sections.append(
         f"### {repo}\n"
         f"```bash\n"
@@ -324,11 +337,6 @@ def _build_section(repos):
         f"- Do NOT install deps manually — "
         f"FetchContent handles C++ deps\n"
         f"- If a tool is missing, report it and stop"
-      )
-    elif repo == "OTC.SDK":
-      sections.append(
-        f"### {repo}\n"
-        f"Proprietary SDK — prebuilt, do not build."
       )
   if not sections:
     return "Follow each repo's CLAUDE.md for build steps."
@@ -395,9 +403,12 @@ def _generate_workspace_claude_md(ws_dir, name, repos,
   rows = []
   for repo_name in repos:
     cfg = repos_config.get(repo_name, {})
-    repo_path = ws_dir / repo_name
+    root_path = get_repo_path(
+      _resolve_repo_path(repo_name, repos_config),
+    )
     default_br = cfg.get(
-      "default_branch", get_default_branch(repo_path),
+      "default_branch",
+      get_default_branch(root_path),
     )
     push_order = cfg.get("push_order", "?")
     rows.append(
