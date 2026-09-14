@@ -44,6 +44,29 @@ Workspace names MUST include the project name as a prefix \
 This prevents confusion when multiple projects have \
 similarly named branches.
 
+## Issue Ledger
+
+takt tracks which issues are assigned to which workspaces \
+so parallel agents don't duplicate work. Before starting \
+work on an issue, check the ledger and claim it:
+
+  .venv/bin/python -c "from lib import db; db.migrate(); \\
+    print(db.assign_issue('github:Optris/OTC.SDK', '42', \\
+    'sdk-fix-foo', summary='Fix widget crash'))"
+
+Query what's in progress:
+  .venv/bin/python -c "from lib import db; db.migrate(); \\
+    import json; print(json.dumps( \\
+    db.list_issues(status='in_progress'), indent=2))"
+
+Update status as work progresses:
+  .venv/bin/python -c "from lib import db; db.migrate(); \\
+    db.update_issue_status('github:Optris/OTC.SDK', \\
+    '42', 'in_progress')"
+
+Status lifecycle: open -> assigned -> in_progress -> \
+review -> merged -> closed. Also: blocked, wont_fix.
+
 ## Panel Control
 
 Above the terminal are toggleable monitoring panels. You \

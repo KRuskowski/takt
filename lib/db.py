@@ -164,9 +164,35 @@ CREATE TABLE IF NOT EXISTS agent_usage (
   cost_usd REAL NOT NULL DEFAULT 0.0,
   turns INTEGER NOT NULL DEFAULT 0,
   ts TEXT NOT NULL DEFAULT
-    (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))
+    (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS issues (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tracker TEXT NOT NULL,
+  issue_id TEXT NOT NULL,
+  workspace TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  summary TEXT NOT NULL DEFAULT '',
+  assigned_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT
+    (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(tracker, issue_id)
 );
 """
+
+ISSUE_TRANSITIONS = {
+  "open": {"assigned", "wont_fix"},
+  "assigned": {"in_progress", "open", "wont_fix"},
+  "in_progress": {
+    "review", "open", "blocked", "wont_fix",
+  },
+  "blocked": {"in_progress", "open", "wont_fix"},
+  "review": {"merged", "in_progress"},
+  "merged": {"closed", "in_progress"},
+  "closed": {"open"},
+  "wont_fix": {"open"},
+}
 
 
 @contextmanager
@@ -1273,3 +1299,204 @@ def get_agent_usage_today(db_path=None):
       "GROUP BY account, model",
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# -- Issue ledger --
+
+def assign_issue(tracker, issue_id, workspace,
+                 summary="", db_path=None):
+  """Assign an issue to a workspace.
+
+  Atomic: fails if the issue is already assigned to a
+  different workspace (unless it's in a terminal state).
+
+  Args:
+    tracker: e.g. "github:Optris/OTC.SDK"
+    issue_id: e.g. "42"
+    workspace: Workspace name.
+    summary: One-line description.
+
+  Returns:
+    The issue row as a dict.
+
+  Raises:
+    ValueError: If already assigned elsewhere.
+  """
+  with _connect(db_path) as conn:
+    row = conn.execute(
+      "SELECT * FROM issues "
+      "WHERE tracker = ? AND issue_id = ?",
+      (tracker, issue_id),
+    ).fetchone()
+    if row:
+      r = dict(row)
+      if (r["workspace"] and
+          r["workspace"] != workspace and
+          r["status"] not in (
+            "closed", "merged", "wont_fix",
+          )):
+        raise ValueError(
+          f"{tracker}#{issue_id} already assigned "
+          f"to workspace '{r['workspace']}' "
+          f"(status: {r['status']})"
+        )
+      conn.execute(
+        "UPDATE issues "
+        "SET workspace = ?, status = 'assigned', "
+        "summary = CASE WHEN ? = '' THEN summary "
+        "ELSE ? END, "
+        "assigned_at = strftime("
+        "'%Y-%m-%dT%H:%M:%fZ','now'), "
+        "updated_at = strftime("
+        "'%Y-%m-%dT%H:%M:%fZ','now') "
+        "WHERE tracker = ? AND issue_id = ?",
+        (workspace, summary, summary,
+         tracker, issue_id),
+      )
+    else:
+      conn.execute(
+        "INSERT INTO issues "
+        "(tracker, issue_id, workspace, status, "
+        "summary, assigned_at) "
+        "VALUES (?, ?, ?, 'assigned', ?, "
+        "strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+        (tracker, issue_id, workspace, summary),
+      )
+    row = conn.execute(
+      "SELECT * FROM issues "
+      "WHERE tracker = ? AND issue_id = ?",
+      (tracker, issue_id),
+    ).fetchone()
+    return dict(row)
+
+
+def unassign_issue(tracker, issue_id, db_path=None):
+  """Remove workspace assignment from an issue.
+
+  Sets status back to 'open' and clears workspace.
+
+  Args:
+    tracker: Tracker string.
+    issue_id: Issue ID.
+
+  Returns:
+    Updated issue row as dict, or None if not found.
+  """
+  with _connect(db_path) as conn:
+    conn.execute(
+      "UPDATE issues SET workspace = NULL, "
+      "status = 'open', "
+      "assigned_at = NULL, "
+      "updated_at = strftime("
+      "'%Y-%m-%dT%H:%M:%fZ','now') "
+      "WHERE tracker = ? AND issue_id = ?",
+      (tracker, issue_id),
+    )
+    row = conn.execute(
+      "SELECT * FROM issues "
+      "WHERE tracker = ? AND issue_id = ?",
+      (tracker, issue_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def update_issue_status(tracker, issue_id, status,
+                        db_path=None):
+  """Transition an issue to a new status.
+
+  Validates the transition against ISSUE_TRANSITIONS.
+
+  Args:
+    tracker: Tracker string.
+    issue_id: Issue ID.
+    status: New status.
+
+  Returns:
+    Updated issue row as dict.
+
+  Raises:
+    ValueError: If transition is invalid.
+    KeyError: If issue not found.
+  """
+  with _connect(db_path) as conn:
+    row = conn.execute(
+      "SELECT * FROM issues "
+      "WHERE tracker = ? AND issue_id = ?",
+      (tracker, issue_id),
+    ).fetchone()
+    if not row:
+      raise KeyError(
+        f"Issue {tracker}#{issue_id} not found"
+      )
+    current = row["status"]
+    allowed = ISSUE_TRANSITIONS.get(current, set())
+    if status not in allowed:
+      raise ValueError(
+        f"Cannot transition {tracker}#{issue_id} "
+        f"from '{current}' to '{status}'. "
+        f"Allowed: {', '.join(sorted(allowed))}"
+      )
+    conn.execute(
+      "UPDATE issues SET status = ?, "
+      "updated_at = strftime("
+      "'%Y-%m-%dT%H:%M:%fZ','now') "
+      "WHERE tracker = ? AND issue_id = ?",
+      (status, tracker, issue_id),
+    )
+    row = conn.execute(
+      "SELECT * FROM issues "
+      "WHERE tracker = ? AND issue_id = ?",
+      (tracker, issue_id),
+    ).fetchone()
+    return dict(row)
+
+
+def list_issues(status=None, workspace=None,
+                tracker=None, db_path=None):
+  """List issues, optionally filtered.
+
+  Args:
+    status: Filter by status.
+    workspace: Filter by workspace.
+    tracker: Filter by tracker.
+
+  Returns:
+    List of issue dicts.
+  """
+  clauses = []
+  params = []
+  if status:
+    clauses.append("status = ?")
+    params.append(status)
+  if workspace:
+    clauses.append("workspace = ?")
+    params.append(workspace)
+  if tracker:
+    clauses.append("tracker = ?")
+    params.append(tracker)
+  where = (
+    " WHERE " + " AND ".join(clauses)
+    if clauses else ""
+  )
+  with _connect(db_path) as conn:
+    rows = conn.execute(
+      f"SELECT * FROM issues{where} "
+      f"ORDER BY updated_at DESC",
+      params,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_issue(tracker, issue_id, db_path=None):
+  """Get a single issue.
+
+  Returns:
+    Issue dict or None.
+  """
+  with _connect(db_path) as conn:
+    row = conn.execute(
+      "SELECT * FROM issues "
+      "WHERE tracker = ? AND issue_id = ?",
+      (tracker, issue_id),
+    ).fetchone()
+    return dict(row) if row else None

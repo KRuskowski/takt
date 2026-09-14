@@ -173,6 +173,18 @@ def build_app(service):
     handle_set_active_account,
   )
 
+  # Issues.
+  app.router.add_get("/api/issues", handle_list_issues)
+  app.router.add_post(
+    "/api/issues/assign", handle_assign_issue,
+  )
+  app.router.add_post(
+    "/api/issues/unassign", handle_unassign_issue,
+  )
+  app.router.add_post(
+    "/api/issues/status", handle_update_issue_status,
+  )
+
   # SSE.
   app.router.add_get("/api/events", handle_sse)
 
@@ -1015,6 +1027,91 @@ async def handle_sse(request):
   finally:
     request.app["sse_clients"].remove(client)
 
+  return resp
+
+
+async def handle_list_issues(request):
+  """GET /api/issues — list issues with optional filters."""
+  from lib import db
+  status = request.query.get("status")
+  workspace = request.query.get("workspace")
+  tracker = request.query.get("tracker")
+  issues = db.list_issues(
+    status=status, workspace=workspace,
+    tracker=tracker,
+  )
+  resp = web.json_response(
+    {"status": "ok", "data": issues},
+  )
+  _add_cors(resp)
+  return resp
+
+
+async def handle_assign_issue(request):
+  """POST /api/issues/assign — assign issue to workspace."""
+  from lib import db
+  body = await request.json()
+  try:
+    result = db.assign_issue(
+      body["tracker"], body["issue_id"],
+      body["workspace"],
+      summary=body.get("summary", ""),
+    )
+    resp = web.json_response(
+      {"status": "ok", "data": result},
+    )
+  except ValueError as e:
+    resp = web.json_response(
+      {"status": "error", "message": str(e)},
+      status=409,
+    )
+  _add_cors(resp)
+  return resp
+
+
+async def handle_unassign_issue(request):
+  """POST /api/issues/unassign — remove assignment."""
+  from lib import db
+  body = await request.json()
+  result = db.unassign_issue(
+    body["tracker"], body["issue_id"],
+  )
+  if result:
+    resp = web.json_response(
+      {"status": "ok", "data": result},
+    )
+  else:
+    resp = web.json_response(
+      {"status": "error", "message": "Issue not found"},
+      status=404,
+    )
+  _add_cors(resp)
+  return resp
+
+
+async def handle_update_issue_status(request):
+  """POST /api/issues/status — transition issue status."""
+  from lib import db
+  body = await request.json()
+  try:
+    result = db.update_issue_status(
+      body["tracker"], body["issue_id"],
+      body["status"],
+    )
+    resp = web.json_response(
+      {"status": "ok", "data": result},
+    )
+  except KeyError as e:
+    resp = web.json_response(
+      {"status": "error", "message": str(e)},
+      status=404,
+    )
+  except ValueError as e:
+    resp = web.json_response(
+      {"status": "error", "message": str(e)},
+      status=400,
+    )
+  _add_cors(resp)
   return resp
 
 

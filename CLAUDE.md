@@ -16,6 +16,9 @@ Create isolated workspaces with local clones for multi-repo tasks. Workspace nam
 # Create a workspace
 bin/workspace.py create feature-auth Combatant Conveyor config
 
+# Create from a specific base branch
+bin/workspace.py create feature-auth Combatant --base release/v11.x
+
 # List all workspaces
 bin/workspace.py list
 
@@ -143,6 +146,7 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 - **Workspace name = branch name** across all repos.
 - **Agents never push to GitHub.** takt handles all pipeline orchestration, pushes, and PR creation.
 - **State**: All pipeline state in `.state/takt.db` (SQLite, WAL mode).
+- **Issue ledger**: Tracks which issue is assigned to which workspace. Agents claim issues atomically before starting work, so parallel planning agents don't duplicate effort. Status lifecycle: `open` → `assigned` → `in_progress` → `review` → `merged` → `closed`. Available via REST API (`/api/issues/*`) and MCP tools (`assign_issue`, `unassign_issue`, `update_issue_status`, `list_issues`).
 
 # Config Files
 

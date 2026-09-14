@@ -430,5 +430,95 @@ def workspace_last_run(name: str) -> str:
     return json.dumps({"error": str(e)})
 
 
+@mcp.tool()
+def list_issues(
+  status: str = "",
+  workspace: str = "",
+  tracker: str = "",
+) -> str:
+  """List issues tracked in the takt ledger. Shows which issues are assigned to which workspaces and their current status. Filter by status (open, assigned, in_progress, review, merged, closed, blocked, wont_fix), workspace name, or tracker (e.g. github:Optris/OTC.SDK).
+
+  Args:
+    status: Filter by status (empty = all).
+    workspace: Filter by workspace name (empty = all).
+    tracker: Filter by tracker string (empty = all).
+  """
+  params = {}
+  if status:
+    params["status"] = status
+  if workspace:
+    params["workspace"] = workspace
+  if tracker:
+    params["tracker"] = tracker
+  qs = "&".join(f"{k}={v}" for k, v in params.items())
+  url = f"/api/issues?{qs}" if qs else "/api/issues"
+  return json.dumps(_api("GET", url))
+
+
+@mcp.tool()
+def assign_issue(
+  tracker: str,
+  issue_id: str,
+  workspace: str,
+  summary: str = "",
+) -> str:
+  """Assign an issue to a workspace. Atomic — fails with 409 if already assigned to a different workspace. Use this before starting work so other agents can see the issue is taken. Tracker format: github:Org/Repo or gitlab:group/project.
+
+  Args:
+    tracker: Issue tracker (e.g. github:Optris/OTC.SDK).
+    issue_id: Issue number or ID.
+    workspace: Workspace to assign to.
+    summary: One-line description of the issue.
+  """
+  return json.dumps(
+    _api("POST", "/api/issues/assign", {
+      "tracker": tracker,
+      "issue_id": issue_id,
+      "workspace": workspace,
+      "summary": summary,
+    })
+  )
+
+
+@mcp.tool()
+def unassign_issue(
+  tracker: str, issue_id: str,
+) -> str:
+  """Remove a workspace assignment from an issue, setting it back to open.
+
+  Args:
+    tracker: Issue tracker.
+    issue_id: Issue number or ID.
+  """
+  return json.dumps(
+    _api("POST", "/api/issues/unassign", {
+      "tracker": tracker,
+      "issue_id": issue_id,
+    })
+  )
+
+
+@mcp.tool()
+def update_issue_status(
+  tracker: str,
+  issue_id: str,
+  status: str,
+) -> str:
+  """Transition an issue to a new status. Valid transitions: open -> assigned/wont_fix, assigned -> in_progress/open/wont_fix, in_progress -> review/open/blocked/wont_fix, blocked -> in_progress/open/wont_fix, review -> merged/in_progress, merged -> closed/in_progress, closed -> open, wont_fix -> open.
+
+  Args:
+    tracker: Issue tracker.
+    issue_id: Issue number or ID.
+    status: New status.
+  """
+  return json.dumps(
+    _api("POST", "/api/issues/status", {
+      "tracker": tracker,
+      "issue_id": issue_id,
+      "status": status,
+    })
+  )
+
+
 if __name__ == "__main__":
   mcp.run()
