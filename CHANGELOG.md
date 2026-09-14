@@ -22,6 +22,9 @@ All notable changes to takt are recorded here. The format is based on [Keep a Ch
 - Fixed a crash during web UI shutdown/restart. The background status poller could outlive the event channel it published to, crashing the server as it stopped. Shutdown now stops the poller first, so restarts are clean.
 - Fixed the CLI and workspace terminals failing to connect in the web UI (immediate "reconnect" button). Spawned child processes (takt-cli, tmux) were inheriting the web server's listen socket, stealing incoming browser connections. Child processes now close inherited file descriptors before launching.
 - Fixed the takt agent silently dropping responses on longer prompts. The Claude SDK didn't handle a new message type (`rate_limit_event`), causing the entire response stream to abort. The agent now skips unknown message types and delivers the full response.
+- Fixed the takt service freezing on issue ledger writes (assign, status change, unassign). The API handlers were calling SQLite directly on the async event loop, which blocked all other requests until the write finished. Writes now run in a background thread so the service stays responsive.
+- Fixed the takt service hanging on startup when the GPG signing key wasn't cached. The startup check was using the wrong GPG key (an old 1024-bit key from 2008) and waiting for a passphrase dialog that would never be answered. It now checks the correct key and fails gracefully if the passphrase isn't cached.
+- Fixed the takt service failing to connect to its database during heavy disk activity (e.g. multiple parallel builds). Every database call tried to switch SQLite to WAL mode, which requires a write lock — even for read-only requests. Now it only switches once, and the lock timeout is long enough to ride out I/O storms.
 - Build leftovers and cache folders are no longer tracked, keeping the project tidy.
 
 ## Earlier work
