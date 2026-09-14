@@ -185,35 +185,29 @@ class TaktService:
     )
 
   async def _warm_caches(self):
-    """Warm GPG and SSH caches at startup."""
+    """Check GPG and SSH readiness at startup."""
     import os
     loop = asyncio.get_running_loop()
+    signing_key = "70540795A15C714A"
     try:
-      # Use the first secret key available.
       result = await loop.run_in_executor(
         None, lambda: subprocess.run(
-          ["gpg", "--list-secret-keys", "--keyid-format",
-           "long", "--with-colons"],
-          capture_output=True, text=True, timeout=10,
-        )
+          ["gpg", "--sign", "--default-key",
+           signing_key, "--pinentry-mode", "error",
+           "-o", "/dev/null"],
+          input=b"warmup",
+          capture_output=True, timeout=10,
+        ),
       )
-      key_id = None
-      for line in result.stdout.splitlines():
-        if line.startswith("sec:"):
-          key_id = line.split(":")[4]
-          break
-      if key_id:
-        await loop.run_in_executor(None, lambda: (
-          subprocess.run(
-            ["gpg", "--sign", "--default-key",
-             key_id, "-o", "/dev/null"],
-            input=b"warmup",
-            capture_output=True, timeout=60,
-          )
-        ))
-      log.info("GPG cache warmed")
+      if result.returncode == 0:
+        log.info("GPG signing key cached and ready")
+      else:
+        log.warning(
+          "GPG signing key not cached — run "
+          "`unlock-gpg` to enable commit signing"
+        )
     except Exception as e:
-      log.warning("GPG cache warmup failed: %s", e)
+      log.warning("GPG check failed: %s", e)
     sock = os.environ.get("SSH_AUTH_SOCK", "")
     if not sock:
       log.warning(

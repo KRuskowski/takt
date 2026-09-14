@@ -1033,12 +1033,16 @@ async def handle_sse(request):
 async def handle_list_issues(request):
   """GET /api/issues — list issues with optional filters."""
   from lib import db
+  loop = asyncio.get_running_loop()
   status = request.query.get("status")
   workspace = request.query.get("workspace")
   tracker = request.query.get("tracker")
-  issues = db.list_issues(
-    status=status, workspace=workspace,
-    tracker=tracker,
+  issues = await loop.run_in_executor(
+    None,
+    lambda: db.list_issues(
+      status=status, workspace=workspace,
+      tracker=tracker,
+    ),
   )
   resp = web.json_response(
     {"status": "ok", "data": issues},
@@ -1050,12 +1054,16 @@ async def handle_list_issues(request):
 async def handle_assign_issue(request):
   """POST /api/issues/assign — assign issue to workspace."""
   from lib import db
+  loop = asyncio.get_running_loop()
   body = await request.json()
   try:
-    result = db.assign_issue(
-      body["tracker"], body["issue_id"],
-      body["workspace"],
-      summary=body.get("summary", ""),
+    result = await loop.run_in_executor(
+      None,
+      lambda: db.assign_issue(
+        body["tracker"], body["issue_id"],
+        body["workspace"],
+        summary=body.get("summary", ""),
+      ),
     )
     resp = web.json_response(
       {"status": "ok", "data": result},
@@ -1072,9 +1080,13 @@ async def handle_assign_issue(request):
 async def handle_unassign_issue(request):
   """POST /api/issues/unassign — remove assignment."""
   from lib import db
+  loop = asyncio.get_running_loop()
   body = await request.json()
-  result = db.unassign_issue(
-    body["tracker"], body["issue_id"],
+  result = await loop.run_in_executor(
+    None,
+    lambda: db.unassign_issue(
+      body["tracker"], body["issue_id"],
+    ),
   )
   if result:
     resp = web.json_response(
@@ -1092,11 +1104,15 @@ async def handle_unassign_issue(request):
 async def handle_update_issue_status(request):
   """POST /api/issues/status — transition issue status."""
   from lib import db
+  loop = asyncio.get_running_loop()
   body = await request.json()
   try:
-    result = db.update_issue_status(
-      body["tracker"], body["issue_id"],
-      body["status"],
+    result = await loop.run_in_executor(
+      None,
+      lambda: db.update_issue_status(
+        body["tracker"], body["issue_id"],
+        body["status"],
+      ),
     )
     resp = web.json_response(
       {"status": "ok", "data": result},
