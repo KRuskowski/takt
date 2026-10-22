@@ -142,6 +142,12 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 - **Context engine**: Scoped, searchable knowledge base in SQLite FTS5. Serves sections of the checked-in docs *and* facts agents record during runs, so knowledge accumulates instead of dying with each session. See `context/context-engine.md`.
 - **Issue ledger**: Tracks which issue is assigned to which workspace. Agents claim issues atomically before starting work, so parallel planning agents don't duplicate effort. Status lifecycle: `open` → `assigned` → `in_progress` → `review` → `merged` → `closed`. Available via REST API (`/api/issues/*`) and MCP tools (`assign_issue`, `unassign_issue`, `update_issue_status`, `list_issues`).
 
+# Compute
+
+takt is single-host: one service owns the state, the worktrees and the executor, and all steps run locally on it. `max_agents` throttles contention, it does not add capacity. Targets (`bin/target.py run`) are the only offload path today and are deliberately not wired into the pipeline executor.
+
+Design for distributing across machines (scheduler node + pull-based workers + thin clients): `context/distributed-execution.md`. Not implemented.
+
 # Config Files
 
 - `config/repos.yaml` — managed repo registry with push order

@@ -185,6 +185,10 @@ Two things to know before scaling out:
 - **Claude capacity is per account, not per machine.** Rate and usage limits attach to the account in `config/takt.yaml`, so running agents on more machines does not raise how much model work you can do concurrently. Extra machines help with CPU-bound work — compiles, test suites, VM-based verification — not with agent throughput.
 - **Workers cannot reach the state or the git origin.** `.state/takt.db` is SQLite with WAL (local filesystem only), `.locks/*.lock` are local files, and workspace clones use `~/dev/root/<repo>` as their origin. Distributing execution means deciding how a remote machine obtains source and reports state before anything else.
 
+A design for lifting this — a scheduler node, a pull-based worker pool reachable from cloud instances, and workstations as thin clients — is written up in `context/distributed-execution.md`. Not implemented.
+
+Note that `bin/takt_mcp.py` already honours `TAKT_API_URL`, so a Claude session on another machine can drive a remote takt as soon as the service is reachable. The service currently binds to `127.0.0.1` and the API is unauthenticated, so that is not yet usable off-box.
+
 ## Project layout
 
 ```
