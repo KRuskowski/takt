@@ -9,6 +9,7 @@ Multi-agent pipeline orchestration for running Claude Code agents across multi-r
 - Runs pipelines via a **background service** that watches for branch changes and executes steps in temporary worktrees
 - Manages **deployment targets** (VMs and hardware) with exclusive locking and qcow2-backed VM cloning
 - Runs **meta agents** for cross-cutting tasks (CLAUDE.md generation, pipeline setup, role template improvement)
+- Accumulates a **searchable knowledge base** — scoped, attributed facts agents record as they work, plus section-level retrieval over the project docs
 - Exposes everything through an **MCP server**, a **REST/SSE API**, and a **CLI** — no GUI
 
 ## Architecture
@@ -42,6 +43,7 @@ GitHub (upstream)
 - **All state in SQLite.** Pipeline definitions, runs, steps, agent output, and branch refs live in `.state/takt.db` (WAL mode).
 - **Per-step model selection.** Each agent step can run with a different Claude model (sonnet/opus/haiku).
 - **Progressive context disclosure.** CLAUDE.md files are lean and point to context packets. Agents fetch what they need rather than loading everything upfront.
+- **Knowledge outlives the session.** What an agent learns during a run is recorded with its scope and provenance, so the next agent searches it instead of rediscovering it. See `context/context-engine.md`.
 - **Pooled targets.** Deployment targets (VMs, hardware) are shared resources with exclusive locking. Agents claim, use, and release.
 
 ## Interfaces
@@ -90,6 +92,7 @@ Source `config/takt.zsh` from `~/.zshrc` for a `takt` shell function with comple
 | `bin/clone_vm.py` | Create/delete qcow2-backed VM clones |
 | `bin/provision_vm.py` | Provision Debian VM (build tools, shell config) |
 | `bin/push_to_github.py` | Push branches from root repos to GitHub |
+| `lib/context_store.py` | Context engine (FTS5 search + recorded facts) |
 | `bin/setup_takt.py` | First-time setup (systemd unit, venv, MCP) |
 | `bin/setup_win_vm.py` | Create Windows 11 VM (unattended) |
 | `bin/provision_win_vm.py` | Provision Windows VM (VS2022, Git, Samba) |
@@ -162,6 +165,7 @@ lib/                  Shared Python library
   workspace_ops.py    Workspace operations
   git_utils.py        Git helpers
   meta_runner.py      Meta agent executor
+  context_store.py    Context engine (FTS5 + facts)
 config/
   repos.yaml          Managed repo registry (gitignored)
   targets.yaml        Target inventory (gitignored)

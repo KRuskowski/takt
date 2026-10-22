@@ -51,7 +51,15 @@ journalctl --user -u takt-service -f
 
 ## MCP Server (`bin/takt_mcp.py`)
 
-FastMCP server wrapping the takt REST API. Installed at user scope via `claude mcp add -s user takt <venv-python> bin/takt_mcp.py` (stored in `~/.claude.json`) — available to all Claude sessions in every project, no per-project approval. Exposes workspace, target, pipeline, run, template, context, repo, agent, and account tools.
+FastMCP server wrapping the takt REST API. Installed at user scope via `claude mcp add -s user takt <venv-python> bin/takt_mcp.py` (stored in `~/.claude.json`) — available to all Claude sessions in every project, no per-project approval. Exposes workspace, target, pipeline, run, template, context, repo, agent, and account tools. This is the primary interface to takt.
+
+## Context Engine (`lib/context_store.py`)
+
+Retrieval over takt's knowledge: the markdown in `context/` and `templates/`, plus facts agents record as they work. SQLite FTS5 in `.state/takt.db`, BM25-ranked, returning **sections** (with heading path and line range) rather than whole files. Docs are scoped `global`/`repo`/`workspace`/`target`; facts carry the run and workspace that produced them. Details: `context/context-engine.md`
+
+MCP tools: `search`, `record_fact`, `list_facts`, `supersede_fact`, `context_stats`, `reindex_context`.
+
+The index self-maintains — reindexed at service startup and on every edit through the API. `reindex_context` is only needed after editing `context/` or `templates/` directly on disk.
 
 ## Pipeline Watcher (`bin/pipeline_watch.py`)
 
@@ -131,6 +139,7 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 - **Workspace name = branch name** across all repos.
 - **Agents never push to GitHub.** takt handles all pipeline orchestration, pushes, and PR creation.
 - **State**: All pipeline state in `.state/takt.db` (SQLite, WAL mode).
+- **Context engine**: Scoped, searchable knowledge base in SQLite FTS5. Serves sections of the checked-in docs *and* facts agents record during runs, so knowledge accumulates instead of dying with each session. See `context/context-engine.md`.
 - **Issue ledger**: Tracks which issue is assigned to which workspace. Agents claim issues atomically before starting work, so parallel planning agents don't duplicate effort. Status lifecycle: `open` → `assigned` → `in_progress` → `review` → `merged` → `closed`. Available via REST API (`/api/issues/*`) and MCP tools (`assign_issue`, `unassign_issue`, `update_issue_status`, `list_issues`).
 
 # Config Files

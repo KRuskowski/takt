@@ -125,6 +125,32 @@ def build_app(service):
   app.router.add_get(
     "/api/context", handle_list_context,
   )
+  # The context engine. These share the /api/context
+  # prefix with the {name} file reader below. aiohttp
+  # matches static paths ahead of dynamic ones regardless
+  # of registration order, so they do not collide — but a
+  # context file named exactly 'search', 'stats', 'docs',
+  # 'reindex', 'facts' or 'supersede' would be unreachable
+  # by name. Indexed files all carry a .md suffix, so this
+  # costs nothing in practice.
+  app.router.add_get(
+    "/api/context/search", handle_context_search,
+  )
+  app.router.add_get(
+    "/api/context/stats", handle_context_stats,
+  )
+  app.router.add_get(
+    "/api/context/docs", handle_context_docs,
+  )
+  app.router.add_post(
+    "/api/context/reindex", handle_context_reindex,
+  )
+  app.router.add_post(
+    "/api/context/facts", handle_record_fact,
+  )
+  app.router.add_post(
+    "/api/context/supersede", handle_context_supersede,
+  )
   app.router.add_get(
     "/api/context/{name}", handle_get_context,
   )
@@ -565,7 +591,9 @@ async def handle_get_template(request):
 
 async def handle_put_template(request):
   """PUT /api/templates/:name — write a template file."""
+  from lib import context_store
   from lib.config import TEMPLATES_DIR
+  loop = asyncio.get_running_loop()
   name = request.match_info["name"]
   if "/" in name or "\\" in name:
     return web.json_response(
@@ -576,8 +604,18 @@ async def handle_put_template(request):
   content = body.get("content", "")
   path = TEMPLATES_DIR / name
   path.write_text(content)
+  # Keep the search index in step with the file.
+  indexed = None
+  if name.lower().endswith(".md"):
+    indexed = await loop.run_in_executor(
+      None,
+      lambda: context_store.upsert_doc(
+        f"templates/{name}", content, source="file",
+      ),
+    )
   return web.json_response(
-    {"status": "ok", "data": {"name": name}},
+    {"status": "ok",
+     "data": {"name": name, "indexed": indexed}},
   )
 
 
@@ -734,6 +772,196 @@ async def handle_set_active_account(request):
   })
 
 
+# -- Context engine --
+
+async def handle_context_search(request):
+  """GET /api/context/search — search the context index.
+
+  Query params: q (required), scope_kind, scope_value,
+  kind ('doc'/'fact'), limit, include_superseded.
+  """
+  from lib import context_store
+  loop = asyncio.get_running_loop()
+  query = request.query.get("q", "")
+  if not query.strip():
+    resp = web.json_response(
+      {"status": "error", "message": "q is required"},
+      status=400,
+    )
+    _add_cors(resp)
+    return resp
+  try:
+    limit = int(request.query.get("limit", 10))
+  except ValueError:
+    limit = 10
+  kwargs = {
+    "scope_kind": request.query.get("scope_kind"),
+    "scope_value": request.query.get("scope_value", ""),
+    "kind": request.query.get("kind"),
+    "limit": max(1, min(limit, 100)),
+    "include_superseded": request.query.get(
+      "include_superseded"
+    ) in ("1", "true", "yes"),
+  }
+  try:
+    results = await loop.run_in_executor(
+      None,
+      lambda: context_store.search(query, **kwargs),
+    )
+  except ValueError as e:
+    resp = web.json_response(
+      {"status": "error", "message": str(e)}, status=400,
+    )
+    _add_cors(resp)
+    return resp
+  resp = web.json_response({
+    "status": "ok",
+    "data": {"query": query, "results": results},
+  })
+  _add_cors(resp)
+  return resp
+
+
+async def handle_context_stats(request):
+  """GET /api/context/stats — index size summary."""
+  from lib import context_store
+  loop = asyncio.get_running_loop()
+  data = await loop.run_in_executor(
+    None, context_store.stats,
+  )
+  resp = web.json_response({"status": "ok", "data": data})
+  _add_cors(resp)
+  return resp
+
+
+async def handle_context_docs(request):
+  """GET /api/context/docs — list indexed documents.
+
+  Query params: kind, scope_kind, scope_value, limit,
+  include_superseded.
+  """
+  from lib import context_store
+  loop = asyncio.get_running_loop()
+  try:
+    limit = int(request.query.get("limit", 200))
+  except ValueError:
+    limit = 200
+  kwargs = {
+    "kind": request.query.get("kind"),
+    "scope_kind": request.query.get("scope_kind"),
+    "scope_value": request.query.get("scope_value", ""),
+    "limit": max(1, min(limit, 1000)),
+    "include_superseded": request.query.get(
+      "include_superseded"
+    ) in ("1", "true", "yes"),
+  }
+  docs = await loop.run_in_executor(
+    None, lambda: context_store.list_docs(**kwargs),
+  )
+  resp = web.json_response({
+    "status": "ok", "data": {"docs": docs},
+  })
+  _add_cors(resp)
+  return resp
+
+
+async def handle_context_reindex(request):
+  """POST /api/context/reindex — resync from disk."""
+  from lib import context_store
+  loop = asyncio.get_running_loop()
+  stats = await loop.run_in_executor(
+    None, context_store.reindex,
+  )
+  resp = web.json_response({"status": "ok", "data": stats})
+  _add_cors(resp)
+  return resp
+
+
+async def handle_record_fact(request):
+  """POST /api/context/facts — record a fact.
+
+  Body: body (required), scope_kind, scope_value, title,
+  source_run, source_workspace, path, verified.
+  """
+  from lib import context_store
+  loop = asyncio.get_running_loop()
+  try:
+    payload = await request.json()
+  except Exception:
+    payload = {}
+  try:
+    result = await loop.run_in_executor(
+      None,
+      lambda: context_store.record_fact(
+        payload.get("body", ""),
+        scope_kind=payload.get("scope_kind", "global"),
+        scope_value=payload.get("scope_value", ""),
+        title=payload.get("title"),
+        source=payload.get("source", "agent"),
+        source_run=payload.get("source_run"),
+        source_workspace=payload.get("source_workspace"),
+        path=payload.get("path"),
+        verified=payload.get("verified", True),
+      ),
+    )
+  except ValueError as e:
+    resp = web.json_response(
+      {"status": "error", "message": str(e)}, status=400,
+    )
+    _add_cors(resp)
+    return resp
+  resp = web.json_response({"status": "ok", "data": result})
+  _add_cors(resp)
+  return resp
+
+
+async def handle_context_supersede(request):
+  """POST /api/context/supersede — retire a doc.
+
+  Body: path, by_path.
+  """
+  from lib import context_store
+  loop = asyncio.get_running_loop()
+  try:
+    payload = await request.json()
+  except Exception:
+    payload = {}
+  path = payload.get("path", "")
+  by_path = payload.get("by_path", "")
+  if not path or not by_path:
+    resp = web.json_response(
+      {"status": "error",
+       "message": "path and by_path are required"},
+      status=400,
+    )
+    _add_cors(resp)
+    return resp
+  try:
+    ok = await loop.run_in_executor(
+      None,
+      lambda: context_store.supersede(path, by_path),
+    )
+  except ValueError as e:
+    resp = web.json_response(
+      {"status": "error", "message": str(e)}, status=400,
+    )
+    _add_cors(resp)
+    return resp
+  if not ok:
+    resp = web.json_response(
+      {"status": "error", "message": "doc not found"},
+      status=404,
+    )
+    _add_cors(resp)
+    return resp
+  resp = web.json_response({
+    "status": "ok",
+    "data": {"path": path, "superseded_by": by_path},
+  })
+  _add_cors(resp)
+  return resp
+
+
 # -- Context files --
 
 async def handle_list_context(request):
@@ -775,7 +1003,9 @@ async def handle_get_context(request):
 
 async def handle_put_context(request):
   """PUT /api/context/:name — write a context file."""
+  from lib import context_store
   from lib.config import CONTEXT_DIR
+  loop = asyncio.get_running_loop()
   name = request.match_info["name"]
   if "/" in name or "\\" in name:
     return web.json_response(
@@ -786,8 +1016,19 @@ async def handle_put_context(request):
   content = body.get("content", "")
   path = CONTEXT_DIR / name
   path.write_text(content)
+  # Keep the search index in step with the file, so an edit
+  # is retrievable immediately instead of at next reindex.
+  indexed = None
+  if name.lower().endswith(".md"):
+    indexed = await loop.run_in_executor(
+      None,
+      lambda: context_store.upsert_doc(
+        f"context/{name}", content, source="file",
+      ),
+    )
   return web.json_response(
-    {"status": "ok", "data": {"name": name}},
+    {"status": "ok",
+     "data": {"name": name, "indexed": indexed}},
   )
 
 

@@ -5,6 +5,12 @@ All notable changes to takt are recorded here. The format is based on [Keep a Ch
 ## [Unreleased]
 
 ### Added
+- **Context engine — takt now remembers what its agents learn.** Previously, anything an agent worked out during a job (a build flag that turns out to be required, a machine with a quirk, an interface that doesn't behave the way its documentation claims) was lost when that job ended, and the next agent had to work it out again from scratch. Agents can now write those findings down, and search everything that has been written down before starting.
+  - **Answers are sections, not whole documents.** Asking "how do I provision a Windows VM" returns the specific part of the specific document that answers it, with its heading and line numbers, rather than a filename to go read. Results are ranked best-first.
+  - **Findings are filed against what they apply to** — a particular code repository, workspace or machine, or marked as applying everywhere. Something learned about one repository will not surface as advice while working on an unrelated one.
+  - **Every finding says where it came from**: which job recorded it, in which workspace, and when it was last confirmed. A finding that later turns out to be wrong can be replaced, and the old version stops appearing in results but stays readable — so the record of what was once believed, and what corrected it, is preserved.
+  - **Questions can be asked in plain language.** The search tries for an exact match on every word first, and widens automatically when a question contains wording the documents don't use.
+  - The search index keeps itself current: it refreshes when the service starts and whenever a document is edited through takt. No manual step is needed unless files are edited directly on disk.
 - **Issue ledger**: takt now tracks which issues from GitHub/GitLab are assigned to which workspaces. Multiple planning agents can see what's already being worked on, preventing duplicate effort. Issues are claimed atomically — if two agents try to grab the same issue, the second one gets a conflict error. Available through the REST API, MCP tools, and the takt agent shell.
 - **Base branch selection**: When creating a workspace, you can now specify which branch to cut from (e.g. `--base release/v11.x`). Previously, workspaces always branched from whatever the root repo happened to have checked out, which could silently pick the wrong starting point.
 
@@ -32,6 +38,7 @@ All notable changes to takt are recorded here. The format is based on [Keep a Ch
 - Fixed the takt service freezing on issue ledger writes (assign, status change, unassign). The API handlers were calling SQLite directly on the async event loop, which blocked all other requests until the write finished. Writes now run in a background thread so the service stays responsive.
 - Fixed the takt service hanging on startup when the GPG signing key wasn't cached. The startup check was using the wrong GPG key (an old 1024-bit key from 2008) and waiting for a passphrase dialog that would never be answered. It now checks the correct key and fails gracefully if the passphrase isn't cached.
 - Fixed the takt service failing to connect to its database during heavy disk activity (e.g. multiple parallel builds). Every database call tried to switch SQLite to WAL mode, which requires a write lock — even for read-only requests. Now it only switches once, and the lock timeout is long enough to ride out I/O storms.
+- Fixed run and issue lists coming back in an unpredictable order. Two items created in the same millisecond share a timestamp, and the list was sorted by timestamp alone, so the order of such a pair was left to chance — visible as a "newest first" list occasionally showing the wrong item first. Sorting now falls back to creation order for ties.
 - Build leftovers and cache folders are no longer tracked, keeping the project tidy.
 
 ## Earlier work

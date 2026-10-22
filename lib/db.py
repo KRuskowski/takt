@@ -179,6 +179,90 @@ CREATE TABLE IF NOT EXISTS issues (
     (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE(tracker, issue_id)
 );
+
+-- Context engine. A doc is one indexed unit: either a file
+-- under context/ or templates/, or a fact recorded by an
+-- agent. Docs are split into section-level chunks; chunks
+-- are what retrieval returns.
+CREATE TABLE IF NOT EXISTS context_docs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  path TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'doc',
+  scope_kind TEXT NOT NULL DEFAULT 'global',
+  scope_value TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'file',
+  source_run INTEGER,
+  source_workspace TEXT,
+  content_hash TEXT NOT NULL DEFAULT '',
+  verified_at TEXT,
+  superseded_by INTEGER,
+  created_at TEXT NOT NULL DEFAULT
+    (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT
+    (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS context_docs_scope
+  ON context_docs(scope_kind, scope_value);
+
+CREATE TABLE IF NOT EXISTS context_chunks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_id INTEGER NOT NULL
+    REFERENCES context_docs(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  heading TEXT NOT NULL DEFAULT '',
+  heading_path TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL,
+  start_line INTEGER NOT NULL DEFAULT 1,
+  end_line INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(doc_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS context_chunks_doc
+  ON context_chunks(doc_id);
+
+-- Full-text index over chunks. External content table, so
+-- the text is stored once in context_chunks and the
+-- triggers below keep the index in sync.
+CREATE VIRTUAL TABLE IF NOT EXISTS context_fts USING fts5(
+  heading_path,
+  body,
+  content='context_chunks',
+  content_rowid='id',
+  tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS context_chunks_ai
+AFTER INSERT ON context_chunks BEGIN
+  INSERT INTO context_fts(rowid, heading_path, body)
+  VALUES (new.id, new.heading_path, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS context_chunks_ad
+AFTER DELETE ON context_chunks BEGIN
+  INSERT INTO context_fts(
+    context_fts, rowid, heading_path, body)
+  VALUES ('delete', old.id, old.heading_path, old.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS context_chunks_au
+AFTER UPDATE ON context_chunks BEGIN
+  INSERT INTO context_fts(
+    context_fts, rowid, heading_path, body)
+  VALUES ('delete', old.id, old.heading_path, old.body);
+  INSERT INTO context_fts(rowid, heading_path, body)
+  VALUES (new.id, new.heading_path, new.body);
+END;
+
+-- Outbound [[wiki-style]] references, resolved lazily so a
+-- link may point at a doc that does not exist yet.
+CREATE TABLE IF NOT EXISTS context_links (
+  src_doc INTEGER NOT NULL
+    REFERENCES context_docs(id) ON DELETE CASCADE,
+  target TEXT NOT NULL,
+  UNIQUE(src_doc, target)
+);
 """
 
 ISSUE_TRANSITIONS = {

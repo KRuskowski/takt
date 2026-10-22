@@ -9,8 +9,9 @@ manage targets, trigger runs, etc.
 import json
 import os
 import sys
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -36,7 +37,16 @@ mcp = FastMCP(
     "GitHub — takt handles all pushes and PR creation. "
     "All state is in SQLite (.state/takt.db). Root repos "
     "live at ~/dev/root/, workspaces at "
-    "~/dev/workspaces/<name>/."
+    "~/dev/workspaces/<name>/.\n\n"
+    "takt also holds the shared knowledge base for this "
+    "work. Call search() before guessing how something "
+    "builds, why a decision was made, or whether a "
+    "problem is already understood — it returns the "
+    "relevant section of the docs, plus facts recorded by "
+    "other agents, scoped per repo and stamped with the "
+    "run that produced them. When you learn something the "
+    "next agent would otherwise rediscover, call "
+    "record_fact() so it is not lost with your session."
   ),
 )
 
@@ -352,15 +362,129 @@ def list_agents() -> str:
 
 
 @mcp.tool()
-def search(query: str) -> str:
-  """Full-text search across all template and context files. Returns matching filenames and line numbers. Useful for finding build instructions, API docs, or architecture decisions.
+def search(
+  query: str,
+  scope_kind: str = "",
+  scope_value: str = "",
+  kind: str = "",
+  limit: int = 10,
+) -> str:
+  """Search takt's knowledge base and get back the relevant sections, ranked best-first. Covers the context docs, the pipeline role templates, and every fact recorded by other agents.
+
+  This is the tool to reach for before guessing at how something works: how to build a repo, why an architectural decision was made, what a VM needs, or whether another agent already hit the problem you are looking at.
+
+  Each result is one section, with the document path, the heading path, the line range, and a snippet — so you can cite it or open just that part of the file. Results also carry provenance: for recorded facts, which run and workspace produced them.
 
   Args:
-    query: Search term.
+    query: What you want to know. Natural language is fine. Wrap a span in double quotes to require that exact phrase.
+    scope_kind: Narrow to a scope: 'repo', 'workspace', 'target', or 'global'. Scoped results rank above general ones, and other repos' facts are excluded. Leave empty to search everything.
+    scope_value: The name the scope refers to, e.g. 'OTC.SDK'. Required when scope_kind is set to anything but 'global'.
+    kind: 'fact' for only agent-recorded knowledge, 'doc' for only the checked-in documentation. Empty searches both.
+    limit: Maximum results (default 10, max 100).
   """
-  encoded = urllib.request.quote(query)
+  params = {"q": query, "limit": str(limit)}
+  if scope_kind:
+    params["scope_kind"] = scope_kind
+  if scope_value:
+    params["scope_value"] = scope_value
+  if kind:
+    params["kind"] = kind
+  qs = urllib.parse.urlencode(params)
   return json.dumps(
-    _api("GET", f"/api/search?q={encoded}")
+    _api("GET", f"/api/context/search?{qs}")
+  )
+
+
+@mcp.tool()
+def record_fact(
+  body: str,
+  scope_kind: str = "global",
+  scope_value: str = "",
+  title: str = "",
+  source_run: int = 0,
+  source_workspace: str = "",
+) -> str:
+  """Record something you learned that the next agent would otherwise have to rediscover.
+
+  Worth recording: a build flag that turns out to be required, an API that does not behave as its docs claim, a VM quirk, a test that is flaky for a known reason, a dead end that looked promising. Not worth recording: anything already in the repo or its history, or anything true only of your current run.
+
+  Scope it as narrowly as it is actually true. A fact about OTC.SDK recorded as global will surface while someone works on Conveyor, where it is noise or worse.
+
+  Recording the same title again updates that fact in place rather than duplicating it, so correcting yourself is cheap. If a fact turns out to be wrong in a way worth remembering, record the replacement and call supersede_fact.
+
+  Args:
+    body: The fact, as markdown. Start with '# A short title' and then explain it, including what you observed that makes you believe it.
+    scope_kind: 'global', 'repo', 'workspace' or 'target'.
+    scope_value: What the scope names, e.g. 'OTC.SDK'. Required unless scope_kind is 'global'.
+    title: Short summary. Derived from the body's first heading if omitted.
+    source_run: Pipeline run id this came from, if any.
+    source_workspace: Workspace you were working in.
+  """
+  payload = {
+    "body": body,
+    "scope_kind": scope_kind,
+    "scope_value": scope_value,
+  }
+  if title:
+    payload["title"] = title
+  if source_run:
+    payload["source_run"] = source_run
+  if source_workspace:
+    payload["source_workspace"] = source_workspace
+  return json.dumps(
+    _api("POST", "/api/context/facts", payload)
+  )
+
+
+@mcp.tool()
+def list_facts(
+  scope_kind: str = "",
+  scope_value: str = "",
+  limit: int = 50,
+) -> str:
+  """List recorded facts, most recently updated first. Use this to see what is already known about a repo or workspace before starting work; use search() when you have a specific question.
+
+  Args:
+    scope_kind: Filter by scope: 'global', 'repo', 'workspace' or 'target'.
+    scope_value: The scope name, e.g. 'OTC.SDK'.
+    limit: Maximum facts to return.
+  """
+  params = {"kind": "fact", "limit": str(limit)}
+  if scope_kind:
+    params["scope_kind"] = scope_kind
+  if scope_value:
+    params["scope_value"] = scope_value
+  qs = urllib.parse.urlencode(params)
+  return json.dumps(
+    _api("GET", f"/api/context/docs?{qs}")
+  )
+
+
+@mcp.tool()
+def supersede_fact(path: str, by_path: str) -> str:
+  """Mark a recorded fact as replaced by a newer one. The old fact stops appearing in search but stays readable, so the record of what was once believed survives.
+
+  Args:
+    path: Path of the fact being retired, e.g. 'facts/otc-sdk/ffmpeg-arm64.md'. Shown as 'path' in search and list_facts results.
+    by_path: Path of the fact that replaces it.
+  """
+  return json.dumps(
+    _api("POST", "/api/context/supersede",
+         {"path": path, "by_path": by_path})
+  )
+
+
+@mcp.tool()
+def context_stats() -> str:
+  """Show the size and shape of takt's knowledge base: how many documents and facts are indexed, how many sections, the estimated token total, and the breakdown by scope."""
+  return json.dumps(_api("GET", "/api/context/stats"))
+
+
+@mcp.tool()
+def reindex_context() -> str:
+  """Re-scan context/ and templates/ and update the search index. The service does this at startup and on every edit made through takt, so you only need this after editing those files directly on disk."""
+  return json.dumps(
+    _api("POST", "/api/context/reindex", {})
   )
 
 

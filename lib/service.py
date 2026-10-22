@@ -116,6 +116,7 @@ class TaktService:
     )
     # Ensure DB schema is current.
     db.migrate(db_path=self._db_path)
+    await self._reindex_context()
     self._router = self._ctx.socket(zmq.ROUTER)
     self._router.bind(self.cmd_addr)
     self._pub = self._ctx.socket(zmq.PUB)
@@ -139,6 +140,34 @@ class TaktService:
         self._cmd_task, self._poll_task,
         return_exceptions=True,
       )
+
+  async def _reindex_context(self):
+    """Sync the context index with the files on disk.
+
+    Content-hashed, so this is near-free when nothing
+    changed. Runs off the event loop because it reads every
+    indexed file. A failure here must not stop the service
+    — stale retrieval is survivable, no service is not.
+    """
+    from lib import context_store
+    loop = asyncio.get_running_loop()
+    try:
+      stats = await loop.run_in_executor(
+        None,
+        lambda: context_store.reindex(
+          db_path=self._db_path
+        ),
+      )
+    except Exception:
+      log.exception("Context reindex failed")
+      return
+    log.info(
+      "Context index: %d new, %d updated, %d unchanged, "
+      "%d removed, %d chunks",
+      stats["created"], stats["updated"],
+      stats["unchanged"], stats["removed"],
+      stats["chunks"],
+    )
 
   async def stop(self):
     """Stop the service gracefully."""
