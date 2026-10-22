@@ -8,7 +8,20 @@ takt is single-host by construction. One `takt-service` owns the database, the r
 
 The consequence is structural, not situational: **available compute is whatever the box running the service happens to have.** That holds regardless of which workstation that is or what else is running at the time. Builds, test suites, VM verification and agents all compete for one set of cores, one memory budget and one IO path, and the only control is to do less at once.
 
-For scale, a representative workstation: 24 cores and 62 GB RAM against 230 workspaces and 23 root repos totalling 6.3 GB, OTC.Relay alone being 4.0 GB. Disk capacity is not usually the binding constraint — contention for cores, memory and IO is.
+For scale, a representative workstation: 24 cores and 62 GB RAM, with 230 workspaces over 23 root repos.
+
+Storage is worth stating precisely, because the dominant cost is not what it looks like:
+
+| Path | Volume | State |
+|---|---|---|
+| `~/dev` | 905 GB | 552 GB used, 354 GB free (61%) |
+| `~/dev/workspaces` | — | **380 GB** across 230 workspaces |
+| `~/dev/root` | — | 6.3 GB, 23 repos (OTC.Relay 4.0 GB) |
+| `~/v` (VM clones) | 600 GB | 145 GB used |
+
+Git data is cheap: workspace clones are hardlinked against the root repos, so a workspace holding OTC.SDK costs roughly what the root copy does. The 380 GB is almost entirely **build output that agents create and never reclaim**. One sampled workspace was 28 GB, of which the repo was 1.4 GB and the rest was four separate ~5 GB build trees from one experiment.
+
+That matters twice over. It is the disk and IO pressure on a single host today, and it is the thing that will fill a worker's disk tomorrow — a worker that materialises worktrees and builds accumulates the same way, without anyone logged in to notice.
 
 ### What distribution does not fix
 
@@ -50,6 +63,7 @@ Properties of the current design, not preferences. Each rules out an otherwise o
 - LAN machines first, cloud later, without a redesign in between.
 - Cloud instances have no route back into the network, so **workers dial out**. No inbound SSH, no VPN assumption, no port forwarding.
 - Workers are ephemeral and untrusted with state: any of them can vanish at any time.
+- **Workers must reclaim their own disk.** Build output is the dominant storage cost (see above), and an unattended worker has nobody to notice it filling up. A worker that cannot start a run for lack of space is worse than one that was never added.
 - The "agents never push to GitHub; the operator gates what reaches GitHub" invariant survives.
 - Heterogeneous machines: Debian and Windows, varying cores, varying toolchains.
 
@@ -104,6 +118,16 @@ A worker that loses power mid-run must not strand that run in `running` forever,
 - The scheduler sweeps expired leases and returns those runs to `queued`.
 - A requeued run starts from a fresh worktree rather than resuming mid-step. Simpler to reason about, and correct even if the original worker comes back.
 - A worker reappearing after its lease expired must discover that and discard its results rather than report them. A lease generation number in the claim reply makes this checkable.
+
+### Disk reclamation on workers
+
+Non-negotiable for an unattended machine, given that build output dominates storage.
+
+- A worker tears down a run's worktrees and build output when the run completes, rather than on next use. Completion is the only moment it is certainly safe.
+- A worker advertises free space as a capability and refuses leases below a floor, so a full worker stops taking work instead of failing runs.
+- Mirrors are kept (they are cheap and expensive to refetch); worktrees and build trees are not.
+
+This is also worth doing on the scheduler independently of distribution: 380 GB of unreclaimed build output across 230 long-lived workspaces is the current disk and IO pressure, and no part of takt currently reclaims it. Workspaces are deliberately durable — that is the point of them — so reclamation has to distinguish the clone from the build output inside it, and probably key off how long a workspace has been inactive.
 
 ### Capability matching
 
