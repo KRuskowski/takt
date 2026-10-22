@@ -52,7 +52,7 @@ takt is headless. It is driven by agents through MCP, by scripts through the RES
 
 ### MCP Server
 
-FastMCP server wrapping the takt REST API. Installed at user scope so it's available in every Claude session on the machine — no per-project approval needed. Exposes workspace, target, pipeline, run, template, context, repo, agent, and account tools.
+FastMCP server wrapping the takt REST API, and the primary way takt is driven. Installed at user scope so it's available in every Claude session on the machine — no per-project approval needed. 37 tools covering workspaces, targets, pipelines, runs, templates, repos, accounts, the issue ledger, and the context engine.
 
 ```bash
 claude mcp add -s user takt .venv/bin/python3 bin/takt_mcp.py
@@ -85,7 +85,7 @@ Source `config/takt.zsh` from `~/.zshrc` for a `takt` shell function with comple
 | `bin/workspace.py` | Create/delete workspaces, define pipelines |
 | `bin/takt_service.py` | Background service (REST API + pipeline execution) |
 | `bin/takt.py` | Unified CLI (workspaces, targets, pipelines, push) |
-| `bin/takt_agent.py` | Conversational AI agent |
+| `bin/takt_agent.py` | Conversational REPL for managing takt |
 | `bin/takt_mcp.py` | MCP server for Claude sessions |
 | `bin/pipeline_watch.py` | Standalone poll for branch changes |
 | `bin/target.py` | Claim/release targets, VM lifecycle, SSH |
@@ -131,6 +131,29 @@ Built-in scripts:
 
 Agent steps run with a configurable model (sonnet/opus/haiku) and get a role prompt from `templates/pipeline_roles.md`. Per-step custom prompts are set via `set_pipeline`. Results are written to `.stage-result.json` in the worktree.
 
+Steps execute on the machine running takt-service, with `max_agents` capping how many runs proceed concurrently. See [Compute](#compute) for what that implies.
+
+## Context engine
+
+A searchable knowledge base over takt's own context: the markdown in `context/` and `templates/`, plus facts agents record as they work. SQLite FTS5 in the same `.state/takt.db`, BM25 ranked.
+
+Two properties that matter:
+
+- **Retrieval returns sections, not files.** Documents are split at markdown headings, so a result is the one relevant section with its heading path and line range — not a filename to go read. Queries can be natural language; an exact-match pass runs first and widens automatically when a question uses wording the corpus doesn't.
+- **Agents can write to it.** What an agent works out during a run — a required build flag, a machine quirk, an API that contradicts its docs — is recorded with a scope (`global`, or a specific repo/workspace/target) and provenance (which run, which workspace, when last verified). A repo-scoped search sees that repo plus global and nothing from other repos. Facts can be superseded without being deleted.
+
+The index maintains itself: rebuilt at service startup (content-hashed, so near-free when nothing changed) and on every document edit through the API.
+
+```bash
+curl "http://localhost:7433/api/context/search?q=how+do+I+build+the+SDK"
+curl "http://localhost:7433/api/context/search?q=ffmpeg&scope_kind=repo&scope_value=OTC.SDK"
+curl http://localhost:7433/api/context/stats
+```
+
+MCP tools: `search`, `record_fact`, `list_facts`, `supersede_fact`, `context_stats`, `reindex_context`.
+
+Design notes, including why there are no embeddings yet: `context/context-engine.md`
+
 ## Deployment targets
 
 Targets are VMs and hardware registered in `config/targets.yaml`. Template VMs are read-only base images — agents work on clones.
@@ -150,6 +173,17 @@ bin/target.py list
 bin/target.py claim deb-02 feature-auth
 bin/target.py run deb-02 "cmake --build ."
 ```
+
+## Compute
+
+takt is currently **single-host**: one `takt-service` owns the SQLite state, the worktrees and the executor, and every pipeline step — agent and script alike — runs as a local process on that machine. `max_agents` (default in `lib/service.py`) caps concurrent runs, which throttles contention rather than adding capacity.
+
+Targets are the one way to push work off the host today, and they are deliberately not wired into the pipeline executor — `bin/target.py run <target> <cmd>` is an explicit, operator- or agent-driven SSH call. A build or test suite can be offloaded that way; the agent driving it still runs locally.
+
+Two things to know before scaling out:
+
+- **Claude capacity is per account, not per machine.** Rate and usage limits attach to the account in `config/takt.yaml`, so running agents on more machines does not raise how much model work you can do concurrently. Extra machines help with CPU-bound work — compiles, test suites, VM-based verification — not with agent throughput.
+- **Workers cannot reach the state or the git origin.** `.state/takt.db` is SQLite with WAL (local filesystem only), `.locks/*.lock` are local files, and workspace clones use `~/dev/root/<repo>` as their origin. Distributing execution means deciding how a remote machine obtains source and reports state before anything else.
 
 ## Project layout
 
