@@ -30,11 +30,7 @@ config/targets.yaml
 # Temp files
 *.xml
 
-# GUI build artifacts
-gui/node_modules/
-gui/dist/
-gui/src-tauri/target/
-
 # Build output and caches
 build/
 .cache/
+*.bak

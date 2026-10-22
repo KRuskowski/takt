@@ -9,9 +9,7 @@ Multi-agent pipeline orchestration for running Claude Code agents across multi-r
 - Runs pipelines via a **background service** that watches for branch changes and executes steps in temporary worktrees
 - Manages **deployment targets** (VMs and hardware) with exclusive locking and qcow2-backed VM cloning
 - Runs **meta agents** for cross-cutting tasks (CLAUDE.md generation, pipeline setup, role template improvement)
-- Provides a **web UI** (C++/Crow), **desktop GUI** (Tauri + React), **TUI** (Textual), **native CLI**, **MCP server**, and **REST/SSE API**
-
-![takt web UI](screenshots/takt.png)
+- Exposes everything through an **MCP server**, a **REST/SSE API**, and a **CLI** — no GUI
 
 ## Architecture
 
@@ -48,44 +46,7 @@ GitHub (upstream)
 
 ## Interfaces
 
-### Web UI (einheit-ui)
-
-Native C++ web server built on Crow and the einheit-ui framework. Serves at `http://takt/` (port 7542) with HTMX + WebSocket for live updates. Includes an in-browser shell (takt-cli), code editor, and dashboard panels for workspaces, pipelines, agents, and targets.
-
-```bash
-systemctl --user start einheit-ui
-```
-
-### Desktop GUI (Tauri + React)
-
-Built with Tauri, React, and Chakra UI. Tabs for Dashboard, Agents, Pipeline, Workspaces, Deployments, Meta Agents, and Settings.
-
-- **Workspaces**: repo status, inline CLAUDE.md editor, pipeline stage prompt editor, workspace settings
-- **Pipeline**: runs with step output streaming via SSE, workspace filter, trigger button
-- **Deployments**: target inventory, VM lifecycle, claim/release
-- **Meta Agents**: run history, cost tracking, output streaming
-- **Settings**: shared template editor (pipeline roles, workspace/repo CLAUDE.md templates)
-- **Command bar**: shell-style command input with zsh-style tab completion cycling
-
-```bash
-cd gui && npm run tauri dev
-```
-
-### Native CLI (einheit-cli)
-
-Interactive shell for workspace, target, pipeline, and agent management. Built on the einheit-cli framework with ZMQ transport to the takt service.
-
-```bash
-build/takt-cli
-```
-
-### TUI (Textual)
-
-Terminal dashboard with live panels for workspaces, agents, pipeline runs, and targets. Connects to takt-service via ZMQ.
-
-```bash
-bin/takt.py
-```
+takt is headless. It is driven by agents through MCP, by scripts through the REST API, and by hand through the CLI.
 
 ### MCP Server
 
@@ -105,21 +66,31 @@ curl http://localhost:7433/api/runs?workspace=my-ws
 curl http://localhost:7433/api/events?topics=step.update
 ```
 
+### CLI
+
+```bash
+bin/takt.py ws list
+bin/takt.py target claim deb-02 feature-auth
+bin/takt.py pipeline show feature-auth
+```
+
+Source `config/takt.zsh` from `~/.zshrc` for a `takt` shell function with completions.
+
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
 | `bin/workspace.py` | Create/delete workspaces, define pipelines |
 | `bin/takt_service.py` | Background service (REST API + pipeline execution) |
-| `bin/takt.py` | Textual TUI (connects to takt-service) |
-| `bin/takt_agent.py` | Conversational AI agent for the takt shell |
+| `bin/takt.py` | Unified CLI (workspaces, targets, pipelines, push) |
+| `bin/takt_agent.py` | Conversational AI agent |
 | `bin/takt_mcp.py` | MCP server for Claude sessions |
 | `bin/pipeline_watch.py` | Standalone poll for branch changes |
 | `bin/target.py` | Claim/release targets, VM lifecycle, SSH |
 | `bin/clone_vm.py` | Create/delete qcow2-backed VM clones |
 | `bin/provision_vm.py` | Provision Debian VM (build tools, shell config) |
 | `bin/push_to_github.py` | Push branches from root repos to GitHub |
-| `bin/setup_takt.py` | First-time setup (systemd, builds, /etc/hosts, MCP) |
+| `bin/setup_takt.py` | First-time setup (systemd unit, venv, MCP) |
 | `bin/setup_win_vm.py` | Create Windows 11 VM (unattended) |
 | `bin/provision_win_vm.py` | Provision Windows VM (VS2022, Git, Samba) |
 | `bin/setup_libvirt.py` | Install libvirt/QEMU and configure networking |
@@ -127,7 +98,7 @@ curl http://localhost:7433/api/events?topics=step.update
 ## Quick start
 
 ```bash
-# First-time setup (systemd units, C++ builds, MCP server)
+# First-time setup (venv, systemd unit, MCP server)
 python3 bin/setup_takt.py
 
 # Create a workspace across multiple repos
@@ -139,17 +110,7 @@ bin/workspace.py pipeline-set feature-auth test push_to_github
 # Start the background service
 systemctl --user start takt-service
 
-# Open the web UI
-systemctl --user start einheit-ui
-# -> http://takt/
-
-# Or launch the desktop GUI
-cd gui && npm run tauri dev
-
-# Or the TUI
-bin/takt.py
-
-# Or trigger a run from the command line
+# Trigger a run
 bin/workspace.py trigger feature-auth
 
 # Push to GitHub when ready
@@ -165,7 +126,7 @@ Built-in scripts:
 - `create_pr` — create GitHub PRs via `gh` CLI
 - `merge_upstream` — fetch and merge default branch into workspace branch
 
-Agent steps run with a configurable model (sonnet/opus/haiku) and get a role prompt from `templates/pipeline_roles.md`. Per-step custom prompts can be edited inline in the Workspaces tab. Results are written to `.stage-result.json` in the worktree.
+Agent steps run with a configurable model (sonnet/opus/haiku) and get a role prompt from `templates/pipeline_roles.md`. Per-step custom prompts are set via `set_pipeline`. Results are written to `.stage-result.json` in the worktree.
 
 ## Deployment targets
 
@@ -201,18 +162,6 @@ lib/                  Shared Python library
   workspace_ops.py    Workspace operations
   git_utils.py        Git helpers
   meta_runner.py      Meta agent executor
-adapters/             Native adapters (C++)
-  ui/                 takt web UI adapter (einheit-ui)
-  cli/                takt CLI adapter (einheit-cli)
-binaries/             Native entry points (C++)
-  takt-ui/            Web UI binary (Crow server)
-  takt-cli/           Interactive CLI binary
-gui/                  Tauri + React desktop GUI
-  src/                React components (Chakra UI)
-  src-tauri/          Tauri backend (Rust)
-tui/                  Dashboard TUI (Textual)
-  tabs/               Tab implementations
-  widgets/            Reusable panel widgets
 config/
   repos.yaml          Managed repo registry (gitignored)
   targets.yaml        Target inventory (gitignored)
@@ -225,9 +174,7 @@ tests/                Unit tests
 
 ## Requirements
 
-- Python 3.11+ with PyYAML, pyzmq, textual, aiohttp, claude-code-sdk
-- C++23 compiler, CMake 3.25+ (for web UI and CLI)
-- Node.js 18+, Rust (for desktop GUI)
+- Python 3.11+ with PyYAML, pyzmq, aiohttp, claude-code-sdk
 - Git
 - libvirt + QEMU (for VM management, optional)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)

@@ -1,4 +1,4 @@
-"""Parse Claude Code JSONL session files for the dashboard.
+"""Parse Claude Code JSONL session files for usage reporting.
 
 Discovers sessions under ~/.claude/projects/, extracts metadata
 and token usage, and calculates estimated costs.

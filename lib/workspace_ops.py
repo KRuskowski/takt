@@ -1,7 +1,7 @@
 """Workspace operations for programmatic use.
 
-Extracted from bin/workspace.py so both the CLI and TUI
-dashboard can share the same logic.
+Extracted from bin/workspace.py so the CLI, the REST API and
+the MCP server can share the same logic.
 """
 
 import shutil

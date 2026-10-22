@@ -8,6 +8,13 @@ All notable changes to takt are recorded here. The format is based on [Keep a Ch
 - **Issue ledger**: takt now tracks which issues from GitHub/GitLab are assigned to which workspaces. Multiple planning agents can see what's already being worked on, preventing duplicate effort. Issues are claimed atomically — if two agents try to grab the same issue, the second one gets a conflict error. Available through the REST API, MCP tools, and the takt agent shell.
 - **Base branch selection**: When creating a workspace, you can now specify which branch to cut from (e.g. `--base release/v11.x`). Previously, workspaces always branched from whatever the root repo happened to have checked out, which could silently pick the wrong starting point.
 
+### Removed
+- **All user interfaces are gone.** takt no longer ships a web UI, a desktop app, or a terminal dashboard. In practice takt is driven by AI agents through the assistant integration (MCP) and by scripts through its API, so the interfaces were unused code that still had to be kept working. Removing them cut the project roughly in half (232 files down to 81) and dropped the need for a C++ compiler, CMake, Node.js and Rust just to install takt.
+  - The `einheit-ui` web server (previously at `http://takt/`) and its companion port-80 redirect service have been stopped, disabled and deleted.
+  - The in-browser shell and code editor are gone, along with the API endpoints that served them.
+  - The Textual terminal dashboard is gone. It had already become unreachable — nothing could launch it.
+  - **What remains, and is unaffected:** the assistant integration (MCP), the REST/event API on port 7433, the `takt` command-line tool, and the background service that runs pipelines. Everything you can do today, you can still do.
+
 ### Changed
 - The takt assistant integration (MCP server) is now available in every Claude session on this machine, not just when working inside the takt project folder. It no longer needs to be approved separately for each project.
 - The takt tools now come with clearer, more detailed descriptions, so the assistant understands what each one does and when to use it (managing workspaces, claiming build/test machines, running pipelines, reading run results, and more).

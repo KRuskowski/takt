@@ -49,23 +49,6 @@ systemctl --user status takt-service
 journalctl --user -u takt-service -f
 ```
 
-## einheit-ui (`config/einheit-ui.service`)
-
-Web UI server (C++/Crow) serving at `http://takt/` (port 7542). Runs the takt adapter with shell and editor support.
-
-```bash
-systemctl --user start einheit-ui
-systemctl --user status einheit-ui
-journalctl --user -u einheit-ui -f
-```
-
-Port 80 redirect via socat (system service):
-
-```bash
-sudo systemctl start takt-socat
-sudo systemctl status takt-socat
-```
-
 ## MCP Server (`bin/takt_mcp.py`)
 
 FastMCP server wrapping the takt REST API. Installed at user scope via `claude mcp add -s user takt <venv-python> bin/takt_mcp.py` (stored in `~/.claude.json`) — available to all Claude sessions in every project, no per-project approval. Exposes workspace, target, pipeline, run, template, context, repo, agent, and account tools.
@@ -118,9 +101,11 @@ sudo python3 bin/clone_vm.py create deb-01 deb-02 \
 sudo python3 bin/clone_vm.py delete deb-02
 ```
 
-## Dashboard (`bin/takt.py`)
+## Unified CLI (`bin/takt.py`)
 
-Tabbed TUI: Dashboard (monitoring panels), Trigger (workflow actions), Settings, plus dynamic agent tabs. Connects to takt-service for agent execution and pipeline events. Falls back to local execution without service. Details: `context/dashboard.md`
+Argparse CLI over `lib/commands.py`: `takt ws|target|pipeline|push|service`. Sourcing `config/takt.zsh` from `~/.zshrc` provides the `takt` shell function with completions.
+
+takt has no graphical or terminal UI. Interaction is via the MCP server, the REST API on port 7433, and this CLI.
 
 ## Push to GitHub (`bin/push_to_github.py`)
 

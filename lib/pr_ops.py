@@ -1,4 +1,4 @@
-"""GitHub PR operations for dashboard display.
+"""GitHub PR operations.
 
 Discovers GitHub slugs from root repo remotes and queries
 open PRs via the gh CLI.

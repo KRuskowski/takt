@@ -1,7 +1,7 @@
 """Target lock and config operations for programmatic use.
 
-Extracted from bin/target.py so both the CLI and TUI dashboard
-can share the same logic.
+Extracted from bin/target.py so the CLI, the REST API and the
+MCP server can share the same logic.
 """
 
 import json

@@ -183,18 +183,15 @@ The setup script handles everything: venv, C++ build, systemd services, /etc/hos
 python3 ~/dev/takt/bin/setup_takt.py
 ```
 
-This installs three services:
-- **takt-service** (user) — REST API on port 7433
-- **einheit-ui** (user) — web UI on port 7542, binds to 127.0.0.1
-- **takt-socat** (system) — port 80→7542 redirect, binds to 127.0.0.1
+This installs one service:
+- **takt-service** (user) — REST API on port 7433, binds to 127.0.0.1
 
-All services bind to localhost only — the UI is not reachable from the network.
+It binds to localhost only — not reachable from the network.
 
 Verify:
 ```bash
-systemctl --user status takt-service einheit-ui
-sudo systemctl status takt-socat
-curl http://takt/  # should return 200
+systemctl --user status takt-service
+curl http://127.0.0.1:7433/api/ping  # should return 200
 ```
 
 ## 10. Verify the setup

@@ -121,14 +121,6 @@ def build_app(service):
     "/api/templates/{name}", handle_put_template,
   )
 
-  # Shell tab state.
-  app.router.add_get(
-    "/api/shell/tabs", handle_get_shell_tabs,
-  )
-  app.router.add_put(
-    "/api/shell/tabs", handle_put_shell_tabs,
-  )
-
   # Context files.
   app.router.add_get(
     "/api/context", handle_list_context,
@@ -143,17 +135,6 @@ def build_app(service):
   # Pipeline roles.
   app.router.add_get(
     "/api/roles", handle_list_roles,
-  )
-
-  # Project root files.
-  app.router.add_get(
-    "/api/files", handle_list_files,
-  )
-  app.router.add_get(
-    "/api/files/{path:.+}", handle_get_file,
-  )
-  app.router.add_put(
-    "/api/files/{path:.+}", handle_put_file,
   )
 
   # Search.
@@ -753,43 +734,6 @@ async def handle_set_active_account(request):
   })
 
 
-# -- Shell tab state --
-
-async def handle_get_shell_tabs(request):
-  """GET /api/shell/tabs — read persisted open tabs."""
-  from lib.config import STATE_DIR
-  path = STATE_DIR / "shell_tabs.json"
-  if not path.exists():
-    return web.json_response(
-      {"status": "ok",
-       "data": {"tabs": [], "active": "mngmt"}},
-    )
-  try:
-    state = json.loads(path.read_text())
-    if isinstance(state, list):
-      state = {"tabs": state, "active": "mngmt"}
-  except Exception:
-    state = {"tabs": [], "active": "mngmt"}
-  return web.json_response(
-    {"status": "ok", "data": state},
-  )
-
-
-async def handle_put_shell_tabs(request):
-  """PUT /api/shell/tabs — persist open tabs."""
-  from lib.config import STATE_DIR
-  body = await request.json()
-  state = {
-    "tabs": body.get("tabs", []),
-    "active": body.get("active", "mngmt"),
-  }
-  path = STATE_DIR / "shell_tabs.json"
-  path.write_text(json.dumps(state))
-  return web.json_response(
-    {"status": "ok", "data": state},
-  )
-
-
 # -- Context files --
 
 async def handle_list_context(request):
@@ -910,84 +854,6 @@ async def handle_search(request):
         })
   return web.json_response(
     {"status": "ok", "data": {"results": results}},
-  )
-
-
-# -- Project files --
-
-EDITABLE_FILES = [
-  "CLAUDE.md",
-  "README.md",
-]
-EDITABLE_DIRS = [
-  "templates",
-  "context",
-]
-
-
-async def handle_list_files(request):
-  """GET /api/files — list editable project files."""
-  from lib.config import PROJECT_DIR
-  result = []
-  for f in EDITABLE_FILES:
-    path = PROJECT_DIR / f
-    if path.exists():
-      result.append({"path": f, "section": "project"})
-  for d in EDITABLE_DIRS:
-    dpath = PROJECT_DIR / d
-    if not dpath.exists():
-      continue
-    for f in sorted(dpath.iterdir()):
-      if f.is_file():
-        rel = f"{d}/{f.name}"
-        result.append({"path": rel, "section": d})
-  return web.json_response(
-    {"status": "ok", "data": {"files": result}},
-  )
-
-
-async def handle_get_file(request):
-  """GET /api/files/{path} — read a project file."""
-  from lib.config import PROJECT_DIR
-  rel = request.match_info["path"]
-  if ".." in rel:
-    return web.json_response(
-      {"status": "error", "message": "invalid path"},
-      status=400,
-    )
-  path = PROJECT_DIR / rel
-  if not path.exists():
-    return web.json_response(
-      {"status": "error", "message": "not found"},
-      status=404,
-    )
-  content = path.read_text()
-  return web.json_response(
-    {"status": "ok",
-     "data": {"path": rel, "content": content}},
-  )
-
-
-async def handle_put_file(request):
-  """PUT /api/files/{path} — write a project file."""
-  from lib.config import PROJECT_DIR
-  rel = request.match_info["path"]
-  if ".." in rel:
-    return web.json_response(
-      {"status": "error", "message": "invalid path"},
-      status=400,
-    )
-  path = PROJECT_DIR / rel
-  if not path.parent.exists():
-    return web.json_response(
-      {"status": "error", "message": "dir not found"},
-      status=404,
-    )
-  body = await request.json()
-  content = body.get("content", "")
-  path.write_text(content)
-  return web.json_response(
-    {"status": "ok", "data": {"path": rel}},
   )
 
 
