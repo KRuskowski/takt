@@ -618,6 +618,11 @@ def get_run_steps(run_id, db_path=None):
 def list_runs(workspace=None, limit=20, db_path=None):
   """List runs, newest first.
 
+  Ties on created_at are broken by id. Two runs created in
+  the same millisecond have identical timestamps, so
+  without the tiebreak the order of the pair is whatever
+  SQLite happens to return.
+
   Args:
     workspace: Optional workspace filter.
     limit: Max number of runs to return.
@@ -630,13 +635,13 @@ def list_runs(workspace=None, limit=20, db_path=None):
     if workspace:
       rows = conn.execute(
         "SELECT * FROM runs WHERE workspace = ? "
-        "ORDER BY created_at DESC LIMIT ?",
+        "ORDER BY created_at DESC, id DESC LIMIT ?",
         (workspace, limit),
       ).fetchall()
     else:
       rows = conn.execute(
         "SELECT * FROM runs "
-        "ORDER BY created_at DESC LIMIT ?",
+        "ORDER BY created_at DESC, id DESC LIMIT ?",
         (limit,),
       ).fetchall()
     return [dict(r) for r in rows]
@@ -967,6 +972,8 @@ def create_meta_agent(name, description, prompt, model="sonnet",
 def update_meta_agent(meta_agent_id, db_path=None, **fields):
   """Update a meta agent definition.
 
+  Ties on created_at are broken by id, as in list_runs().
+
   Args:
     meta_agent_id: Meta agent row ID.
     db_path: Override path for testing.
@@ -1206,7 +1213,7 @@ def list_meta_agent_runs(meta_agent_id, limit=20,
     rows = conn.execute(
       "SELECT * FROM meta_agent_runs "
       "WHERE meta_agent_id = ? "
-      "ORDER BY created_at DESC LIMIT ?",
+      "ORDER BY created_at DESC, id DESC LIMIT ?",
       (meta_agent_id, limit),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -1569,7 +1576,7 @@ def list_issues(status=None, workspace=None,
   with _connect(db_path) as conn:
     rows = conn.execute(
       f"SELECT * FROM issues{where} "
-      f"ORDER BY updated_at DESC",
+      f"ORDER BY updated_at DESC, id DESC",
       params,
     ).fetchall()
     return [dict(r) for r in rows]
