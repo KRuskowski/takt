@@ -205,7 +205,9 @@ Each worker keeps its own git mirrors — a worktree's `.git` points into its pa
 
 Claims are leases carrying a generation, so a worker that goes dark long enough to lose its lease is refused when it returns instead of reporting over whoever took the run over. A worker without Claude Code declares itself build-only and is never offered a run containing an agent step. `--disk-floor-mb` stops it accepting work when nearly full, and worktrees are removed at run completion.
 
-Agent steps do not run on a worker yet; build and test work does, which is the CPU-bound half. Design notes and the remaining stage: `context/distributed-execution.md`
+**Agent steps run on workers too**, by invoking the `claude` CLI as a subprocess with the prompt the scheduler rendered — so role templates stay authoritative in one place and a worker needs only the CLI installed. A worker declares `agent_steps` from whether `claude` is on PATH and is never handed an agent run if it isn't. `--claude-home` sets `CLAUDE_CONFIG_DIR`, which is what actually multiplies agent throughput: limits attach to the **account**, not the machine, so workers sharing one account share one quota.
+
+Design notes and the remaining stage (elastic cloud provisioning): `context/distributed-execution.md`
 
 Two things that distribution does **not** solve:
 

@@ -184,7 +184,13 @@ bin/takt_worker.py --id cloud-01 \
 
 # Build-only machine (no Claude Code): never handed agent steps
 bin/takt_worker.py --id build-02 ... --no-agent-steps
+
+# Agent steps on a worker, under their own Claude account
+bin/takt_worker.py --id agent-01 ... \
+  --claude-home ~/accounts/worker-a
 ```
+
+**Agent steps** run the `claude` CLI as a subprocess (`-p --output-format stream-json --verbose`), with the prompt the *scheduler* rendered — role templates stay authoritative in one place. A worker declares `agent_steps` from whether `claude` is on PATH, and is never handed an agent run if it isn't. `--claude-home` sets `CLAUDE_CONFIG_DIR`: limits attach to the **account**, not the machine, so give each worker its own account or extra machines add no agent throughput.
 
 Outbound only, so a NAT'd cloud VM needs no inbound access. Each worker keeps its own mirrors (a git worktree cannot live on a different machine from its repo) and materialises worktrees at the exact SHA the run recorded. Commits produced come back as a git bundle over the same connection — workers only ever *fetch*, so the operator still gates what reaches GitHub. `push_to_github` and `create_pr` are refused on a worker and reported skipped.
 

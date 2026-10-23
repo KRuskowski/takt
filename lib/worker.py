@@ -204,6 +204,161 @@ class Scheduler:
     )
 
 
+def claude_cli_argv(prompt, model=None, add_dirs=(),
+                    bare=False):
+  """Build the argv for a non-interactive Claude CLI run.
+
+  Agent steps run the `claude` CLI as a subprocess rather
+  than embedding the SDK: the worker then needs only the
+  CLI installed, and the scheduler's rendered prompt goes
+  in unchanged.
+
+  --verbose is not optional: the CLI refuses
+  `--output-format stream-json` under `--print` without it.
+
+  --permission-mode is passed explicitly because an
+  interactive shell may alias `claude` to add it, and a
+  subprocess does not inherit shell aliases.
+
+  Args:
+    prompt: Fully rendered prompt from the scheduler.
+    model: Model alias or full name, e.g. 'opus'.
+    add_dirs: Extra directories the agent may read.
+    bare: Skip hooks, plugins and MCP servers.
+
+  Returns:
+    List of argv strings.
+  """
+  argv = [
+    "claude", "-p", prompt,
+    "--output-format", "stream-json",
+    "--verbose",
+    "--permission-mode", "bypassPermissions",
+  ]
+  if model:
+    argv += ["--model", model]
+  if bare:
+    argv.append("--bare")
+  for directory in add_dirs:
+    argv += ["--add-dir", str(directory)]
+  return argv
+
+
+def claude_env(claude_home=None, base_env=None):
+  """Build the environment for a Claude CLI subprocess.
+
+  CLAUDE_CONFIG_DIR selects which account the CLI
+  authenticates as. Rate and usage limits attach to the
+  account, so giving each worker its own is what actually
+  multiplies agent throughput — more machines sharing one
+  account do not.
+
+  Args:
+    claude_home: Directory to use as CLAUDE_CONFIG_DIR.
+    base_env: Environment to copy. Defaults to os.environ.
+
+  Returns:
+    Environment dict.
+  """
+  env = dict(
+    base_env if base_env is not None else os.environ
+  )
+  if claude_home:
+    env["CLAUDE_CONFIG_DIR"] = str(
+      Path(claude_home).expanduser()
+    )
+  return env
+
+
+def parse_cli_event(line):
+  """Parse one stream-json line into an output record.
+
+  Unknown event types are kept rather than dropped — the
+  CLI emits types that did not exist when this was written
+  (rate_limit_event is one), and a parser that only
+  understood a fixed set would silently discard them.
+
+  Args:
+    line: One line of CLI stdout.
+
+  Returns:
+    (kind, content, meta) tuple, or None for blank lines.
+  """
+  line = line.strip()
+  if not line:
+    return None
+  try:
+    event = json.loads(line)
+  except ValueError:
+    # Not JSON: still worth keeping verbatim.
+    return ("stdout", line[:4000], {})
+  kind = event.get("type", "unknown")
+  if kind == "assistant":
+    texts = [
+      block.get("text", "")
+      for block in event.get("message", {}).get(
+        "content", []
+      )
+      if block.get("type") == "text"
+    ]
+    content = "\n".join(t for t in texts if t)
+    if not content:
+      content = _tool_summary(event)
+    return ("assistant", content[:8000], {})
+  if kind == "result":
+    return (
+      "result",
+      str(event.get("result", ""))[:8000],
+      {
+        "is_error": bool(event.get("is_error")),
+        "subtype": event.get("subtype"),
+        "num_turns": event.get("num_turns"),
+        "total_cost_usd": event.get("total_cost_usd"),
+        "terminal_reason": event.get("terminal_reason"),
+        "api_error_status": event.get("api_error_status"),
+      },
+    )
+  if kind == "system":
+    return (
+      "system",
+      f"session {event.get('session_id', '?')} "
+      f"model {event.get('model', '?')}",
+      {},
+    )
+  return (kind, json.dumps(event)[:4000], {})
+
+
+def _tool_summary(event):
+  """Summarise tool_use blocks in an assistant event."""
+  names = [
+    block.get("name", "?")
+    for block in event.get("message", {}).get("content", [])
+    if block.get("type") == "tool_use"
+  ]
+  return f"tool_use: {', '.join(names)}" if names else ""
+
+
+def read_stage_result(cwd):
+  """Read .stage-result.json from a worktree.
+
+  Mirrors PipelineExecutor._read_stage_result so a step
+  passes or fails by the same rule wherever it ran.
+
+  Args:
+    cwd: Directory the agent ran in.
+
+  Returns:
+    Parsed dict, or None if absent or unreadable.
+  """
+  path = Path(cwd) / ".stage-result.json"
+  if not path.exists():
+    return None
+  try:
+    return json.loads(path.read_text())
+  except (ValueError, OSError):
+    return None
+
+
 def free_disk_mb(path):
   """Free space at a path, in MB.
 

@@ -510,6 +510,69 @@ def _gh_repo_name(repo_path):
     return ""
 
 
+def build_agent_prompt(role, workspace, repos, config, run):
+  """Build an agent prompt from role template and context.
+
+  Module level, and always rendered on the scheduler, for
+  two reasons: the role templates there are authoritative
+  (a worker's checkout may be stale or absent), and
+  rendering reads commit logs straight out of the root
+  repos. A remote worker is handed the finished prompt
+  rather than the ingredients.
+
+  Args:
+    role: Role slug (e.g. "test", "review").
+    workspace: Workspace name.
+    repos: List of repo names.
+    config: Step config dict.
+    run: Run dict from db.
+
+  Returns:
+    Prompt string.
+  """
+  roles = parse_pipeline_roles()
+  role_snippet = roles.get(role, "")
+  parts = []
+  if role_snippet:
+    parts.append(f"# Role: {role}\n\n{role_snippet}\n")
+  parts.append(f"Branch: `{workspace}`")
+  parts.append(f"Repos: {', '.join(repos)}")
+  # Add commit context.
+  refs = json.loads(run["head_refs_json"])
+  repos_config = load_repos_config().get("repos", {})
+  for repo in repos:
+    ref = refs.get(repo)
+    if not ref:
+      continue
+    cfg = repos_config.get(repo, {})
+    repo_path = get_repo_path(cfg.get("path", repo))
+    try:
+      log_text = get_log(repo_path, head=ref, max_count=10)
+      if log_text:
+        parts.append(
+          f"\n## {repo} recent commits\n"
+          f"```\n{log_text}\n```"
+        )
+    except (GitError, OSError):
+      # OSError as well as GitError: a repo listed in the
+      # run but missing from disk makes subprocess raise
+      # FileNotFoundError, which GitError does not cover.
+      # Commit context is a nicety — never fail rendering
+      # (and so never fail a worker's lease) over it.
+      pass
+  # Add custom prompt from config.
+  custom = config.get("prompt")
+  if custom:
+    parts.append(f"\n{custom}")
+  parts.append(
+    "\nWrite results to .stage-result.json:\n"
+    '  {"status":"pass|fail","summary":"...",'
+    '"failures":[]}\n'
+    "Do NOT push. Do NOT modify git remotes."
+  )
+  return "\n".join(parts)
+
+
 # -- Pipeline executor --
 
 class PipelineExecutor:
@@ -860,6 +923,9 @@ class PipelineExecutor:
                           config, run):
     """Build an agent prompt from role template and context.
 
+    Delegates to the module-level build_agent_prompt() so a
+    remote worker can be handed the same rendered prompt.
+
     Args:
       role: Role slug (e.g. "test", "review").
       config: Step config dict.
@@ -870,43 +936,10 @@ class PipelineExecutor:
     Returns:
       Prompt string.
     """
-    roles = parse_pipeline_roles()
-    role_snippet = roles.get(role, "")
-    parts = []
-    if role_snippet:
-      parts.append(f"# Role: {role}\n\n{role_snippet}\n")
-    parts.append(f"Branch: `{workspace}`")
-    parts.append(f"Repos: {', '.join(repos)}")
-    # Add commit context.
-    refs = json.loads(run["head_refs_json"])
-    repos_config = load_repos_config().get("repos", {})
-    for repo in repos:
-      ref = refs.get(repo)
-      if not ref:
-        continue
-      cfg = repos_config.get(repo, {})
-      repo_path = get_repo_path(
-        cfg.get("path", repo)
-      )
-      try:
-        log_text = get_log(
-          repo_path, head=ref, max_count=10,
-        )
-        if log_text:
-          parts.append(f"\n## {repo} recent commits\n```\n{log_text}\n```")
-      except GitError:
-        pass
-    # Add custom prompt from config.
-    custom = config.get("prompt")
-    if custom:
-      parts.append(f"\n{custom}")
-    parts.append(
-      "\nWrite results to .stage-result.json:\n"
-      '  {"status":"pass|fail","summary":"...",'
-      '"failures":[]}\n'
-      "Do NOT push. Do NOT modify git remotes."
+    return build_agent_prompt(
+      role, workspace, repos, config, run
     )
-    return "\n".join(parts)
+
 
   def _read_stage_result(self, cwd):
     """Read .stage-result.json from the working directory.

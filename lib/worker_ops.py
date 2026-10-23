@@ -66,27 +66,70 @@ def lease(worker_id, lease_secs=900, db_path=None):
   if run is None:
     return None
   steps = db.get_run_steps(run["id"], db_path=db_path)
+  repos = _loads(run["repos_json"], [])
+  out_steps = []
+  for s in steps:
+    config = _loads(s["config_json"], {})
+    step = {
+      "step_id": s["id"],
+      "seq": s["seq"],
+      "name": s["name"],
+      "step_type": s["step_type"],
+      "status": s["status"],
+      "timeout_secs": s["timeout_secs"],
+      "config": config,
+    }
+    if s["step_type"] == "agent":
+      # Rendered here, not on the worker: the role
+      # templates on the scheduler are authoritative, and
+      # rendering reads commit logs from the root repos,
+      # which a worker cannot see.
+      step["prompt"] = _render_prompt(
+        s["name"], run["workspace"], repos, config, run
+      )
+      step["model"] = config.get("model", "sonnet")
+    out_steps.append(step)
   return {
     "run_id": run["id"],
     "workspace": run["workspace"],
     "generation": run["lease_generation"],
     "lease_expires_at": run["lease_expires_at"],
     "trigger": run["trigger"],
-    "repos": _loads(run["repos_json"], []),
+    "repos": repos,
     "refs": _loads(run["head_refs_json"], {}),
-    "steps": [
-      {
-        "step_id": s["id"],
-        "seq": s["seq"],
-        "name": s["name"],
-        "step_type": s["step_type"],
-        "status": s["status"],
-        "timeout_secs": s["timeout_secs"],
-        "config": _loads(s["config_json"], {}),
-      }
-      for s in steps
-    ],
+    "steps": out_steps,
   }
+
+
+def _render_prompt(role, workspace, repos, config, run):
+  """Render an agent prompt, never failing the lease.
+
+  A prompt that cannot be built is reported to the worker
+  as an empty prompt, which it refuses rather than running
+  an agent with no instructions. Raising here would fail
+  the whole lease call instead.
+
+  Args:
+    role: Step name / role slug.
+    workspace: Workspace name.
+    repos: Repo names in the run.
+    config: Step config.
+    run: Run row.
+
+  Returns:
+    Prompt string, or '' if rendering failed.
+  """
+  from lib.pipeline import build_agent_prompt
+  try:
+    return build_agent_prompt(
+      role, workspace, repos, config, run
+    )
+  except Exception:
+    log.exception(
+      "Failed to render prompt for role %s on run %s",
+      role, run.get("id"),
+    )
+    return ""
 
 
 def _loads(raw, default):

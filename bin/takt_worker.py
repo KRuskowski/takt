@@ -31,6 +31,7 @@ import argparse
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -45,11 +46,21 @@ from lib.worker import (
   WorkerError,
   bundle_for,
   can_run,
+  claude_cli_argv,
+  claude_env,
   cleanup,
   detect_capabilities,
   free_disk_mb,
   materialise,
+  parse_cli_event,
+  read_stage_result,
 )
+
+# Set from CLI args in main(); agent steps need them deep
+# in the call chain and threading them through every frame
+# only to reach one function is worse.
+_CLAUDE_HOME = None
+_AGENT_BARE = False
 
 log = logging.getLogger("takt.worker")
 
@@ -216,9 +227,9 @@ def _run_local_step(step, work_dir, work):
   it runs. The run dict is reconstructed from the lease
   payload because the worker has no database access.
 
-  Agent steps are not executed here yet: they need an
-  authenticated Claude Code plus the role templates, and a
-  worker declaring agent_steps=False is never handed one.
+  Agent steps shell out to the `claude` CLI with the
+  prompt the scheduler rendered. A worker declaring
+  agent_steps=False is never handed one.
 
   Args:
     step: Step dict from the lease payload.
@@ -234,6 +245,8 @@ def _run_local_step(step, work_dir, work):
   import json as _json
   from lib.pipeline import SCRIPT_REGISTRY
   name = step["name"]
+  if step["step_type"] == "agent":
+    return _run_agent_step(step, work_dir)
   if step["step_type"] != "script":
     raise WorkerError(
       f"step type {step['step_type']!r} is not supported "
@@ -260,6 +273,99 @@ def _run_local_step(step, work_dir, work):
     or result.get("status", "")
   )
   return ([], ok, summary[:2000])
+
+
+def _run_agent_step(step, work_dir):
+  """Run an agent step by invoking the Claude CLI.
+
+  The prompt is whatever the scheduler rendered — the
+  worker does not build prompts, so the role templates
+  stay authoritative in one place.
+
+  Pass/fail follows the same rule as the local executor:
+  the CLI completing is not success on its own; the step
+  fails if .stage-result.json says so, and completes
+  otherwise.
+
+  Args:
+    step: Step dict from the lease payload, with 'prompt'.
+    work_dir: Worktree to run in.
+
+  Returns:
+    (output_lines, ok, summary).
+
+  Raises:
+    WorkerError: If the step cannot be run here.
+  """
+  import json as _json
+  prompt = step.get("prompt") or ""
+  if not prompt.strip():
+    raise WorkerError(
+      f"agent step {step['name']!r} arrived with no "
+      f"prompt; refusing to run an agent with no "
+      f"instructions"
+    )
+  argv = claude_cli_argv(
+    prompt,
+    model=step.get("model"),
+    add_dirs=[work_dir],
+    bare=_AGENT_BARE,
+  )
+  env = claude_env(claude_home=_CLAUDE_HOME)
+  timeout = int(step.get("timeout_secs") or 1800)
+  lines = []
+  line_no = 0
+  meta_result = {}
+  proc = subprocess.Popen(
+    argv, cwd=str(work_dir), env=env,
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True,
+  )
+  try:
+    for raw in proc.stdout:
+      parsed = parse_cli_event(raw)
+      if parsed is None:
+        continue
+      kind, content, meta = parsed
+      if kind == "result":
+        meta_result = meta
+      line_no += 1
+      lines.append({
+        "line_no": line_no, "kind": kind,
+        "content": content, "meta": meta,
+      })
+    proc.wait(timeout=timeout)
+  except subprocess.TimeoutExpired:
+    proc.kill()
+    raise WorkerError(
+      f"agent step {step['name']!r} exceeded "
+      f"{timeout}s"
+    )
+  finally:
+    if proc.poll() is None:
+      proc.kill()
+  stderr = (proc.stderr.read() or "").strip()
+
+  if proc.returncode != 0 or meta_result.get("is_error"):
+    detail = stderr[:1000] or meta_result.get(
+      "api_error_status"
+    ) or "claude CLI reported an error"
+    return (lines, False, f"agent failed: {detail}")
+
+  # The agent's own verdict decides, matching the local
+  # executor. A clean CLI exit with a 'fail' result is a
+  # failed step, not a passed one.
+  result = read_stage_result(work_dir)
+  if result and result.get("status") == "fail":
+    return (
+      lines, False,
+      str(result.get("summary", "agent reported fail")),
+    )
+  summary = (
+    str(result.get("summary", "")) if result
+    else _json.dumps(meta_result)[:500]
+  )
+  return (lines, True, summary[:2000])
 
 
 def run_once(scheduler, caps, args, repos_config):
@@ -467,7 +573,24 @@ def main():
     help="Declare this a build-only worker even if Claude "
          "Code is installed.",
   )
+  parser.add_argument(
+    "--claude-home", default=os.environ.get("CLAUDE_HOME"),
+    help="CLAUDE_CONFIG_DIR for agent steps, selecting "
+         "which account the CLI authenticates as. Limits "
+         "attach to the account, so give each worker its "
+         "own to actually gain agent throughput.",
+  )
+  parser.add_argument(
+    "--agent-bare", action="store_true",
+    help="Run agent steps with --bare (no hooks, plugins "
+         "or MCP servers). Off by default, matching the "
+         "scheduler's in-process agents.",
+  )
   args = parser.parse_args()
+
+  global _CLAUDE_HOME, _AGENT_BARE
+  _CLAUDE_HOME = args.claude_home
+  _AGENT_BARE = args.agent_bare
 
   logging.basicConfig(
     level=logging.INFO,
@@ -505,9 +628,11 @@ def main():
     log.error("Could not register: %s", e)
     return 1
   log.info(
-    "Registered %s (%s, %s cores, agent_steps=%s)",
+    "Registered %s (%s, %s cores, agent_steps=%s, "
+    "claude_home=%s)",
     args.worker_id, caps["os"], caps["cores"],
     caps["capabilities"]["agent_steps"],
+    _CLAUDE_HOME or "default",
   )
 
   signal.signal(signal.SIGINT, _handle_signal)

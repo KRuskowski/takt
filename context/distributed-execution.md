@@ -9,7 +9,9 @@ Two deviations from the design as first written, both corrections:
 - **The worker protocol is HTTP, not the ZMQ ROUTER.** Workers dialling out solves worker-side NAT, but the scheduler needs a reachable port either way, and over the public internet bearer-token-over-TLS is standard while raw ZMQ means managing CurveZMQ keys with no transport security by default. The REST API already existed and proxies trivially.
 - **Capability gating lives in `lease_run`, not in the worker.** A worker that leases a run it cannot execute and hands it back can do that to another such worker indefinitely, so a worker without an authenticated Claude Code is never offered a run containing an agent step.
 
-Still open: agent steps do not execute on a worker yet. A worker declares `agent_steps` from whether Claude Code is present, and build and test work — the CPU-bound half, and the reason for doing any of this — distributes today.
+Agent steps now execute on workers too, by shelling out to the `claude` CLI (`-p --output-format stream-json --verbose`) rather than embedding the SDK — a worker needs only the CLI, and the prompt is rendered on the scheduler so the role templates stay authoritative in one place. `--claude-home` sets `CLAUDE_CONFIG_DIR` per worker, which is the setting that actually multiplies agent throughput, since limits attach to the account rather than the machine.
+
+Still open: stage 3, elastic cloud provisioning.
 
 ## The problem
 
