@@ -200,6 +200,53 @@ class TestDelete:
     assert "no longer" in msg
     assert d.exists()
 
+  def test_refuses_a_dir_with_tracked_files(self, ws_root):
+    """Committed content is never deleted.
+
+    The markers are strong evidence, not proof. If a
+    generated directory was committed at some point,
+    removing it would destroy content that exists only in
+    that branch's working tree.
+    """
+    repo = ws_root / "ws1" / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)],
+                   check=True, timeout=60)
+    subprocess.run(
+      ["git", "-C", str(repo), "config", "user.email",
+       "t@t"], check=True, timeout=60)
+    subprocess.run(
+      ["git", "-C", str(repo), "config", "user.name", "t"],
+      check=True, timeout=60)
+    d = make_build_dir(repo, "build")
+    subprocess.run(
+      ["git", "-C", str(repo), "add", "-A", "-f"],
+      check=True, timeout=60)
+    subprocess.run(
+      ["git", "-C", str(repo), "commit", "-q", "-m", "x",
+       "--no-gpg-sign"],
+      check=True, timeout=60)
+    ok, msg = reclaim.delete(
+      {"path": str(d), "kind": "cmake build dir"}
+    )
+    assert not ok
+    assert "tracked" in msg
+    assert d.exists()
+
+  def test_untracked_build_dir_is_removed(self, ws_root):
+    """A gitignored build dir in a repo is still removed."""
+    repo = ws_root / "ws2" / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)],
+                   check=True, timeout=60)
+    (repo / ".gitignore").write_text("build/\n")
+    d = make_build_dir(repo, "build")
+    ok, msg = reclaim.delete(
+      {"path": str(d), "kind": "cmake build dir"}
+    )
+    assert ok, msg
+    assert not d.exists()
+
   def test_already_gone_is_not_an_error(self, ws_root):
     """A directory removed since the survey is fine."""
     ok, msg = reclaim.delete({

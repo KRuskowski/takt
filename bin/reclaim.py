@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -247,6 +248,38 @@ def survey(selected, now, on_progress=None):
   return sorted(rows, key=lambda r: r["bytes"], reverse=True)
 
 
+def has_tracked_files(path):
+  """Check whether git tracks anything inside a directory.
+
+  The markers are strong evidence but not a guarantee: if a
+  generated directory was ever committed, deleting it would
+  destroy content that only exists in the working tree of
+  that branch. Refusing on tracked content costs one git
+  call per candidate and removes the last way this tool
+  could lose work.
+
+  A directory outside any repo counts as untracked — it is
+  still inside a workspace, so the other guards apply.
+
+  Args:
+    path: Directory to check.
+
+  Returns:
+    True if git reports tracked files under path.
+  """
+  try:
+    res = subprocess.run(
+      ["git", "-C", path, "ls-files", "--", "."],
+      capture_output=True, text=True, timeout=60,
+    )
+  except (OSError, subprocess.SubprocessError):
+    # Cannot tell; assume the worst and keep the directory.
+    return True
+  if res.returncode != 0:
+    return False
+  return bool(res.stdout.strip())
+
+
 def is_within(child, parent):
   """Check that a path really sits under a directory.
 
@@ -293,6 +326,8 @@ def delete(item):
     return (False, "gone already")
   if not classify(path):
     return (False, "no longer a build dir")
+  if has_tracked_files(path):
+    return (False, "contains git-tracked files")
   try:
     shutil.rmtree(path)
   except OSError as e:
