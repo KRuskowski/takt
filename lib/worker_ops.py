@@ -180,6 +180,16 @@ def report_step(worker_id, run_id, generation, step_id,
       num_turns=num_turns, db_path=db_path,
     )
     applied["status"] = status
+    # Recompute the run as each step moves, the way the
+    # local executor does. Two reasons: an operator sees a
+    # remote run as running rather than queued while it
+    # works, and the run reaches 'running' before its
+    # steps finish — without which a run whose steps all
+    # skip would be stuck, since RUN_TRANSITIONS has no
+    # queued -> passed edge.
+    applied["run_status"] = db.advance_run(
+      run_id, db_path=db_path
+    )
   return applied
 
 

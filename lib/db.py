@@ -784,7 +784,8 @@ def list_workers(db_path=None):
   return workers
 
 
-def lease_run(worker_id, lease_secs=900, db_path=None):
+def lease_run(worker_id, lease_secs=900,
+              allow_agent_steps=True, db_path=None):
   """Claim the oldest unclaimed queued run.
 
   Exclusion comes from this being ONE statement. SQLite
@@ -808,12 +809,25 @@ def lease_run(worker_id, lease_secs=900, db_path=None):
   Args:
     worker_id: Worker taking the run.
     lease_secs: Seconds before the claim expires.
+    allow_agent_steps: False for a worker with no
+      authenticated Claude Code. Such a worker is never
+      handed a run containing an agent step, because the
+      alternative is it leasing the run, discovering it
+      cannot execute it, and handing it back — which two
+      workers can do to each other indefinitely.
     db_path: Override path for testing.
 
   Returns:
     The leased run as a dict, including lease_generation,
     or None if nothing was available.
   """
+  gate = ""
+  if not allow_agent_steps:
+    gate = (
+      "    AND NOT EXISTS ("
+      "      SELECT 1 FROM steps s WHERE s.run_id = r.id "
+      "      AND s.step_type = 'agent') "
+    )
   with _connect(db_path) as conn:
     # RETURNING gives back exactly the row claimed. Reading
     # it back by worker_id would be wrong as soon as one
@@ -824,9 +838,11 @@ def lease_run(worker_id, lease_secs=900, db_path=None):
       " lease_expires_at = strftime("
       "   '%Y-%m-%dT%H:%M:%fZ', 'now', ? || ' seconds') "
       "WHERE id = ("
-      "  SELECT id FROM runs "
-      "  WHERE status = 'queued' AND worker_id IS NULL "
-      "  ORDER BY created_at ASC, id ASC LIMIT 1"
+      "  SELECT r.id FROM runs r "
+      "  WHERE r.status = 'queued' "
+      "    AND r.worker_id IS NULL "
+      + gate +
+      "  ORDER BY r.created_at ASC, r.id ASC LIMIT 1"
       ") AND worker_id IS NULL "
       "RETURNING *",
       (worker_id, int(lease_secs)),

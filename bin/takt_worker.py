@@ -1,0 +1,531 @@
+#!/usr/bin/env python3
+"""takt-worker — execute pipeline runs on another machine.
+
+Dials out to a takt scheduler, leases runs, executes their
+steps locally, reports progress, and delivers any commits
+produced as a git bundle. Outbound only, so a cloud VM
+behind NAT works with no inbound access.
+
+Usage:
+  bin/takt_worker.py --scheduler https://takt:7433 \
+      --id build-01 --once
+  bin/takt_worker.py --scheduler https://takt:7433 \
+      --id build-01            # loop until stopped
+
+Configuration by environment:
+  TAKT_API_URL      scheduler base URL
+  TAKT_API_TOKEN    bearer token, if the scheduler needs one
+  TAKT_WORKER_ID    worker name
+  TAKT_WORKER_DIR   where mirrors and run trees live
+
+Source for the worker's mirrors (--upstream):
+  scheduler  fetch from the scheduler host over SSH. Keeps
+             the scheduler the source of truth. LAN only.
+  github     fetch from GitHub, for a cloud worker with no
+             route back. Workers only ever FETCH; pushing
+             upstream remains a scheduler-side step, so the
+             operator still gates what reaches GitHub.
+"""
+
+import argparse
+import logging
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_DIR))
+
+from lib.worker import (
+  LeaseLost,
+  SCHEDULER_ONLY_STEPS,
+  Scheduler,
+  WorkerError,
+  bundle_for,
+  can_run,
+  cleanup,
+  detect_capabilities,
+  free_disk_mb,
+  materialise,
+)
+
+log = logging.getLogger("takt.worker")
+
+# Stop taking work below this much free space. A worker
+# that fills its disk mid-build fails the run it was given
+# and every one after it, which is worse than a worker that
+# quietly stops accepting.
+DEFAULT_DISK_FLOOR_MB = 20 * 1024
+
+_stop = False
+
+
+def _handle_signal(signum, frame):
+  """Finish the current run, then exit."""
+  del signum, frame
+  global _stop
+  _stop = True
+  log.info("Shutdown requested; will stop after this run")
+
+
+def upstream_resolver(mode, scheduler_host, repos_config,
+                      root_path="dev/root"):
+  """Build a function mapping repo name -> fetch URL.
+
+  `mode` is either one of the two conventional modes or a
+  template containing {repo}. A template covers the cases
+  the modes do not: a worker on the same filesystem, a
+  mirror server, a layout other than ~/dev/root.
+
+  Args:
+    mode: 'scheduler', 'github', or a template string
+      containing '{repo}'.
+    scheduler_host: user@host for SSH, for 'scheduler'.
+    repos_config: Parsed repos.yaml, for GitHub slugs.
+    root_path: Path to the root repos on the scheduler,
+      relative to the SSH login directory.
+
+  Returns:
+    Callable taking a repo name and returning a URL.
+
+  Raises:
+    SystemExit: If the mode cannot be satisfied.
+  """
+  if mode not in ("scheduler", "github"):
+    if "{repo}" not in mode:
+      raise SystemExit(
+        "--upstream must be 'scheduler', 'github', or a "
+        "template containing {repo}"
+      )
+    return lambda repo: mode.format(repo=repo)
+
+  if mode == "scheduler":
+    if not scheduler_host:
+      raise SystemExit(
+        "--upstream scheduler needs --scheduler-host "
+        "user@host (the machine holding the root repos)"
+      )
+    prefix = root_path.rstrip("/")
+    return lambda repo: f"{scheduler_host}:{prefix}/{repo}"
+
+  def resolve_github(repo):
+    entry = repos_config.get(repo) or {}
+    slug = entry.get("github")
+    if not slug:
+      raise WorkerError(
+        f"repo {repo} has no github slug in repos.yaml, "
+        f"so a cloud worker cannot fetch it"
+      )
+    return f"git@github.com:{slug}.git"
+
+  return resolve_github
+
+
+def execute_step(step, trees, scheduler, work):
+  """Run one step locally and report the outcome.
+
+  Args:
+    step: Step dict from the work payload.
+    trees: Mapping of repo -> worktree path.
+    scheduler: Scheduler client.
+    work: Work payload.
+
+  Returns:
+    True if the step passed.
+  """
+  run_id = work["run_id"]
+  generation = work["generation"]
+  step_id = step["step_id"]
+  name = step["name"]
+
+  if name in SCHEDULER_ONLY_STEPS:
+    # Not a failure: the scheduler runs these itself once
+    # the commits are delivered. Skipping keeps the
+    # credentials and the GitHub gate on one machine.
+    # pending -> queued -> skipped, because the step state
+    # machine only allows skipping from queued.
+    scheduler.report_step(
+      run_id, generation, step_id, status="queued",
+    )
+    scheduler.report_step(
+      run_id, generation, step_id, status="skipped",
+      result={
+        "status": "skipped",
+        "summary": (
+          f"{name} runs on the scheduler, not on a worker"
+        ),
+      },
+    )
+    return True
+
+  scheduler.report_step(
+    run_id, generation, step_id, status="queued",
+  )
+  scheduler.report_step(
+    run_id, generation, step_id, status="running",
+  )
+
+  cwd = next(iter(trees.values()), None)
+  if len(trees) == 1 and cwd is not None:
+    work_dir = cwd
+  else:
+    work_dir = (
+      Path(next(iter(trees.values()))).parent
+      if trees else Path.cwd()
+    )
+
+  try:
+    lines, ok, summary = _run_local_step(
+      step, work_dir, work,
+    )
+  except Exception as e:  # noqa: BLE001 - reported, not raised
+    scheduler.report_step(
+      run_id, generation, step_id, status="failed",
+      error=str(e)[:2000],
+    )
+    return False
+
+  if lines:
+    # Chunked so one enormous build log is not a single
+    # request.
+    for i in range(0, len(lines), 500):
+      scheduler.report_step(
+        run_id, generation, step_id,
+        output=lines[i:i + 500],
+      )
+  scheduler.report_step(
+    run_id, generation, step_id,
+    status="completed" if ok else "failed",
+    result={
+      "status": "pass" if ok else "fail",
+      "summary": summary,
+    },
+    error=None if ok else summary,
+  )
+  return ok
+
+
+def _run_local_step(step, work_dir, work):
+  """Execute a step's work on this machine.
+
+  Script steps go through SCRIPT_REGISTRY — the same
+  registry and the same (run, config) contract the
+  scheduler uses — so a step behaves identically wherever
+  it runs. The run dict is reconstructed from the lease
+  payload because the worker has no database access.
+
+  Agent steps are not executed here yet: they need an
+  authenticated Claude Code plus the role templates, and a
+  worker declaring agent_steps=False is never handed one.
+
+  Args:
+    step: Step dict from the lease payload.
+    work_dir: Directory the run was materialised into.
+    work: The whole lease payload.
+
+  Returns:
+    (output_lines, ok, summary).
+
+  Raises:
+    WorkerError: If the step type cannot be run here.
+  """
+  import json as _json
+  from lib.pipeline import SCRIPT_REGISTRY
+  name = step["name"]
+  if step["step_type"] != "script":
+    raise WorkerError(
+      f"step type {step['step_type']!r} is not supported "
+      f"on a worker yet (step {name!r})"
+    )
+  func = SCRIPT_REGISTRY.get(name)
+  if func is None:
+    raise WorkerError(f"unknown script step: {name}")
+  run_view = {
+    "id": work["run_id"],
+    "workspace": work["workspace"],
+    "worktree_dir": str(work_dir),
+    "repos_json": _json.dumps(work.get("repos") or []),
+    "head_refs_json": _json.dumps(work.get("refs") or {}),
+  }
+  result = func(run_view, step.get("config") or {})
+  # "pass" exactly, matching PipelineExecutor. Treating
+  # anything else as success would turn a failed check into
+  # a green run.
+  ok = result.get("status") == "pass"
+  summary = str(
+    result.get("summary")
+    or result.get("errors")
+    or result.get("status", "")
+  )
+  return ([], ok, summary[:2000])
+
+
+def run_once(scheduler, caps, args, repos_config):
+  """Lease and execute at most one run.
+
+  Args:
+    scheduler: Scheduler client.
+    caps: This worker's capabilities payload.
+    args: Parsed CLI args.
+    repos_config: Parsed repos.yaml.
+
+  Returns:
+    True if a run was executed.
+  """
+  work_dir = Path(args.work_dir)
+  free = free_disk_mb(work_dir)
+  if free is not None and free < args.disk_floor_mb:
+    log.warning(
+      "Only %d MB free at %s, below the %d MB floor; not "
+      "taking work", free, work_dir, args.disk_floor_mb,
+    )
+    scheduler.heartbeat(free_disk_mb=free)
+    return False
+
+  allow_agents = caps["capabilities"]["agent_steps"]
+  work = scheduler.lease(lease_secs=args.lease_secs)
+  if not work:
+    scheduler.heartbeat(free_disk_mb=free)
+    return False
+
+  run_id = work["run_id"]
+  generation = work["generation"]
+  log.info(
+    "Leased run %s (%s) with %d steps",
+    run_id, work["workspace"], len(work.get("steps", [])),
+  )
+
+  ok, reason = can_run(
+    work, caps["capabilities"],
+  )
+  if not ok:
+    log.info("Cannot run %s: %s", run_id, reason)
+    scheduler.abandon(run_id, generation, reason=reason)
+    return False
+  del allow_agents
+
+  trees = {}
+  try:
+    trees = materialise(
+      work, args.mirror_dir, work_dir,
+      upstream_resolver(
+        args.upstream, args.scheduler_host, repos_config,
+        root_path=args.root_path,
+      ),
+    )
+    bases = {
+      repo: _head(path) for repo, path in trees.items()
+    }
+    for step in sorted(
+      work["steps"], key=lambda s: s["seq"]
+    ):
+      scheduler.renew(
+        run_id, generation, lease_secs=args.lease_secs
+      )
+      if not execute_step(step, trees, scheduler, work):
+        log.warning(
+          "Step %s failed; stopping run %s",
+          step["name"], run_id,
+        )
+        break
+    _deliver(scheduler, work, trees, bases)
+    scheduler.finish(run_id, generation)
+    log.info("Finished run %s", run_id)
+    return True
+  except LeaseLost as e:
+    # Someone else owns this run now. Discard rather than
+    # report: our results are from a superseded attempt.
+    log.warning(
+      "Lease lost on run %s (%s); discarding results",
+      run_id, e,
+    )
+    return False
+  except Exception as e:  # noqa: BLE001
+    log.exception("Run %s failed on this worker", run_id)
+    try:
+      scheduler.abandon(
+        run_id, generation, reason=str(e)[:500]
+      )
+    except WorkerError:
+      pass
+    return False
+  finally:
+    if trees and not args.keep_worktrees:
+      cleanup(trees, args.mirror_dir)
+
+
+def _head(path):
+  """Current commit in a worktree, or None."""
+  from lib.worker import git
+  proc = git(
+    ["rev-parse", "HEAD"], cwd=path, check=False,
+    timeout=120,
+  )
+  return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def _deliver(scheduler, work, trees, bases):
+  """Send back any commits the run produced."""
+  for repo, path in (trees or {}).items():
+    base = bases.get(repo)
+    if not base:
+      continue
+    data = bundle_for(path, work["workspace"], base)
+    if not data:
+      continue
+    log.info(
+      "Delivering %d bytes for %s:%s",
+      len(data), repo, work["workspace"],
+    )
+    result = scheduler.deliver(
+      work["run_id"], work["generation"], repo,
+      work["workspace"], data,
+    )
+    if result.get("parked"):
+      log.warning(
+        "Delivery parked on the scheduler: %s",
+        result.get("note", ""),
+      )
+
+
+def main():
+  parser = argparse.ArgumentParser(
+    description=(
+      "Execute takt pipeline runs on this machine."
+    ),
+  )
+  parser.add_argument(
+    "--scheduler",
+    default=os.environ.get("TAKT_API_URL"),
+    help="Scheduler base URL, e.g. https://takt:7433.",
+  )
+  parser.add_argument(
+    "--id", dest="worker_id",
+    default=os.environ.get("TAKT_WORKER_ID"),
+    help="Stable worker name, e.g. build-lan-01.",
+  )
+  parser.add_argument(
+    "--token", default=os.environ.get("TAKT_API_TOKEN"),
+    help="Bearer token, if the scheduler requires one.",
+  )
+  parser.add_argument(
+    "--work-dir",
+    default=os.environ.get(
+      "TAKT_WORKER_DIR", str(Path.home() / "takt-worker")
+    ),
+    help="Where run worktrees are created.",
+  )
+  parser.add_argument(
+    "--mirror-dir", default=None,
+    help="Where repo mirrors live. Defaults to "
+         "<work-dir>/mirrors.",
+  )
+  parser.add_argument(
+    "--upstream", default="scheduler",
+    help="Where mirrors fetch from: 'scheduler' over SSH "
+         "for a LAN worker, 'github' for a cloud worker "
+         "with no route back, or a template containing "
+         "{repo} for anything else "
+         "(e.g. /srv/mirrors/{repo}.git).",
+  )
+  parser.add_argument(
+    "--scheduler-host", default=None,
+    help="user@host holding the root repos, for "
+         "--upstream scheduler.",
+  )
+  parser.add_argument(
+    "--root-path", default="dev/root",
+    help="Path to the root repos on the scheduler, "
+         "relative to the SSH login directory.",
+  )
+  parser.add_argument(
+    "--lease-secs", type=int, default=900,
+    help="Lease length, renewed before every step.",
+  )
+  parser.add_argument(
+    "--interval", type=int, default=15,
+    help="Seconds to wait when the queue is empty.",
+  )
+  parser.add_argument(
+    "--disk-floor-mb", type=int,
+    default=DEFAULT_DISK_FLOOR_MB,
+    help="Stop taking work below this much free space.",
+  )
+  parser.add_argument(
+    "--once", action="store_true",
+    help="Execute at most one run, then exit.",
+  )
+  parser.add_argument(
+    "--keep-worktrees", action="store_true",
+    help="Do not clean up after a run (for debugging; "
+         "build output is the dominant disk cost).",
+  )
+  parser.add_argument(
+    "--no-agent-steps", action="store_true",
+    help="Declare this a build-only worker even if Claude "
+         "Code is installed.",
+  )
+  args = parser.parse_args()
+
+  logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+  )
+
+  if not args.scheduler:
+    parser.error(
+      "--scheduler is required (or set TAKT_API_URL)"
+    )
+  if not args.worker_id:
+    parser.error("--id is required (or set TAKT_WORKER_ID)")
+  if args.mirror_dir is None:
+    args.mirror_dir = str(Path(args.work_dir) / "mirrors")
+  Path(args.work_dir).mkdir(parents=True, exist_ok=True)
+  Path(args.mirror_dir).mkdir(parents=True, exist_ok=True)
+
+  from lib.config import load_repos_config
+  try:
+    repos_config = load_repos_config()
+  except OSError:
+    # A worker does not need repos.yaml unless it fetches
+    # from GitHub, where the slug comes from it.
+    repos_config = {}
+
+  caps = detect_capabilities(args.work_dir)
+  if args.no_agent_steps:
+    caps["capabilities"]["agent_steps"] = False
+  scheduler = Scheduler(
+    args.scheduler, args.worker_id, token=args.token,
+  )
+  try:
+    scheduler.register(caps)
+  except WorkerError as e:
+    log.error("Could not register: %s", e)
+    return 1
+  log.info(
+    "Registered %s (%s, %s cores, agent_steps=%s)",
+    args.worker_id, caps["os"], caps["cores"],
+    caps["capabilities"]["agent_steps"],
+  )
+
+  signal.signal(signal.SIGINT, _handle_signal)
+  signal.signal(signal.SIGTERM, _handle_signal)
+
+  while True:
+    try:
+      did_work = run_once(
+        scheduler, caps, args, repos_config
+      )
+    except WorkerError as e:
+      log.error("Scheduler problem: %s", e)
+      did_work = False
+    if args.once or _stop:
+      return 0
+    if not did_work:
+      time.sleep(max(1, args.interval))
+
+
+if __name__ == "__main__":
+  sys.exit(main())
