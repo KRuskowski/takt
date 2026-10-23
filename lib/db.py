@@ -263,7 +263,54 @@ CREATE TABLE IF NOT EXISTS context_links (
   target TEXT NOT NULL,
   UNIQUE(src_doc, target)
 );
+
+-- Machines that can execute runs. A worker registers on
+-- startup and heartbeats while alive; the scheduler itself
+-- registers as a worker too, so there is exactly one claim
+-- path and a run cannot be picked up twice.
+CREATE TABLE IF NOT EXISTS workers (
+  id TEXT PRIMARY KEY,
+  host TEXT NOT NULL DEFAULT '',
+  os TEXT NOT NULL DEFAULT '',
+  cores INTEGER,
+  ram_mb INTEGER,
+  free_disk_mb INTEGER,
+  capabilities_json TEXT NOT NULL DEFAULT '{}',
+  state TEXT NOT NULL DEFAULT 'online',
+  last_seen TEXT NOT NULL DEFAULT
+    (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  registered_at TEXT NOT NULL DEFAULT
+    (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Exclusive target claims. Replaces .locks/*.lock, which
+-- only one host could see.
+CREATE TABLE IF NOT EXISTS target_locks (
+  target TEXT PRIMARY KEY,
+  workspace TEXT,
+  worker_id TEXT,
+  claimed_at TEXT NOT NULL DEFAULT
+    (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  expires_at TEXT
+);
 """
+
+# Columns added to existing tables after they shipped.
+# migrate() applies any that are missing, since
+# ALTER TABLE has no IF NOT EXISTS.
+_ADDED_COLUMNS = {
+  "runs": {
+    # Which worker holds this run, NULL if unclaimed. A
+    # claim is a lease rather than a status change, so the
+    # run state machine is untouched by distribution.
+    "worker_id": "TEXT",
+    # Bumped on every claim. A worker whose lease expired
+    # and was reclaimed elsewhere can detect that its
+    # generation is stale and discard its results.
+    "lease_generation": "INTEGER NOT NULL DEFAULT 0",
+    "lease_expires_at": "TEXT",
+  },
+}
 
 ISSUE_TRANSITIONS = {
   "open": {"assigned", "wont_fix"},
@@ -322,8 +369,34 @@ def migrate(db_path=None):
   """
   with _connect(db_path) as conn:
     conn.executescript(_SCHEMA)
+    _add_missing_columns(conn)
   seed_default_meta_agents(db_path=db_path)
   log.info("Database migrated: %s", db_path or DB_PATH)
+
+
+def _add_missing_columns(conn):
+  """Add columns introduced after a table shipped.
+
+  ALTER TABLE has no IF NOT EXISTS, so each column is
+  checked against PRAGMA table_info first. Keeps migrate()
+  safe to call repeatedly on an existing database.
+
+  Args:
+    conn: Open SQLite connection.
+  """
+  for table, columns in _ADDED_COLUMNS.items():
+    existing = {
+      row["name"] for row in conn.execute(
+        f"PRAGMA table_info({table})"
+      ).fetchall()
+    }
+    for name, decl in columns.items():
+      if name in existing:
+        continue
+      conn.execute(
+        f"ALTER TABLE {table} ADD COLUMN {name} {decl}"
+      )
+      log.info("Added column %s.%s", table, name)
 
 
 def _trigger_key(workspace, refs):
@@ -577,6 +650,319 @@ def get_next_queued_run(db_path=None):
       "ORDER BY created_at ASC LIMIT 1",
     ).fetchone()
     return dict(row) if row else None
+
+
+def register_worker(worker_id, host="", os_name="",
+                    cores=None, ram_mb=None,
+                    free_disk_mb=None, capabilities=None,
+                    db_path=None):
+  """Register a worker, or refresh an existing one.
+
+  Idempotent: a worker that restarts re-registers under the
+  same id and keeps its registration date.
+
+  Args:
+    worker_id: Stable name, e.g. 'build-lan-01'.
+    host: Hostname or address, for operator reference.
+    os_name: 'debian', 'windows', etc.
+    cores: CPU count.
+    ram_mb: Total RAM in MB.
+    free_disk_mb: Free space for worktrees and builds.
+    capabilities: Dict of extra capabilities (toolchains,
+      whether an authenticated Claude Code is present).
+    db_path: Override path for testing.
+
+  Returns:
+    The worker row as a dict.
+  """
+  caps = json.dumps(capabilities or {})
+  with _connect(db_path) as conn:
+    conn.execute(
+      "INSERT INTO workers (id, host, os, cores, ram_mb, "
+      " free_disk_mb, capabilities_json, state, last_seen) "
+      "VALUES (?,?,?,?,?,?,?,'online',"
+      " strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+      "ON CONFLICT(id) DO UPDATE SET "
+      " host=excluded.host, os=excluded.os, "
+      " cores=excluded.cores, ram_mb=excluded.ram_mb, "
+      " free_disk_mb=excluded.free_disk_mb, "
+      " capabilities_json=excluded.capabilities_json, "
+      " state='online', "
+      " last_seen=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+      (worker_id, host, os_name, cores, ram_mb,
+       free_disk_mb, caps),
+    )
+    row = conn.execute(
+      "SELECT * FROM workers WHERE id = ?", (worker_id,)
+    ).fetchone()
+    return dict(row)
+
+
+def worker_heartbeat(worker_id, free_disk_mb=None,
+                     db_path=None):
+  """Record that a worker is still alive.
+
+  Args:
+    worker_id: Worker id.
+    free_disk_mb: Updated free space, if known.
+    db_path: Override path for testing.
+
+  Returns:
+    True if the worker is registered.
+  """
+  with _connect(db_path) as conn:
+    if free_disk_mb is None:
+      cur = conn.execute(
+        "UPDATE workers SET state='online', "
+        "last_seen=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+        "WHERE id = ?",
+        (worker_id,),
+      )
+    else:
+      cur = conn.execute(
+        "UPDATE workers SET state='online', "
+        "free_disk_mb=?, "
+        "last_seen=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+        "WHERE id = ?",
+        (free_disk_mb, worker_id),
+      )
+    return cur.rowcount > 0
+
+
+def set_worker_state(worker_id, state, db_path=None):
+  """Set a worker's state.
+
+  'draining' stops it being given new work while letting
+  the current run finish — the way to retire a machine
+  without killing a build.
+
+  Args:
+    worker_id: Worker id.
+    state: 'online', 'draining' or 'offline'.
+    db_path: Override path for testing.
+
+  Returns:
+    True if the worker exists.
+
+  Raises:
+    ValueError: On an unknown state.
+  """
+  if state not in ("online", "draining", "offline"):
+    raise ValueError(f"invalid worker state: {state}")
+  with _connect(db_path) as conn:
+    cur = conn.execute(
+      "UPDATE workers SET state = ? WHERE id = ?",
+      (state, worker_id),
+    )
+    return cur.rowcount > 0
+
+
+def list_workers(db_path=None):
+  """List registered workers, most recently seen first.
+
+  Args:
+    db_path: Override path for testing.
+
+  Returns:
+    List of worker dicts with capabilities parsed.
+  """
+  with _connect(db_path) as conn:
+    rows = conn.execute(
+      "SELECT * FROM workers "
+      "ORDER BY last_seen DESC, id ASC"
+    ).fetchall()
+  workers = []
+  for row in rows:
+    worker = dict(row)
+    try:
+      worker["capabilities"] = json.loads(
+        worker.pop("capabilities_json") or "{}"
+      )
+    except ValueError:
+      worker["capabilities"] = {}
+    workers.append(worker)
+  return workers
+
+
+def lease_run(worker_id, lease_secs=900, db_path=None):
+  """Claim the oldest unclaimed queued run.
+
+  Exclusion comes from this being ONE statement. SQLite
+  serialises writers, so a second caller's subquery runs
+  only after the first has committed and therefore cannot
+  select the same row. Splitting this into a SELECT then an
+  UPDATE reintroduces the race and is catastrophic rather
+  than subtle — measured, every racing thread claims the
+  same run. The trailing `AND worker_id IS NULL` is
+  defence in depth for a less strict engine, not what makes
+  this safe today.
+
+  See tests/test_worker_leases.py
+  TestLeaseExclusionUnderConcurrency, which races real
+  threads against a real database.
+
+  Claiming does not change run status. Status stays the
+  business of the run state machine, so distribution does
+  not widen the set of legal transitions.
+
+  Args:
+    worker_id: Worker taking the run.
+    lease_secs: Seconds before the claim expires.
+    db_path: Override path for testing.
+
+  Returns:
+    The leased run as a dict, including lease_generation,
+    or None if nothing was available.
+  """
+  with _connect(db_path) as conn:
+    # RETURNING gives back exactly the row claimed. Reading
+    # it back by worker_id would be wrong as soon as one
+    # worker holds more than one run.
+    row = conn.execute(
+      "UPDATE runs SET worker_id = ?, "
+      " lease_generation = lease_generation + 1, "
+      " lease_expires_at = strftime("
+      "   '%Y-%m-%dT%H:%M:%fZ', 'now', ? || ' seconds') "
+      "WHERE id = ("
+      "  SELECT id FROM runs "
+      "  WHERE status = 'queued' AND worker_id IS NULL "
+      "  ORDER BY created_at ASC, id ASC LIMIT 1"
+      ") AND worker_id IS NULL "
+      "RETURNING *",
+      (worker_id, int(lease_secs)),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def renew_lease(run_id, worker_id, generation,
+                lease_secs=900, db_path=None):
+  """Extend a lease the worker still legitimately holds.
+
+  Fails if the generation has moved on, which means the
+  lease expired and someone else took the run. A worker
+  that discovers this must stop and discard its results
+  rather than reporting them.
+
+  Args:
+    run_id: Run being renewed.
+    worker_id: Worker claiming to hold it.
+    generation: Generation the worker was given.
+    lease_secs: Seconds to extend by.
+    db_path: Override path for testing.
+
+  Returns:
+    True if the lease was extended.
+  """
+  with _connect(db_path) as conn:
+    cur = conn.execute(
+      "UPDATE runs SET lease_expires_at = strftime("
+      "  '%Y-%m-%dT%H:%M:%fZ', 'now', ? || ' seconds') "
+      "WHERE id = ? AND worker_id = ? "
+      "  AND lease_generation = ?",
+      (int(lease_secs), run_id, worker_id,
+       int(generation)),
+    )
+    return cur.rowcount > 0
+
+
+def release_run(run_id, worker_id=None, generation=None,
+                db_path=None):
+  """Drop a claim, making the run available again.
+
+  Used when a run finishes and when a worker abandons one.
+  Clearing the claim rather than setting a status keeps
+  completion the job of advance_run().
+
+  Args:
+    run_id: Run to release.
+    worker_id: Only release if this worker holds it.
+    generation: Only release at this generation.
+    db_path: Override path for testing.
+
+  Returns:
+    True if a claim was cleared.
+  """
+  clauses = ["id = ?"]
+  params = [run_id]
+  if worker_id is not None:
+    clauses.append("worker_id = ?")
+    params.append(worker_id)
+  if generation is not None:
+    clauses.append("lease_generation = ?")
+    params.append(int(generation))
+  with _connect(db_path) as conn:
+    cur = conn.execute(
+      "UPDATE runs SET worker_id = NULL, "
+      "lease_expires_at = NULL "
+      f"WHERE {' AND '.join(clauses)}",
+      params,
+    )
+    return cur.rowcount > 0
+
+
+def sweep_expired_leases(db_path=None):
+  """Release claims whose lease ran out.
+
+  A worker that loses power stops renewing, and its run
+  would otherwise sit claimed forever. Only queued runs are
+  swept: once a run has advanced to a terminal status the
+  claim is moot, and a run still legitimately executing is
+  renewing its lease.
+
+  Args:
+    db_path: Override path for testing.
+
+  Returns:
+    List of (run_id, worker_id) pairs that were released.
+  """
+  with _connect(db_path) as conn:
+    rows = conn.execute(
+      "SELECT id, worker_id FROM runs "
+      "WHERE worker_id IS NOT NULL "
+      "  AND status = 'queued' "
+      "  AND lease_expires_at IS NOT NULL "
+      "  AND lease_expires_at < "
+      "      strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+    ).fetchall()
+    expired = [(r["id"], r["worker_id"]) for r in rows]
+    if expired:
+      conn.execute(
+        "UPDATE runs SET worker_id = NULL, "
+        "lease_expires_at = NULL "
+        "WHERE id IN (%s)" % ",".join(
+          "?" for _ in expired
+        ),
+        [run_id for run_id, _ in expired],
+      )
+  return expired
+
+
+def mark_stale_workers_offline(timeout_secs=120,
+                               db_path=None):
+  """Mark workers that stopped heartbeating as offline.
+
+  Args:
+    timeout_secs: Silence after which a worker is offline.
+    db_path: Override path for testing.
+
+  Returns:
+    List of worker ids marked offline.
+  """
+  with _connect(db_path) as conn:
+    rows = conn.execute(
+      "SELECT id FROM workers WHERE state != 'offline' "
+      "AND last_seen < strftime("
+      "  '%Y-%m-%dT%H:%M:%fZ','now', ? || ' seconds')",
+      (-int(timeout_secs),),
+    ).fetchall()
+    ids = [r["id"] for r in rows]
+    if ids:
+      conn.execute(
+        "UPDATE workers SET state = 'offline' "
+        "WHERE id IN (%s)" % ",".join("?" for _ in ids),
+        ids,
+      )
+  return ids
 
 
 def get_run(run_id, db_path=None):
