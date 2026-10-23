@@ -193,6 +193,42 @@ def build_app(service):
     "/api/issues/status", handle_update_issue_status,
   )
 
+  # Workers. The protocol is HTTP rather than the ZMQ
+  # ROUTER the rest of the service uses: a cloud worker
+  # reaches the scheduler over the public internet, where
+  # bearer-token-over-TLS is standard and raw ZMQ would
+  # mean managing CurveZMQ keys with no transport security
+  # by default.
+  app.router.add_get("/api/workers", handle_list_workers)
+  app.router.add_post(
+    "/api/workers/register", handle_worker_register,
+  )
+  app.router.add_post(
+    "/api/workers/{id}/heartbeat",
+    handle_worker_heartbeat,
+  )
+  app.router.add_post(
+    "/api/workers/{id}/lease", handle_worker_lease,
+  )
+  app.router.add_post(
+    "/api/workers/{id}/renew", handle_worker_renew,
+  )
+  app.router.add_post(
+    "/api/workers/{id}/step", handle_worker_step,
+  )
+  app.router.add_post(
+    "/api/workers/{id}/bundle", handle_worker_bundle,
+  )
+  app.router.add_post(
+    "/api/workers/{id}/finish", handle_worker_finish,
+  )
+  app.router.add_post(
+    "/api/workers/{id}/abandon", handle_worker_abandon,
+  )
+  app.router.add_post(
+    "/api/workers/{id}/state", handle_worker_state,
+  )
+
   # SSE.
   app.router.add_get("/api/events", handle_sse)
 
@@ -1142,6 +1178,295 @@ async def handle_search(request):
   return web.json_response(
     {"status": "ok", "data": {"results": results}},
   )
+
+
+# -- Worker protocol --
+
+def _ok(data):
+  """Build an authorised-and-successful JSON response."""
+  resp = web.json_response({"status": "ok", "data": data})
+  _add_cors(resp)
+  return resp
+
+
+def _err(message, status):
+  """Build a JSON error response."""
+  resp = web.json_response(
+    {"status": "error", "message": str(message)},
+    status=status,
+  )
+  _add_cors(resp)
+  return resp
+
+
+async def _payload(request):
+  """Read a JSON body, tolerating an empty one."""
+  try:
+    return await request.json()
+  except Exception:
+    return {}
+
+
+async def handle_list_workers(request):
+  """GET /api/workers — registered workers."""
+  from lib import db
+  loop = asyncio.get_running_loop()
+  workers = await loop.run_in_executor(
+    None, db.list_workers,
+  )
+  return _ok({"workers": workers})
+
+
+async def handle_worker_register(request):
+  """POST /api/workers/register — announce a worker.
+
+  Body: worker_id, host, os, cores, ram_mb, free_disk_mb,
+  capabilities.
+  """
+  from lib import db
+  loop = asyncio.get_running_loop()
+  body = await _payload(request)
+  worker_id = body.get("worker_id")
+  if not worker_id:
+    return _err("worker_id is required", 400)
+  worker = await loop.run_in_executor(
+    None,
+    lambda: db.register_worker(
+      worker_id,
+      host=body.get("host", ""),
+      os_name=body.get("os", ""),
+      cores=body.get("cores"),
+      ram_mb=body.get("ram_mb"),
+      free_disk_mb=body.get("free_disk_mb"),
+      capabilities=body.get("capabilities") or {},
+    ),
+  )
+  return _ok(worker)
+
+
+async def handle_worker_heartbeat(request):
+  """POST /api/workers/{id}/heartbeat — still alive."""
+  from lib import db
+  loop = asyncio.get_running_loop()
+  worker_id = request.match_info["id"]
+  body = await _payload(request)
+  known = await loop.run_in_executor(
+    None,
+    lambda: db.worker_heartbeat(
+      worker_id, free_disk_mb=body.get("free_disk_mb")
+    ),
+  )
+  if not known:
+    # Tell the worker to register rather than silently
+    # accepting heartbeats from something unknown.
+    return _err(
+      f"unknown worker {worker_id}; register first", 404,
+    )
+  return _ok({"worker_id": worker_id})
+
+
+async def handle_worker_lease(request):
+  """POST /api/workers/{id}/lease — ask for work.
+
+  Returns the work payload, or null when the queue is
+  empty, which is the normal idle answer rather than an
+  error.
+  """
+  from lib import worker_ops
+  loop = asyncio.get_running_loop()
+  worker_id = request.match_info["id"]
+  body = await _payload(request)
+  try:
+    lease_secs = int(body.get("lease_secs", 900))
+  except (TypeError, ValueError):
+    lease_secs = 900
+  work = await loop.run_in_executor(
+    None,
+    lambda: worker_ops.lease(
+      worker_id, lease_secs=lease_secs
+    ),
+  )
+  return _ok({"work": work})
+
+
+async def handle_worker_renew(request):
+  """POST /api/workers/{id}/renew — extend a lease.
+
+  Body: run_id, generation, lease_secs.
+  """
+  from lib import db
+  loop = asyncio.get_running_loop()
+  worker_id = request.match_info["id"]
+  body = await _payload(request)
+  run_id = body.get("run_id")
+  generation = body.get("generation")
+  if run_id is None or generation is None:
+    return _err("run_id and generation are required", 400)
+  ok = await loop.run_in_executor(
+    None,
+    lambda: db.renew_lease(
+      run_id, worker_id, generation,
+      lease_secs=int(body.get("lease_secs", 900)),
+    ),
+  )
+  if not ok:
+    # 409: the worker must stop and discard its results.
+    return _err(
+      "lease is no longer held at that generation", 409,
+    )
+  return _ok({"run_id": run_id, "renewed": True})
+
+
+async def handle_worker_step(request):
+  """POST /api/workers/{id}/step — report step progress.
+
+  Body: run_id, generation, step_id, status, output,
+  result, error, cost_usd, num_turns.
+  """
+  from lib import worker_ops
+  loop = asyncio.get_running_loop()
+  worker_id = request.match_info["id"]
+  body = await _payload(request)
+  for field in ("run_id", "generation", "step_id"):
+    if body.get(field) is None:
+      return _err(f"{field} is required", 400)
+  try:
+    applied = await loop.run_in_executor(
+      None,
+      lambda: worker_ops.report_step(
+        worker_id, body["run_id"], body["generation"],
+        body["step_id"], status=body.get("status"),
+        output=body.get("output"),
+        result=body.get("result"),
+        error=body.get("error"),
+        cost_usd=body.get("cost_usd"),
+        num_turns=body.get("num_turns"),
+      ),
+    )
+  except worker_ops.LeaseError as e:
+    return _err(e, 409)
+  except ValueError as e:
+    return _err(e, 400)
+  return _ok(applied)
+
+
+async def handle_worker_bundle(request):
+  """POST /api/workers/{id}/bundle — deliver commits.
+
+  The body is the raw git bundle. Parameters come from the
+  query string, so the bytes need no base64 wrapper and a
+  large delivery does not inflate by a third.
+
+  Query: run_id, generation, repo, branch.
+  """
+  from lib import worker_ops
+  loop = asyncio.get_running_loop()
+  worker_id = request.match_info["id"]
+  query = request.query
+  missing = [
+    f for f in ("run_id", "generation", "repo", "branch")
+    if not query.get(f)
+  ]
+  if missing:
+    return _err(
+      f"missing query params: {', '.join(missing)}", 400,
+    )
+  try:
+    run_id = int(query["run_id"])
+    generation = int(query["generation"])
+  except ValueError:
+    return _err("run_id and generation must be ints", 400)
+  data = await request.read()
+  try:
+    result = await loop.run_in_executor(
+      None,
+      lambda: worker_ops.accept_bundle(
+        worker_id, run_id, generation,
+        query["repo"], query["branch"], data,
+      ),
+    )
+  except worker_ops.LeaseError as e:
+    return _err(e, 409)
+  except worker_ops.DeliveryError as e:
+    return _err(e, 400)
+  return _ok(result)
+
+
+async def handle_worker_finish(request):
+  """POST /api/workers/{id}/finish — run is complete.
+
+  Body: run_id, generation.
+  """
+  from lib import worker_ops
+  loop = asyncio.get_running_loop()
+  worker_id = request.match_info["id"]
+  body = await _payload(request)
+  if body.get("run_id") is None or body.get(
+    "generation"
+  ) is None:
+    return _err("run_id and generation are required", 400)
+  try:
+    status = await loop.run_in_executor(
+      None,
+      lambda: worker_ops.finish_run(
+        worker_id, body["run_id"], body["generation"]
+      ),
+    )
+  except worker_ops.LeaseError as e:
+    return _err(e, 409)
+  return _ok({
+    "run_id": body["run_id"], "status": status,
+  })
+
+
+async def handle_worker_abandon(request):
+  """POST /api/workers/{id}/abandon — give a run back.
+
+  Body: run_id, generation, reason.
+  """
+  from lib import worker_ops
+  loop = asyncio.get_running_loop()
+  worker_id = request.match_info["id"]
+  body = await _payload(request)
+  if body.get("run_id") is None or body.get(
+    "generation"
+  ) is None:
+    return _err("run_id and generation are required", 400)
+  try:
+    released = await loop.run_in_executor(
+      None,
+      lambda: worker_ops.abandon_run(
+        worker_id, body["run_id"], body["generation"],
+        reason=body.get("reason", ""),
+      ),
+    )
+  except worker_ops.LeaseError as e:
+    return _err(e, 409)
+  return _ok({
+    "run_id": body["run_id"], "released": released,
+  })
+
+
+async def handle_worker_state(request):
+  """POST /api/workers/{id}/state — drain or retire.
+
+  Body: state (online|draining|offline).
+  """
+  from lib import db
+  loop = asyncio.get_running_loop()
+  worker_id = request.match_info["id"]
+  body = await _payload(request)
+  state = body.get("state", "")
+  try:
+    known = await loop.run_in_executor(
+      None,
+      lambda: db.set_worker_state(worker_id, state),
+    )
+  except ValueError as e:
+    return _err(e, 400)
+  if not known:
+    return _err(f"unknown worker {worker_id}", 404)
+  return _ok({"worker_id": worker_id, "state": state})
 
 
 # -- SSE handler --
