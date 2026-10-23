@@ -981,6 +981,118 @@ def mark_stale_workers_offline(timeout_secs=120,
   return ids
 
 
+def claim_target(name, workspace, worker_id=None,
+                 claimed_at=None, takeover=False,
+                 expires_at=None, db_path=None):
+  """Claim a target exclusively.
+
+  One statement, so two claimants cannot both win: the
+  insert either creates the only row for that target or it
+  conflicts. Check-then-write, which this replaces, let two
+  processes both pass the check.
+
+  Args:
+    name: Target name.
+    workspace: Workspace claiming it.
+    worker_id: Worker making the claim, if any.
+    claimed_at: Override the timestamp, for importing an
+      existing claim.
+    takeover: Replace an existing claim instead of failing.
+    expires_at: Optional expiry, for future lease support.
+    db_path: Override path for testing.
+
+  Returns:
+    (ok, existing) — existing is the current holder's lock
+    dict when ok is False.
+  """
+  stamp = claimed_at or None
+  with _connect(db_path) as conn:
+    if takeover:
+      conn.execute(
+        "INSERT INTO target_locks "
+        "(target, workspace, worker_id, claimed_at, "
+        " expires_at) VALUES (?,?,?,"
+        " COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ',"
+        " 'now')), ?) "
+        "ON CONFLICT(target) DO UPDATE SET "
+        " workspace=excluded.workspace, "
+        " worker_id=excluded.worker_id, "
+        " claimed_at=excluded.claimed_at, "
+        " expires_at=excluded.expires_at",
+        (name, workspace, worker_id, stamp, expires_at),
+      )
+      return (True, None)
+    cur = conn.execute(
+      "INSERT INTO target_locks "
+      "(target, workspace, worker_id, claimed_at, "
+      " expires_at) VALUES (?,?,?,"
+      " COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ',"
+      " 'now')), ?) "
+      "ON CONFLICT(target) DO NOTHING",
+      (name, workspace, worker_id, stamp, expires_at),
+    )
+    if cur.rowcount == 1:
+      return (True, None)
+    row = conn.execute(
+      "SELECT * FROM target_locks WHERE target = ?",
+      (name,),
+    ).fetchone()
+    return (False, dict(row) if row else None)
+
+
+def get_target_lock(name, db_path=None):
+  """Read a target's claim.
+
+  Args:
+    name: Target name.
+    db_path: Override path for testing.
+
+  Returns:
+    Lock dict, or None if the target is free.
+  """
+  with _connect(db_path) as conn:
+    row = conn.execute(
+      "SELECT * FROM target_locks WHERE target = ?",
+      (name,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def release_target(name, db_path=None):
+  """Release a target's claim.
+
+  Args:
+    name: Target name.
+    db_path: Override path for testing.
+
+  Returns:
+    The removed lock dict, or None if it was not claimed.
+  """
+  with _connect(db_path) as conn:
+    row = conn.execute(
+      "DELETE FROM target_locks WHERE target = ? "
+      "RETURNING *",
+      (name,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_target_locks(db_path=None):
+  """All current target claims.
+
+  Args:
+    db_path: Override path for testing.
+
+  Returns:
+    Dict of target name -> lock dict.
+  """
+  with _connect(db_path) as conn:
+    rows = conn.execute(
+      "SELECT * FROM target_locks ORDER BY target"
+    ).fetchall()
+  return {r["target"]: dict(r) for r in rows}
+
+
 def get_run(run_id, db_path=None):
   """Get a run by ID.
 

@@ -22,13 +22,13 @@ from lib.git_utils import (
 )
 from lib.pipeline import SCRIPT_REGISTRY
 from lib.target_ops import (
+  claim_lock,
   get_all_targets,
   get_target,
   get_vm_state,
   is_template,
   read_lock,
   release_lock,
-  write_lock,
 )
 from lib.workspace_ops import (
   create_workspace,
@@ -163,14 +163,17 @@ def target_claim(name, workspace, **_kw):
       f"Error: '{name}' is a template. "
       f"Use bin/clone_vm.py to create a clone.",
     )
-  lock = read_lock(name)
-  if lock:
+  # Atomic: claiming and the "is it free" check are the
+  # same statement, so two claimants cannot both succeed.
+  ok, existing = claim_lock(name, workspace)
+  if not ok:
+    holder = (existing or {}).get("workspace", "unknown")
+    when = (existing or {}).get("claimed_at", "unknown")
     return CommandResult(
       False,
       f"Error: target '{name}' already claimed by "
-      f"'{lock['workspace']}' at {lock['claimed_at']}.",
+      f"'{holder}' at {when}.",
     )
-  write_lock(name, workspace)
   return CommandResult(
     True,
     f"Claimed '{name}' for workspace '{workspace}'.",

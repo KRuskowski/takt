@@ -43,17 +43,38 @@ class TestTemplateGuardClaim(unittest.TestCase):
     with self.assertRaises(SystemExit):
       cmd_claim(args)
 
-  @mock.patch("bin.target.write_lock")
-  @mock.patch("bin.target.read_lock", return_value=None)
+  @mock.patch("bin.target.claim_lock",
+              return_value=(True, None))
   @mock.patch("bin.target.get_target", return_value=NORMAL_TARGET)
-  def test_claim_normal_allowed(self, _, __, mock_write):
+  def test_claim_normal_allowed(self, _, mock_claim):
     """Claiming a normal target succeeds."""
     from bin.target import cmd_claim
     args = mock.Mock()
     args.name = "deb-02"
     args.workspace = "ws"
     cmd_claim(args)
-    mock_write.assert_called_once_with("deb-02", "ws")
+    mock_claim.assert_called_once_with("deb-02", "ws")
+
+  @mock.patch("bin.target.claim_lock")
+  @mock.patch("bin.target.get_target", return_value=NORMAL_TARGET)
+  def test_claim_refused_when_held(self, _, mock_claim):
+    """A target already claimed exits non-zero.
+
+    The refusal comes from the atomic claim itself, not
+    from a separate check that another process could have
+    raced past.
+    """
+    mock_claim.return_value = (
+      False,
+      {"workspace": "other-ws",
+       "claimed_at": "2026-10-23T00:00:00Z"},
+    )
+    from bin.target import cmd_claim
+    args = mock.Mock()
+    args.name = "deb-02"
+    args.workspace = "ws"
+    with self.assertRaises(SystemExit):
+      cmd_claim(args)
 
 
 class TestTemplateGuardUp(unittest.TestCase):

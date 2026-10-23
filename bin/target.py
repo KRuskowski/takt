@@ -16,13 +16,13 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 from lib.ssh_utils import SSHError, check_connectivity, run_ssh
 from lib.target_ops import (
+  claim_lock,
   get_all_targets,
   get_target,
   get_vm_state,
   is_template,
   read_lock,
   release_lock,
-  write_lock,
 )
 
 
@@ -73,15 +73,18 @@ def cmd_claim(args):
     )
     sys.exit(1)
 
-  lock = read_lock(name)
-  if lock:
+  # Atomic: the check and the claim are one statement, so
+  # two processes racing cannot both think they won.
+  ok, existing = claim_lock(name, workspace)
+  if not ok:
+    holder = (existing or {}).get("workspace", "unknown")
+    when = (existing or {}).get("claimed_at", "unknown")
     print(
       f"Error: target '{name}' already claimed by "
-      f"'{lock['workspace']}' at {lock['claimed_at']}."
+      f"'{holder}' at {when}."
     )
     sys.exit(1)
 
-  write_lock(name, workspace)
   print(f"Claimed '{name}' for workspace '{workspace}'.")
 
 
