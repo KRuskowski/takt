@@ -125,6 +125,10 @@ bin/push_to_github.py feature-auth
 
 Pipelines are ordered sequences of steps defined per workspace. Steps are either **agent** (Claude Code via SDK) or **script** (built-in Python functions).
 
+**A pipeline is what happens to finished work.** Its steps test, review, document, QA, package and release an implementation that already exists and is already committed — it is not how code gets built. Building happens in the workspace first; the pipeline runs afterwards, in temporary worktrees created from what is already committed in the root repos. A run therefore cannot see uncommitted work and is never handed something to implement.
+
+The `feature` and `refactor` roles predate this rule and contradict it. They remain defined so existing pipelines keep working, but new pipelines should not use them.
+
 Built-in scripts:
 - `push_to_github` — push branch to GitHub in dependency order
 - `create_pr` — create GitHub PRs via `gh` CLI

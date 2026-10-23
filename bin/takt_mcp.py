@@ -33,9 +33,25 @@ mcp = FastMCP(
     "software development. It manages workspaces (isolated "
     "repo clones with feature branches), build/test targets "
     "(VMs with exclusive locking), and multi-step pipelines "
-    "where each step is an AI agent role (feature, test, "
-    "deploy_qa, etc.) or a script. Agents never push to "
-    "GitHub — takt handles all pushes and PR creation. "
+    "where each step is an AI agent role or a script. "
+    "Agents never push to GitHub — takt handles all pushes "
+    "and PR creation.\n\n"
+    "WHAT A PIPELINE IS FOR. A pipeline is what happens to "
+    "finished work. Its steps test, review, document, "
+    "QA, package and release an implementation that "
+    "already exists and is already committed. A pipeline "
+    "is NOT how code gets written.\n\n"
+    "So the order is: you do the work in the workspace and "
+    "commit it, and only then is a pipeline run triggered "
+    "to verify and ship it. Do not set up a pipeline and "
+    "trigger a run hoping it will implement a feature, fix "
+    "a bug or produce a build — it will not. Runs execute "
+    "in temporary worktrees built from what is already "
+    "committed in the root repos, so they cannot see "
+    "uncommitted work and have no task to implement.\n\n"
+    "If you have been asked to build something: create or "
+    "use a workspace, write and commit the code there, and "
+    "leave the pipeline for afterwards.\n\n"
     "All state is in SQLite (.state/takt.db). Root repos "
     "live at ~/dev/root/, workspaces at "
     "~/dev/workspaces/<name>/.\n\n"
@@ -223,7 +239,11 @@ def get_pipeline(workspace: str) -> str:
 def set_pipeline(
   workspace: str, steps: list[str],
 ) -> str:
-  """Set the pipeline steps for a workspace. Steps run in order when a pipeline is triggered. Available roles: feature, test, deploy_qa, bindings, packaging, changelog. You can also use script paths.
+  """Set the pipeline steps for a workspace. Steps run in order when a pipeline is triggered.
+
+  A pipeline is what happens to finished work, not how work gets done. Pick steps that verify, document and ship an implementation that already exists: test, review, docs, deploy_qa, bindings, packaging, changelog, plus the script steps push_to_github, create_pr and merge_upstream.
+
+  Do not add a step expecting it to implement a feature or fix a bug. Writing the code happens in the workspace first, by you or another agent, and is committed before the pipeline is triggered.
 
   Args:
     workspace: Workspace name.
@@ -259,6 +279,10 @@ def list_runs(
 @mcp.tool()
 def trigger_run(workspace: str) -> str:
   """Trigger a pipeline run for a workspace. Creates worktrees from root repos and executes the configured pipeline steps sequentially. The workspace must have a pipeline configured (use set_pipeline first).
+
+  Trigger this when the implementation is finished and committed to the workspace branch. The run operates on temporary worktrees built from what is already committed in the root repos, so uncommitted work in your workspace is invisible to it, and a run is not a way to get something built.
+
+  If the code is not written yet, write it in the workspace first. Triggering a run will not produce an implementation.
 
   Args:
     workspace: Workspace name.
