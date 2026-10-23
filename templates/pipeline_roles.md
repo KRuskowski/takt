@@ -6,17 +6,19 @@ Role snippets for pipeline agent steps. Each agent runs in a temporary worktree.
 
 ### What a pipeline is for
 
-**A pipeline is what happens to finished work.** Its steps verify, document and ship an implementation that already exists and is already committed. A pipeline is not how code gets written.
+**A pipeline is how finished work gets upstream.** It runs post-implementation: once the code is written and committed, the pipeline tests, reviews, documents and QAs it, and then delivers it — pushing to GitHub and opening a PR. That delivery is the point of it.
 
 The order is:
 
 1. The implementation is written and committed in the workspace — by you, by another agent, or by a person.
 2. The branch reaches the root repo.
-3. A pipeline run is triggered, and its steps test, review, document, QA, package and release that work.
+3. A pipeline run is triggered. Its steps verify that work and then get it upstream.
 
-A run executes in temporary worktrees created from what is **already committed in the root repos**. It therefore cannot see uncommitted work in a workspace, and it is never handed a task to implement. Configuring a pipeline and triggering a run will not produce a feature, a bug fix or a build.
+A pipeline is **not** how code gets written. A run executes in temporary worktrees created from what is **already committed in the root repos**. It cannot see uncommitted work in a workspace, and it is never handed a task to implement. Configuring a pipeline and triggering a run will not produce a feature or a bug fix.
 
-If you have been asked to build something, do it in the workspace and commit it. The pipeline comes afterwards.
+A step may well compile — `deploy_qa` builds on a target — but it does so to verify work that already exists, not to author it.
+
+If you have been asked to implement something, do it in the workspace and commit it. Then the pipeline takes it upstream.
 
 #### Step results
 
@@ -74,7 +76,7 @@ Build, deploy and verify the committed changes on a target. Write results to `.s
 {"status": "pass|fail", "summary": "...", "targets": []}
 ```
 
-Note that compiling here is **verification of finished work** — confirming the committed state builds and behaves on a real target. It is not the place to author the implementation.
+Compiling here is **verification** — confirming the committed state builds and behaves on a real target before it goes upstream. It is not the place to author the implementation.
 
 Guidelines:
 - Use `target.py` to claim, build, test, and release.

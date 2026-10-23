@@ -125,7 +125,9 @@ bin/push_to_github.py feature-auth
 
 Pipelines are ordered sequences of steps defined per workspace. Steps are either **agent** (Claude Code via SDK) or **script** (built-in Python functions).
 
-**A pipeline is what happens to finished work.** Its steps test, review, document, QA, package and release an implementation that already exists and is already committed — it is not how code gets built. Building happens in the workspace first; the pipeline runs afterwards, in temporary worktrees created from what is already committed in the root repos. A run therefore cannot see uncommitted work and is never handed something to implement.
+**A pipeline is how finished work gets upstream.** It runs post-implementation: the steps test, review, document and QA an implementation that is already written and committed, and then deliver it — pushing to GitHub and opening a PR. Delivery is the point of it.
+
+A pipeline is not how code gets written. That happens in the workspace first; the run operates on temporary worktrees created from what is already committed in the root repos, so it cannot see uncommitted work and is never handed something to implement. A step may still compile (`deploy_qa` builds on a target) but as verification of existing work.
 
 The `feature` and `refactor` roles predate this rule and contradict it. They remain defined so existing pipelines keep working, but new pipelines should not use them.
 

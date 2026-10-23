@@ -47,12 +47,12 @@ Available targets: run `~/dev/takt/bin/target.py list` for the live inventory an
 ## Building
 $build_section
 
-## Pipelines are not for building
+## Pipelines come after you, and they are the route upstream
 The work described above happens **here, in this workspace** — you write it and you commit it.
 
-takt pipelines are separate, and they run **afterwards**: they test, review, document, QA, package and release work that is already committed. A pipeline never implements anything.
+A takt pipeline runs **post-implementation**, and it is how that work gets upstream: it tests, reviews, documents and QAs what you committed, then pushes it and opens a PR. A pipeline never implements anything.
 
-So do not set up a pipeline, trigger a run, or wait on one in order to get this task done. A run executes in temporary worktrees built from what is already committed in the root repos — it cannot see your uncommitted work, and it is not given a task to implement. If you are blocked on building, report the blocker; a pipeline will not unblock it.
+So do not set up a pipeline, trigger a run, or wait on one in order to get this task done. A run executes in temporary worktrees built from what is already committed in the root repos — it cannot see your uncommitted work, and it is not given a task to implement. If you are blocked on implementing, report the blocker; a pipeline will not unblock it.
 
 ## Context Packets
 Read these files for background as needed: $context_packets

@@ -146,7 +146,7 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 
 - **Root repos**: `~/dev/root/<repo>` — local mirrors of GitHub.
 - **Workspaces**: `~/dev/workspaces/<name>/` — clones of root repos for isolated work. Origin = root repo.
-- **Pipeline**: Ordered sequence of steps (agents or scripts) defined in SQLite per workspace. Steps run sequentially in temporary worktrees from root repos. **Pipelines are post-build**: they test, review, document, QA, package and release work that is already written and committed. A pipeline is not how code gets built — building happens in the workspace first. The `feature` and `refactor` roles are legacy and contradict this; don't put them in new pipelines. See `templates/pipeline_roles.md`.
+- **Pipeline**: Ordered sequence of steps (agents or scripts) defined in SQLite per workspace. Steps run sequentially in temporary worktrees from root repos. **Pipelines are how finished work gets upstream.** They run post-implementation: they test, review, document and QA work that is already written and committed, then push it and open a PR. A pipeline is not how code gets written — that happens in the workspace first. (A step may still compile, e.g. `deploy_qa` on a target, but as verification.) The `feature` and `refactor` roles are legacy and contradict this; don't put them in new pipelines. See `templates/pipeline_roles.md`.
 - **Runs**: `~/dev/runs/<ws>-<run_id>/<repo>` — git worktrees created for each pipeline run.
 - **Workspace name = branch name** across all repos.
 - **Agents never push to GitHub.** takt handles all pipeline orchestration, pushes, and PR creation.

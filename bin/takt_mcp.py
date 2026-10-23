@@ -36,22 +36,24 @@ mcp = FastMCP(
     "where each step is an AI agent role or a script. "
     "Agents never push to GitHub — takt handles all pushes "
     "and PR creation.\n\n"
-    "WHAT A PIPELINE IS FOR. A pipeline is what happens to "
-    "finished work. Its steps test, review, document, "
-    "QA, package and release an implementation that "
-    "already exists and is already committed. A pipeline "
-    "is NOT how code gets written.\n\n"
-    "So the order is: you do the work in the workspace and "
-    "commit it, and only then is a pipeline run triggered "
-    "to verify and ship it. Do not set up a pipeline and "
-    "trigger a run hoping it will implement a feature, fix "
-    "a bug or produce a build — it will not. Runs execute "
-    "in temporary worktrees built from what is already "
+    "WHAT A PIPELINE IS FOR. A pipeline is how finished "
+    "work gets upstream. It runs POST-IMPLEMENTATION: once "
+    "the code is written and committed, the pipeline is "
+    "what tests, reviews, documents and QAs it and then "
+    "delivers it — pushing to GitHub and opening a PR. "
+    "That delivery is the point of it.\n\n"
+    "A pipeline is NOT how code gets written. Do not set "
+    "one up and trigger a run hoping it will implement a "
+    "feature or fix a bug — it will not. Runs execute in "
+    "temporary worktrees built from what is already "
     "committed in the root repos, so they cannot see "
     "uncommitted work and have no task to implement.\n\n"
-    "If you have been asked to build something: create or "
-    "use a workspace, write and commit the code there, and "
-    "leave the pipeline for afterwards.\n\n"
+    "Note that a pipeline step may well compile — deploy_qa "
+    "builds on a target — but it does so to verify work "
+    "that already exists, not to author it.\n\n"
+    "If you have been asked to implement something: create "
+    "or use a workspace, write and commit the code there, "
+    "and then run a pipeline to get it upstream.\n\n"
     "All state is in SQLite (.state/takt.db). Root repos "
     "live at ~/dev/root/, workspaces at "
     "~/dev/workspaces/<name>/.\n\n"
@@ -241,7 +243,7 @@ def set_pipeline(
 ) -> str:
   """Set the pipeline steps for a workspace. Steps run in order when a pipeline is triggered.
 
-  A pipeline is what happens to finished work, not how work gets done. Pick steps that verify, document and ship an implementation that already exists: test, review, docs, deploy_qa, bindings, packaging, changelog, plus the script steps push_to_github, create_pr and merge_upstream.
+  A pipeline is how finished work gets upstream, not how work gets done. Pick steps that verify and then deliver an implementation that already exists: test, review, docs, deploy_qa, bindings, packaging, changelog, plus the script steps push_to_github, create_pr and merge_upstream. A pipeline that verifies but never delivers is usually missing its point — most pipelines should end in push_to_github and create_pr.
 
   Do not add a step expecting it to implement a feature or fix a bug. Writing the code happens in the workspace first, by you or another agent, and is committed before the pipeline is triggered.
 
@@ -280,7 +282,7 @@ def list_runs(
 def trigger_run(workspace: str) -> str:
   """Trigger a pipeline run for a workspace. Creates worktrees from root repos and executes the configured pipeline steps sequentially. The workspace must have a pipeline configured (use set_pipeline first).
 
-  Trigger this when the implementation is finished and committed to the workspace branch. The run operates on temporary worktrees built from what is already committed in the root repos, so uncommitted work in your workspace is invisible to it, and a run is not a way to get something built.
+  Trigger this when the implementation is finished and committed to the workspace branch — this is how that work gets upstream. The run operates on temporary worktrees built from what is already committed in the root repos, so uncommitted work in your workspace is invisible to it, and a run is not a way to get something built.
 
   If the code is not written yet, write it in the workspace first. Triggering a run will not produce an implementation.
 

@@ -40,16 +40,19 @@ GitHub (upstream)
 
 ## Pipeline Stages
 
-A pipeline is **what happens to finished work**. Its stages verify, document and ship an implementation that already exists and is already committed. A pipeline does not build anything.
+A pipeline is **how finished work gets upstream**. It runs post-implementation: the stages verify work that is already written and committed, and then deliver it.
 
 ```
-(implementation committed in the workspace)
+(implementation written and committed in the workspace)
         |
         v
-test -> review -> docs -> deploy_qa -> push -> create_pr
+test -> review -> docs -> deploy_qa -> push_to_github -> create_pr
+                                       \_____ delivery _____/
 ```
 
-Each stage runs in a temporary worktree created from what is **already committed in the root repos**. A stage therefore cannot see uncommitted work, and is never handed a task to implement. Triggering a run will not produce a feature, a fix or a build.
+Each stage runs in a temporary worktree created from what is **already committed in the root repos**. A stage therefore cannot see uncommitted work, and is never handed a task to implement. Triggering a run will not produce a feature or a fix.
+
+A stage may compile — `deploy_qa` builds on a target — but as verification of existing work, not to author it.
 
 Not every change needs all stages.
 
