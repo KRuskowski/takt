@@ -111,7 +111,21 @@ sudo python3 bin/clone_vm.py delete deb-02
 
 ## Unified CLI (`bin/takt.py`)
 
-Argparse CLI over `lib/commands.py`: `takt ws|target|pipeline|push|service`. Sourcing `config/takt.zsh` from `~/.zshrc` provides the `takt` shell function with completions.
+One executable for everything:
+
+```bash
+takt ws list|create|delete|status
+takt target list|claim|release|up|down|run|status
+takt pipeline set|show|runs
+takt push <branch> [--dry-run] [-y] [--repos ...]
+takt service start|stop|restart|status
+takt worker --scheduler <url> --id <name> [...]
+takt reclaim [--older-than N] [--apply]
+```
+
+Sourcing `config/takt.zsh` from `~/.zshrc` provides the `takt` shell function with completions for all of the above.
+
+`worker` and `reclaim` own a long-running process or their own output, so they contribute flags from their own module and are invoked directly rather than through `lib/commands.py` dispatch. The standalone scripts (`bin/takt_worker.py`, `bin/reclaim.py`) remain as thin wrappers over the same functions, so neither entry point can drift from the other — `tests/test_takt_cli.py` fails if they do.
 
 takt has no graphical or terminal UI. Interaction is via the MCP server, the REST API on port 7433, and this CLI.
 
@@ -120,9 +134,9 @@ takt has no graphical or terminal UI. Interaction is via the MCP server, the RES
 Workspace clones are hardlinked and nearly free; the build trees inside them dominate storage and nothing else reclaims them. Dry run by default.
 
 ```bash
-bin/reclaim.py                              # survey only
-bin/reclaim.py --older-than 30              # idle 30+ days
-bin/reclaim.py --older-than 30 --apply      # delete
+takt reclaim                              # survey only
+takt reclaim --older-than 30              # idle 30+ days
+takt reclaim --older-than 30 --apply      # delete
 ```
 
 Only removes directories carrying a marker that proves they are regenerable (`CMakeCache.txt`, `CACHEDIR.TAG`, `node_modules`); never descends into `.git`; re-checks the marker before deleting; spares workspaces with a run in flight.
@@ -173,20 +187,20 @@ The service refuses to bind a non-loopback address without `api_token` set — t
 
 ```bash
 # LAN worker, fetching root repos from the scheduler over SSH
-bin/takt_worker.py --id build-01 \
+takt worker --id build-01 \
   --scheduler https://takt:7433 --token <secret> \
   --upstream scheduler --scheduler-host karl@takt
 
 # Cloud worker, no route back, fetches from GitHub
-bin/takt_worker.py --id cloud-01 \
+takt worker --id cloud-01 \
   --scheduler https://takt.example.com --token <secret> \
   --upstream github
 
 # Build-only machine (no Claude Code): never handed agent steps
-bin/takt_worker.py --id build-02 ... --no-agent-steps
+takt worker --id build-02 ... --no-agent-steps
 
 # Agent steps on a worker, under their own Claude account
-bin/takt_worker.py --id agent-01 ... \
+takt worker --id agent-01 ... \
   --claude-home ~/accounts/worker-a
 ```
 

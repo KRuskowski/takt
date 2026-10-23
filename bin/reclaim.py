@@ -344,13 +344,18 @@ def delete(item):
   return (True, "removed")
 
 
-def main():
-  parser = argparse.ArgumentParser(
-    description=(
-      "Report and reclaim regenerable build output in "
-      "takt workspaces."
-    ),
-  )
+def add_reclaim_args(parser):
+  """Attach reclaim's flags to a parser.
+
+  Shared by `takt reclaim` and this script, so the two
+  entry points cannot drift apart.
+
+  Args:
+    parser: An ArgumentParser or subparser to populate.
+
+  Returns:
+    The same parser.
+  """
   parser.add_argument(
     "--workspace", action="append", default=[],
     help="Limit to this workspace (repeatable).",
@@ -377,7 +382,24 @@ def main():
     "--quiet", action="store_true",
     help="Suppress the progress line on stderr.",
   )
-  args = parser.parse_args()
+  return parser
+
+
+def run_reclaim(args, parser=None):
+  """Survey, and optionally reclaim, build output.
+
+  Args:
+    args: Parsed arguments from add_reclaim_args().
+    parser: Parser to raise usage errors through. Falls
+      back to SystemExit when absent.
+
+  Returns:
+    Process exit code.
+  """
+  def fail(message):
+    if parser is not None:
+      parser.error(message)
+    raise SystemExit(f"takt reclaim: error: {message}")
 
   # `--older-than 0` is a legitimate explicit choice, so
   # test for presence rather than truthiness. The guard
@@ -387,7 +409,7 @@ def main():
     args.older_than is not None or bool(args.workspace)
   )
   if args.apply and not scoped:
-    parser.error(
+    fail(
       "--apply needs --older-than or --workspace; refusing "
       "to delete across all workspaces at once"
     )
@@ -498,6 +520,19 @@ def main():
       f"{', '.join(sorted(skipped))}"
     )
   return 0
+
+
+def main():
+  """Standalone entry point: `bin/reclaim.py`."""
+  parser = argparse.ArgumentParser(
+    prog="reclaim.py",
+    description=(
+      "Report and reclaim regenerable build output in "
+      "takt workspaces."
+    ),
+  )
+  add_reclaim_args(parser)
+  return run_reclaim(parser.parse_args(), parser=parser)
 
 
 if __name__ == "__main__":

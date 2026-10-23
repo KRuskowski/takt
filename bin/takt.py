@@ -1,5 +1,5 @@
 #!/home/karl/dev/takt/.venv/bin/python3
-"""takt — unified CLI for workspace orchestration.
+"""takt — the single CLI for takt.
 
 Usage:
   takt ws list|create|delete|status
@@ -7,6 +7,16 @@ Usage:
   takt pipeline set|show|runs
   takt push <branch> [--dry-run] [-y] [--repos ...]
   takt service start|stop|restart|status
+  takt worker --scheduler <url> --id <name> [...]
+  takt reclaim [--older-than N] [--apply] [...]
+
+Subcommands that own a long-running process or their own
+output (worker, reclaim) contribute their flags from their
+own module and are invoked directly, rather than going
+through lib.commands.dispatch(). The standalone scripts
+(bin/takt_worker.py, bin/reclaim.py) remain as thin
+wrappers over the same functions, so neither entry point
+can drift from the other.
 """
 
 import argparse
@@ -179,7 +189,64 @@ def build_parser():
   svc_sub.add_parser("restart", help="Restart service.")
   svc_sub.add_parser("status", help="Show service status.")
 
+  # -- worker --
+  # Flags come from the worker module itself, so this and
+  # bin/takt_worker.py cannot drift apart.
+  wrk = sub.add_parser(
+    "worker",
+    help="Execute pipeline runs on this machine.",
+    description=(
+      "Dial out to a takt scheduler, lease runs, execute "
+      "them here, and report back."
+    ),
+  )
+  _worker_module().add_worker_args(wrk)
+
+  # -- reclaim --
+  rec = sub.add_parser(
+    "reclaim",
+    help="Report/reclaim build output in workspaces.",
+    description=(
+      "Survey regenerable build output. Dry run unless "
+      "--apply is given."
+    ),
+  )
+  _reclaim_module().add_reclaim_args(rec)
+
   return parser
+
+
+def _load_bin_module(name):
+  """Import a sibling bin/ script as a module.
+
+  The scripts are executables rather than a package, so
+  they are loaded by path. Done lazily: building the parser
+  must not pay for every subcommand's imports.
+
+  Args:
+    name: Script name without the .py suffix.
+
+  Returns:
+    The imported module.
+  """
+  import importlib.util
+  path = Path(__file__).resolve().parent / f"{name}.py"
+  spec = importlib.util.spec_from_file_location(
+    f"takt_bin_{name}", str(path)
+  )
+  module = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(module)
+  return module
+
+
+def _worker_module():
+  """Load bin/takt_worker.py."""
+  return _load_bin_module("takt_worker")
+
+
+def _reclaim_module():
+  """Load bin/reclaim.py."""
+  return _load_bin_module("reclaim")
 
 
 def main():
@@ -192,6 +259,19 @@ def main():
     sys.exit(0)
 
   group = args.group
+
+  # -- worker: a long-running daemon, not a command that
+  # returns output, so it bypasses dispatch() entirely --
+  if group == "worker":
+    sys.exit(
+      _worker_module().run_worker(args, parser=parser)
+    )
+
+  # -- reclaim: owns its own output and exit code --
+  if group == "reclaim":
+    sys.exit(
+      _reclaim_module().run_reclaim(args, parser=parser)
+    )
 
   # -- push: special (no subcmd) --
   if group == "push":

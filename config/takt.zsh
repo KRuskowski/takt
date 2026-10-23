@@ -17,6 +17,8 @@ _takt() {
     'pipeline:Pipeline management'
     'push:Push branches to GitHub'
     'service:takt-service management'
+    'worker:Execute pipeline runs on this machine'
+    'reclaim:Report/reclaim build output'
   )
 
   ws_cmds=(
@@ -121,6 +123,34 @@ _takt() {
           if (( CURRENT == 2 )); then
             _describe 'service command' service_cmds
           fi
+          ;;
+        worker)
+          _arguments \
+            '--scheduler[Scheduler base URL]:url:' \
+            '--id[Worker name]:name:' \
+            '--token[Bearer token]:token:' \
+            '--work-dir[Where run worktrees go]:dir:_files -/' \
+            '--mirror-dir[Where repo mirrors live]:dir:_files -/' \
+            '--upstream[scheduler|github|template]:mode:(scheduler github)' \
+            '--scheduler-host[user@host holding root repos]:host:' \
+            '--root-path[Root repo path on scheduler]:path:' \
+            '--lease-secs[Lease length]:secs:' \
+            '--interval[Idle poll interval]:secs:' \
+            '--disk-floor-mb[Stop below this free space]:mb:' \
+            '--claude-home[CLAUDE_CONFIG_DIR for agent steps]:dir:_files -/' \
+            '--once[Execute at most one run]' \
+            '--keep-worktrees[Do not clean up after a run]' \
+            '--no-agent-steps[Build-only worker]' \
+            '--agent-bare[Run agents with --bare]'
+          ;;
+        reclaim)
+          _arguments \
+            '*--workspace[Limit to this workspace]:ws:_takt_workspaces' \
+            '--older-than[Only workspaces idle N+ days]:days:' \
+            '--min-size[Ignore below this many MB]:mb:' \
+            '--apply[Actually delete]' \
+            '--json[Emit JSON]' \
+            '--quiet[No progress line]'
           ;;
       esac
       ;;

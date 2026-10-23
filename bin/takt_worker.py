@@ -496,12 +496,18 @@ def _deliver(scheduler, work, trees, bases):
       )
 
 
-def main():
-  parser = argparse.ArgumentParser(
-    description=(
-      "Execute takt pipeline runs on this machine."
-    ),
-  )
+def add_worker_args(parser):
+  """Attach the worker's flags to a parser.
+
+  Shared by `takt worker` and this script, so the two
+  entry points cannot drift apart.
+
+  Args:
+    parser: An ArgumentParser or subparser to populate.
+
+  Returns:
+    The same parser.
+  """
   parser.add_argument(
     "--scheduler",
     default=os.environ.get("TAKT_API_URL"),
@@ -586,7 +592,24 @@ def main():
          "or MCP servers). Off by default, matching the "
          "scheduler's in-process agents.",
   )
-  args = parser.parse_args()
+  return parser
+
+
+def run_worker(args, parser=None):
+  """Register with the scheduler and execute runs.
+
+  Args:
+    args: Parsed arguments from add_worker_args().
+    parser: Parser to raise usage errors through. Falls
+      back to SystemExit when absent.
+
+  Returns:
+    Process exit code.
+  """
+  def fail(message):
+    if parser is not None:
+      parser.error(message)
+    raise SystemExit(f"takt worker: error: {message}")
 
   global _CLAUDE_HOME, _AGENT_BARE
   _CLAUDE_HOME = args.claude_home
@@ -598,11 +621,9 @@ def main():
   )
 
   if not args.scheduler:
-    parser.error(
-      "--scheduler is required (or set TAKT_API_URL)"
-    )
+    fail("--scheduler is required (or set TAKT_API_URL)")
   if not args.worker_id:
-    parser.error("--id is required (or set TAKT_WORKER_ID)")
+    fail("--id is required (or set TAKT_WORKER_ID)")
   if args.mirror_dir is None:
     args.mirror_dir = str(Path(args.work_dir) / "mirrors")
   Path(args.work_dir).mkdir(parents=True, exist_ok=True)
@@ -650,6 +671,16 @@ def main():
       return 0
     if not did_work:
       time.sleep(max(1, args.interval))
+
+
+def main():
+  """Standalone entry point: `bin/takt_worker.py`."""
+  parser = argparse.ArgumentParser(
+    prog="takt_worker.py",
+    description="Execute takt pipeline runs on this machine.",
+  )
+  add_worker_args(parser)
+  return run_worker(parser.parse_args(), parser=parser)
 
 
 if __name__ == "__main__":

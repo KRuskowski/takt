@@ -70,13 +70,20 @@ curl http://localhost:7433/api/events?topics=step.update
 
 ### CLI
 
+One executable covers everything — workspaces, targets, pipelines, pushes, the
+service, workers, and reclamation:
+
 ```bash
-bin/takt.py ws list
-bin/takt.py target claim deb-02 feature-auth
-bin/takt.py pipeline show feature-auth
+takt ws list
+takt target claim deb-02 feature-auth
+takt pipeline show feature-auth
+takt worker --scheduler https://takt:7433 --id build-01
+takt reclaim --older-than 30
 ```
 
-Source `config/takt.zsh` from `~/.zshrc` for a `takt` shell function with completions.
+Source `config/takt.zsh` from `~/.zshrc` for the `takt` shell function with
+completions for every subcommand. The individual `bin/*.py` scripts still work
+and remain thin wrappers over the same code.
 
 ## Tools
 
@@ -84,7 +91,7 @@ Source `config/takt.zsh` from `~/.zshrc` for a `takt` shell function with comple
 |------|---------|
 | `bin/workspace.py` | Create/delete workspaces, define pipelines |
 | `bin/takt_service.py` | Background service (REST API + pipeline execution) |
-| `bin/takt.py` | Unified CLI (workspaces, targets, pipelines, push) |
+| `bin/takt.py` | **The CLI** — ws, target, pipeline, push, service, worker, reclaim |
 | `bin/takt_agent.py` | Conversational REPL for managing takt |
 | `bin/takt_mcp.py` | MCP server for Claude sessions |
 | `bin/pipeline_watch.py` | Standalone poll for branch changes |
@@ -92,7 +99,8 @@ Source `config/takt.zsh` from `~/.zshrc` for a `takt` shell function with comple
 | `bin/clone_vm.py` | Create/delete qcow2-backed VM clones |
 | `bin/provision_vm.py` | Provision Debian VM (build tools, shell config) |
 | `bin/push_to_github.py` | Push branches from root repos to GitHub |
-| `bin/reclaim.py` | Report/reclaim build output in workspaces |
+| `bin/takt_worker.py` | Worker daemon (also `takt worker`) |
+| `bin/reclaim.py` | Report/reclaim build output (also `takt reclaim`) |
 | `lib/context_store.py` | Context engine (FTS5 search + recorded facts) |
 | `bin/setup_takt.py` | First-time setup (systemd unit, venv, MCP) |
 | `bin/setup_win_vm.py` | Create Windows 11 VM (unattended) |
@@ -191,11 +199,11 @@ Runs can execute on other machines. One **scheduler** owns the SQLite state, the
 #   api_token: <secret>
 
 # LAN worker — root repos fetched from the scheduler over SSH
-bin/takt_worker.py --id build-01 --scheduler https://takt:7433 \
+takt worker --id build-01 --scheduler https://takt:7433 \
   --token <secret> --upstream scheduler --scheduler-host karl@takt
 
 # Cloud worker — no route back, so it fetches from GitHub
-bin/takt_worker.py --id cloud-01 --scheduler https://takt.example.com \
+takt worker --id cloud-01 --scheduler https://takt.example.com \
   --token <secret> --upstream github
 ```
 
@@ -216,9 +224,9 @@ Two things that distribution does **not** solve:
 - **Build output is the storage cost, not git.** Workspace clones are hardlinked against the root repos and so cost almost nothing; the build trees agents create inside them dominate. Nothing reclaimed them until `bin/reclaim.py`, and workspaces are deliberately durable, so reclamation has to tell the clone apart from the build output within it.
 
 ```bash
-bin/reclaim.py                        # survey; deletes nothing
-bin/reclaim.py --older-than 30        # only workspaces idle 30+ days
-bin/reclaim.py --older-than 30 --apply
+takt reclaim                        # survey; deletes nothing
+takt reclaim --older-than 30        # only workspaces idle 30+ days
+takt reclaim --older-than 30 --apply
 ```
 
 Dry run by default. A directory is a candidate only if it carries a marker that nothing but generated output has — `CMakeCache.txt`, `CACHEDIR.TAG`, or the name `node_modules` — so a directory merely *called* `build` is left alone and nothing under `.git` is considered. `--apply` additionally requires `--older-than` or `--workspace`, re-checks each marker at deletion time, and spares any workspace with a run in flight.
