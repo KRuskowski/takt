@@ -183,14 +183,34 @@ bin/target.py run deb-02 "cmake --build ."
 
 ## Compute
 
-takt is currently **single-host**: one `takt-service` owns the SQLite state, the worktrees and the executor, and every pipeline step — agent and script alike — runs as a local process on that machine. `max_agents` (default in `lib/service.py`) caps concurrent runs, which throttles contention rather than adding capacity.
+Runs can execute on other machines. One **scheduler** owns the SQLite state, the queue and the root repos; **workers** dial out, lease runs, execute them locally and report back over HTTP. Outbound only, so a NAT'd cloud VM needs no inbound access.
 
-Targets are the one way to push work off the host today, and they are deliberately not wired into the pipeline executor — `bin/target.py run <target> <cmd>` is an explicit, operator- or agent-driven SSH call. A build or test suite can be offloaded that way; the agent driving it still runs locally.
+```bash
+# On the scheduler: config/takt.yaml
+#   api_host: 0.0.0.0
+#   api_token: <secret>
 
-Two things to know before scaling out:
+# LAN worker — root repos fetched from the scheduler over SSH
+bin/takt_worker.py --id build-01 --scheduler https://takt:7433 \
+  --token <secret> --upstream scheduler --scheduler-host karl@takt
+
+# Cloud worker — no route back, so it fetches from GitHub
+bin/takt_worker.py --id cloud-01 --scheduler https://takt.example.com \
+  --token <secret> --upstream github
+```
+
+The service refuses to bind a non-loopback address unless `api_token` is set: the API creates workspaces and triggers runs, so unauthenticated and reachable must never both be true.
+
+Each worker keeps its own git mirrors — a worktree's `.git` points into its parent repo, so it cannot live on a different machine — and materialises worktrees at the exact commit the run recorded, not the branch tip. Commits produced on a worker return as a **git bundle** over the same outbound connection; workers only ever *fetch*, so the operator still gates what reaches GitHub, and `push_to_github`/`create_pr` are refused on a worker.
+
+Claims are leases carrying a generation, so a worker that goes dark long enough to lose its lease is refused when it returns instead of reporting over whoever took the run over. A worker without Claude Code declares itself build-only and is never offered a run containing an agent step. `--disk-floor-mb` stops it accepting work when nearly full, and worktrees are removed at run completion.
+
+Agent steps do not run on a worker yet; build and test work does, which is the CPU-bound half. Design notes and the remaining stage: `context/distributed-execution.md`
+
+Two things that distribution does **not** solve:
 
 - **Claude capacity is per account, not per machine.** Rate and usage limits attach to the account in `config/takt.yaml`, so running agents on more machines does not raise how much model work you can do concurrently. Extra machines help with CPU-bound work — compiles, test suites, VM-based verification — not with agent throughput.
-- **Workers cannot reach the state or the git origin.** `.state/takt.db` is SQLite with WAL (local filesystem only), `.locks/*.lock` are local files, and workspace clones use `~/dev/root/<repo>` as their origin. Distributing execution means deciding how a remote machine obtains source and reports state before anything else.
+- **State stays on the scheduler.** `.state/takt.db` is WAL-mode SQLite and does not lock correctly over NFS/SMB, so a worker never touches it — everything goes through the worker endpoints. Target claims moved out of `.locks/*.lock` into the database for the same reason: a lock file is invisible to the other machines, and the check-then-write it replaced let two claimants both think they had won the same VM.
 - **Build output is the storage cost, not git.** Workspace clones are hardlinked against the root repos and so cost almost nothing; the build trees agents create inside them dominate. Nothing reclaimed them until `bin/reclaim.py`, and workspaces are deliberately durable, so reclamation has to tell the clone apart from the build output within it.
 
 ```bash
@@ -201,9 +221,7 @@ bin/reclaim.py --older-than 30 --apply
 
 Dry run by default. A directory is a candidate only if it carries a marker that nothing but generated output has — `CMakeCache.txt`, `CACHEDIR.TAG`, or the name `node_modules` — so a directory merely *called* `build` is left alone and nothing under `.git` is considered. `--apply` additionally requires `--older-than` or `--workspace`, re-checks each marker at deletion time, and spares any workspace with a run in flight.
 
-A design for lifting this — a scheduler node, a pull-based worker pool reachable from cloud instances, and workstations as thin clients — is written up in `context/distributed-execution.md`. Not implemented.
-
-Note that `bin/takt_mcp.py` already honours `TAKT_API_URL`, so a Claude session on another machine can drive a remote takt as soon as the service is reachable. The service currently binds to `127.0.0.1` and the API is unauthenticated, so that is not yet usable off-box.
+`bin/takt_mcp.py` honours `TAKT_API_URL` and `TAKT_API_TOKEN`, so a Claude session on any machine can drive a remote scheduler — which decouples *where you work* from *where takt runs*.
 
 ## Project layout
 

@@ -1,6 +1,15 @@
 # Distributed Execution — Design
 
-Status: **proposal, not implemented.** Written 2026-10-22. Decides how takt stops being limited to one machine's compute — LAN now, cloud later.
+Status: **implemented** as of 2026-10-23, except stage 3 (elastic cloud). Written 2026-10-22 as a proposal; the sections below are kept as the rationale, with deviations noted inline.
+
+What exists: a scheduler reachable off-box with token auth (`api_host`/`api_token`/`state_dir`), a worker registry with generation-stamped run leases, the worker protocol on `/api/workers/*`, `bin/takt_worker.py`, and target claims moved into SQLite. See `CLAUDE.md` for how to run it.
+
+Two deviations from the design as first written, both corrections:
+
+- **The worker protocol is HTTP, not the ZMQ ROUTER.** Workers dialling out solves worker-side NAT, but the scheduler needs a reachable port either way, and over the public internet bearer-token-over-TLS is standard while raw ZMQ means managing CurveZMQ keys with no transport security by default. The REST API already existed and proxies trivially.
+- **Capability gating lives in `lease_run`, not in the worker.** A worker that leases a run it cannot execute and hands it back can do that to another such worker indefinitely, so a worker without an authenticated Claude Code is never offered a run containing an agent step.
+
+Still open: agent steps do not execute on a worker yet. A worker declares `agent_steps` from whether Claude Code is present, and build and test work — the CPU-bound half, and the reason for doing any of this — distributes today.
 
 ## The problem
 

@@ -154,11 +154,43 @@ bin/push_to_github.py feature-auth --repos Combatant Conveyor
 - **Context engine**: Scoped, searchable knowledge base in SQLite FTS5. Serves sections of the checked-in docs *and* facts agents record during runs, so knowledge accumulates instead of dying with each session. See `context/context-engine.md`.
 - **Issue ledger**: Tracks which issue is assigned to which workspace. Agents claim issues atomically before starting work, so parallel planning agents don't duplicate effort. Status lifecycle: `open` → `assigned` → `in_progress` → `review` → `merged` → `closed`. Available via REST API (`/api/issues/*`) and MCP tools (`assign_issue`, `unassign_issue`, `update_issue_status`, `list_issues`).
 
-# Compute
+# Distributed Compute
 
-takt is single-host: one service owns the state, the worktrees and the executor, and all steps run locally on it. `max_agents` throttles contention, it does not add capacity. Targets (`bin/target.py run`) are the only offload path today and are deliberately not wired into the pipeline executor.
+Runs can execute on other machines. One **scheduler** owns the database, the queue and the root repos; **workers** dial out, lease runs, execute them locally and report back. Design and rationale: `context/distributed-execution.md`
 
-Design for distributing across machines (scheduler node + pull-based workers + thin clients): `context/distributed-execution.md`. Not implemented.
+## Scheduler
+
+```yaml
+# config/takt.yaml
+api_host: 0.0.0.0        # refuses to start without api_token
+api_token: <secret>      # clients send Authorization: Bearer <token>
+state_dir: /var/lib/takt # optional; default is .state/ in the checkout
+```
+
+The service refuses to bind a non-loopback address without `api_token` set — the API creates workspaces and triggers runs, so unauthenticated and reachable must never both be true.
+
+## Worker (`bin/takt_worker.py`)
+
+```bash
+# LAN worker, fetching root repos from the scheduler over SSH
+bin/takt_worker.py --id build-01 \
+  --scheduler https://takt:7433 --token <secret> \
+  --upstream scheduler --scheduler-host karl@takt
+
+# Cloud worker, no route back, fetches from GitHub
+bin/takt_worker.py --id cloud-01 \
+  --scheduler https://takt.example.com --token <secret> \
+  --upstream github
+
+# Build-only machine (no Claude Code): never handed agent steps
+bin/takt_worker.py --id build-02 ... --no-agent-steps
+```
+
+Outbound only, so a NAT'd cloud VM needs no inbound access. Each worker keeps its own mirrors (a git worktree cannot live on a different machine from its repo) and materialises worktrees at the exact SHA the run recorded. Commits produced come back as a git bundle over the same connection — workers only ever *fetch*, so the operator still gates what reaches GitHub. `push_to_github` and `create_pr` are refused on a worker and reported skipped.
+
+Claims are leases with a generation: a worker that goes dark long enough to lose its lease is refused when it returns, rather than reporting over whoever took the run. `--disk-floor-mb` stops a worker accepting work when it is nearly full, and worktrees are torn down at run completion.
+
+Inspect with `GET /api/workers`.
 
 # Config Files
 
