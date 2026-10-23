@@ -44,6 +44,26 @@ from lib.workspace_ops import (
 
 log = logging.getLogger("takt.service")
 
+
+def _is_loopback(host):
+  """Check whether a bind address stays on this machine.
+
+  Args:
+    host: Address the API would bind to.
+
+  Returns:
+    True if nothing off-box could reach it.
+  """
+  import ipaddress
+  if host in ("localhost", ""):
+    return True
+  try:
+    return ipaddress.ip_address(host).is_loopback
+  except ValueError:
+    # A hostname that is not plainly localhost may resolve
+    # anywhere. Treat it as exposed.
+    return False
+
 DEFAULT_CMD_ADDR = f"ipc://{STATE_DIR}/takt-cmd.sock"
 DEFAULT_PUB_ADDR = f"ipc://{STATE_DIR}/takt-pub.sock"
 DEFAULT_INTERVAL = 30
@@ -201,16 +221,34 @@ class TaktService:
       self._ctx.term()
 
   async def _start_http(self):
-    """Start the aiohttp REST + SSE server."""
+    """Start the aiohttp REST + SSE server.
+
+    Raises:
+      RuntimeError: If asked to listen on a non-loopback
+        address without an api_token. The API can create
+        workspaces and trigger runs, so reaching the
+        network unauthenticated is never the intent.
+    """
+    from lib.config import API_HOST, api_token
+    host = API_HOST
+    if not _is_loopback(host) and not api_token():
+      raise RuntimeError(
+        f"refusing to bind the API to {host} without "
+        "api_token set: it would be reachable from the "
+        "network with no authentication. Set api_token in "
+        "config/takt.yaml or TAKT_API_TOKEN."
+      )
     self._http_app = build_app(self)
     self._http_runner = web.AppRunner(self._http_app)
     await self._http_runner.setup()
     site = web.TCPSite(
-      self._http_runner, "127.0.0.1", self._api_port,
+      self._http_runner, host, self._api_port,
     )
     await site.start()
     log.info(
-      "HTTP API listening on port %d", self._api_port,
+      "HTTP API listening on %s:%d (auth: %s)",
+      host, self._api_port,
+      "token" if api_token() else "none",
     )
 
   async def _warm_caches(self):

@@ -1,6 +1,24 @@
 base_dir: /home/karl/dev
 clone_disk_dir: /home/karl/v
 api_port: 7433
+
+# Address the REST API binds to. Loopback keeps it on this
+# machine. Set to 0.0.0.0 to let remote workers and other
+# workstations reach this scheduler — which requires
+# api_token below, or the service refuses to start.
+# api_host: 0.0.0.0
+
+# Shared secret for the REST API. Required for any
+# non-loopback api_host. Clients send it as
+# "Authorization: Bearer <token>", or via TAKT_API_TOKEN.
+# Generate one with: python3 -c "import secrets;
+# print(secrets.token_urlsafe(32))"
+# api_token: ...
+
+# Where the SQLite state lives. Defaults to .state/ inside
+# the checkout; point it somewhere durable on a scheduler
+# node so re-cloning the repo does not move the database.
+# state_dir: /var/lib/takt
 agent:
   model: claude-opus-4-6[1m]
   active_account: default

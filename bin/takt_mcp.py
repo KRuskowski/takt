@@ -24,6 +24,7 @@ WORKSPACES_DIR = PROJECT_DIR.parent / "workspaces"
 TAKT_API = os.environ.get(
   "TAKT_API_URL", "http://127.0.0.1:7433"
 )
+TAKT_TOKEN = os.environ.get("TAKT_API_TOKEN", "")
 
 mcp = FastMCP(
   "takt",
@@ -66,9 +67,13 @@ def _api(method, path, body=None):
   data = None
   if body is not None:
     data = json.dumps(body).encode()
+  headers = {"Content-Type": "application/json"}
+  # Set when talking to a scheduler that is not on this
+  # machine. A local loopback service needs no token.
+  if TAKT_TOKEN:
+    headers["Authorization"] = f"Bearer {TAKT_TOKEN}"
   req = urllib.request.Request(
-    url, data=data, method=method,
-    headers={"Content-Type": "application/json"},
+    url, data=data, method=method, headers=headers,
   )
   try:
     with urllib.request.urlopen(req, timeout=30) as resp:

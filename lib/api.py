@@ -8,6 +8,7 @@ SSE endpoint subscribes to ZMQ PUB topics and streams events.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 
@@ -195,10 +196,55 @@ def build_app(service):
   # SSE.
   app.router.add_get("/api/events", handle_sse)
 
-  # CORS middleware.
+  # Middleware runs outermost-first, so auth is appended
+  # before CORS in order to reject an unauthorised request
+  # before any handler sees it.
+  app.middlewares.append(auth_middleware)
   app.middlewares.append(cors_middleware)
 
   return app
+
+
+@web.middleware
+async def auth_middleware(request, handler):
+  """Require a bearer token when one is configured.
+
+  No token configured means no authentication, which is how
+  a loopback-only install has always worked. The service
+  refuses to bind a non-loopback address in that state, so
+  "unauthenticated" and "reachable" cannot both be true.
+
+  CORS preflight is exempt: a browser sends OPTIONS without
+  the Authorization header, and the response carries no
+  data.
+
+  Args:
+    request: aiohttp request.
+    handler: Next handler in the chain.
+
+  Returns:
+    The handler's response, or 401.
+  """
+  from lib.config import api_token
+  token = api_token()
+  if token is None or request.method == "OPTIONS":
+    return await handler(request)
+  supplied = request.headers.get("Authorization", "")
+  prefix = "Bearer "
+  if supplied.startswith(prefix):
+    supplied = supplied[len(prefix):]
+  else:
+    supplied = request.headers.get("X-Takt-Token", "")
+  # compare_digest so a wrong token cannot be found one
+  # character at a time by timing the response.
+  if not hmac.compare_digest(supplied, token):
+    resp = web.json_response(
+      {"status": "error", "message": "unauthorized"},
+      status=401,
+    )
+    _add_cors(resp)
+    return resp
+  return await handler(request)
 
 
 def _add_cors(resp):

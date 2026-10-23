@@ -199,9 +199,18 @@ def active_workspaces():
   """
   import urllib.error
   import urllib.request
-  url = "http://127.0.0.1:7433/api/runs?limit=200"
+  base = os.environ.get(
+    "TAKT_API_URL", "http://127.0.0.1:7433"
+  )
+  token = os.environ.get("TAKT_API_TOKEN", "")
+  req = urllib.request.Request(
+    f"{base}/api/runs?limit=200",
+    headers=(
+      {"Authorization": f"Bearer {token}"} if token else {}
+    ),
+  )
   try:
-    with urllib.request.urlopen(url, timeout=10) as resp:
+    with urllib.request.urlopen(req, timeout=10) as resp:
       payload = json.loads(resp.read())
   except (urllib.error.URLError, OSError, ValueError):
     return None

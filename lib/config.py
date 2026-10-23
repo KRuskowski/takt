@@ -11,7 +11,6 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJECT_DIR / "config"
 TEMPLATES_DIR = PROJECT_DIR / "templates"
 CONTEXT_DIR = PROJECT_DIR / "context"
-STATE_DIR = PROJECT_DIR / ".state"
 LOCKS_DIR = PROJECT_DIR / ".locks"
 
 
@@ -32,11 +31,53 @@ BASE_DIR = Path(_takt.get(
 ROOT_DIR = BASE_DIR / "root"
 STAGES_DIR = BASE_DIR / "stages"
 WORKSPACES_DIR = BASE_DIR / "workspaces"
+
+# State lives in the checkout by default. A scheduler node
+# wants it somewhere durable that does not move when the
+# repo is re-cloned, so it is configurable.
+STATE_DIR = Path(
+  os.environ.get("TAKT_STATE_DIR")
+  or _takt.get("state_dir")
+  or (PROJECT_DIR / ".state")
+).expanduser()
+
+# Address the REST API binds to. Loopback by default — the
+# API is unauthenticated unless api_token is set, so it must
+# not become reachable merely by upgrading.
+API_HOST = (
+  os.environ.get("TAKT_API_HOST")
+  or _takt.get("api_host")
+  or "127.0.0.1"
+)
+API_PORT = int(
+  os.environ.get("TAKT_API_PORT")
+  or _takt.get("api_port")
+  or 7433
+)
+
 # Ensure runtime dirs exist.
-STATE_DIR.mkdir(exist_ok=True)
+STATE_DIR.mkdir(parents=True, exist_ok=True)
 LOCKS_DIR.mkdir(exist_ok=True)
 WORKSPACES_DIR.mkdir(exist_ok=True)
 STAGES_DIR.mkdir(exist_ok=True)
+
+
+def api_token():
+  """Return the shared secret required by the REST API.
+
+  Read fresh rather than cached at import, so rotating the
+  token does not need a restart of every client in the
+  process. None means the API is unauthenticated, which is
+  only safe while it is bound to loopback.
+
+  Returns:
+    Token string, or None if not configured.
+  """
+  token = (
+    os.environ.get("TAKT_API_TOKEN")
+    or load_takt_config().get("api_token")
+  )
+  return token or None
 
 
 def load_repos_config():
