@@ -19,7 +19,7 @@ Storage is worth stating precisely, because the dominant cost is not what it loo
 | `~/dev/root` | — | 6.3 GB, 23 repos (OTC.Relay 4.0 GB) |
 | `~/v` (VM clones) | 600 GB | 145 GB used |
 
-Git data is cheap: workspace clones are hardlinked against the root repos, so a workspace holding OTC.SDK costs roughly what the root copy does. The 380 GB is almost entirely **build output that agents create and never reclaim**. One sampled workspace was 28 GB, of which the repo was 1.4 GB and the rest was four separate ~5 GB build trees from one experiment.
+Git data is cheap: workspace clones are hardlinked against the root repos, so a workspace holding OTC.SDK costs roughly what the root copy does. The 380 GB is almost entirely **build output that agents create and never reclaim** — 320.8 GB of it, measured. One sampled workspace was 28 GB, of which the repo was 1.4 GB and the rest was four separate ~5 GB build trees from one experiment.
 
 That matters twice over. It is the disk and IO pressure on a single host today, and it is the thing that will fill a worker's disk tomorrow — a worker that materialises worktrees and builds accumulates the same way, without anyone logged in to notice.
 
@@ -28,6 +28,59 @@ That matters twice over. It is the disk and IO pressure on a single host today, 
 Claude rate and usage limits attach to the **account**, not the machine. Running agents on ten workers does not raise how much model work can happen concurrently. More machines help CPU-bound work — compiles, test suites, VM verification — and nothing else.
 
 Worth fixing independently: `config/takt.yaml` models multiple accounts with a per-account `claude_home`, but **the pipeline executor never reads it**. Only `bin/takt_agent.py` and the usage/accounts endpoints do. `AgentInfo` carries no account field and `AgentRunner` sets no `CLAUDE_CONFIG_DIR`, so pipeline agents run under whatever ambient `~/.claude` the service inherited. If agent throughput becomes the ceiling, per-run account assignment is the lever — and it is a single-host change.
+
+## Cheaper wins to take first
+
+Both of these address the measured bottleneck directly and neither needs a second machine. Worth exhausting before building a worker pool.
+
+### Size the compile cache properly
+
+ccache is installed and in use, and it is **thrashing**. Measured 2026-10-22:
+
+```
+Cacheable calls:  431699 / 432879 (99.73%)
+  Hits:            86303 / 431699 (19.99%)
+  Misses:         345396 / 431699 (80.01%)
+Cache size (GB):    10.0 /   10.0 (99.95%)
+Cleanups:           1720
+```
+
+A 10 GB cache against 23 repos, 230 workspaces and 432k compilations evicts itself continuously — 1720 cleanups is the cache emptying and refilling over and over. The 20% hit rate is a symptom of capacity, not of the work being uncacheable: 99.7% of calls *are* cacheable.
+
+Raising the cap is one command and directly converts into build throughput, which is the stated constraint:
+
+```bash
+ccache --max-size=100G
+```
+
+`~/.ccache` sits on `/`, which has 267 GB free. This is the single cheapest available improvement to compile time, and it should be done before concluding that more machines are needed — a worker pool that still misses 80% of its compiles is buying hardware to redo work it already did.
+
+Note also that distributing builds **fragments the cache** unless workers share one, since each machine would start cold. If distribution proceeds, a shared cache backend becomes part of the design rather than an afterthought.
+
+### Reclaim build output
+
+`bin/reclaim.py` surveys and removes regenerable build output. Measured across 207 workspaces:
+
+| | |
+|---|---|
+| Total reclaimable | **320.8 GB** across 105 workspaces |
+| cmake build dirs | 299.6 GB |
+| node_modules | 16.8 GB |
+| cargo/cache dirs | 4.4 GB |
+
+So roughly 84% of the 380 GB in `~/dev/workspaces` is regenerable, and almost none of it is git data.
+
+The catch is **where** it sits. Reclaimable bytes by idle threshold:
+
+| Idle at least | Reclaims | Workspaces |
+|---|---|---|
+| 7 days | 204.1 GB | 88 |
+| 10 days | 84.2 GB | 68 |
+| 14 days | 75.9 GB | 66 |
+| 21 days | 32.1 GB | 58 |
+| 30 days | 8.0 GB | 22 |
+
+A conservative `--older-than 30` frees only 8 GB. The mass is in workspaces touched within the last week or two, so reclamation is a real trade rather than free cleanup: those build trees are what make an incremental rebuild cheap. That is precisely why the cache sizing above comes first — with a cache that actually retains its contents, discarding a build tree costs a configure and a link rather than a full recompile, and reclamation stops being painful.
 
 ## Three roles currently collapsed into one machine
 
@@ -182,6 +235,8 @@ Added to `_cmd_handlers` in `lib/service.py`:
 Step output already has a serialisation format and a persistence path (`agent_output`, `record_output`), so worker output reuses both rather than inventing a second channel.
 
 ## Staging
+
+**Stage −1 — take the cheap wins.** Size the compile cache, and reclaim build output where the trade is acceptable. Neither needs a second machine, and the cache fix changes the economics of everything after it. See "Cheaper wins to take first" above.
 
 **Stage 0 — make the scheduler addressable.** Configurable bind address, an auth token on the API, and a configurable `STATE_DIR`. Small, and a prerequisite for everything else. On its own it already buys something useful: working from any workstation against one takt.
 
