@@ -92,6 +92,7 @@ Source `config/takt.zsh` from `~/.zshrc` for a `takt` shell function with comple
 | `bin/clone_vm.py` | Create/delete qcow2-backed VM clones |
 | `bin/provision_vm.py` | Provision Debian VM (build tools, shell config) |
 | `bin/push_to_github.py` | Push branches from root repos to GitHub |
+| `bin/reclaim.py` | Report/reclaim build output in workspaces |
 | `lib/context_store.py` | Context engine (FTS5 search + recorded facts) |
 | `bin/setup_takt.py` | First-time setup (systemd unit, venv, MCP) |
 | `bin/setup_win_vm.py` | Create Windows 11 VM (unattended) |
@@ -184,7 +185,15 @@ Two things to know before scaling out:
 
 - **Claude capacity is per account, not per machine.** Rate and usage limits attach to the account in `config/takt.yaml`, so running agents on more machines does not raise how much model work you can do concurrently. Extra machines help with CPU-bound work — compiles, test suites, VM-based verification — not with agent throughput.
 - **Workers cannot reach the state or the git origin.** `.state/takt.db` is SQLite with WAL (local filesystem only), `.locks/*.lock` are local files, and workspace clones use `~/dev/root/<repo>` as their origin. Distributing execution means deciding how a remote machine obtains source and reports state before anything else.
-- **Nothing reclaims build output.** Workspace clones are hardlinked against the root repos and so cost almost nothing, but the build trees agents create inside them are never cleaned up and dominate storage. Workspaces are deliberately durable, so reclamation has to distinguish the clone from the build output within it.
+- **Build output is the storage cost, not git.** Workspace clones are hardlinked against the root repos and so cost almost nothing; the build trees agents create inside them dominate. Nothing reclaimed them until `bin/reclaim.py`, and workspaces are deliberately durable, so reclamation has to tell the clone apart from the build output within it.
+
+```bash
+bin/reclaim.py                        # survey; deletes nothing
+bin/reclaim.py --older-than 30        # only workspaces idle 30+ days
+bin/reclaim.py --older-than 30 --apply
+```
+
+Dry run by default. A directory is a candidate only if it carries a marker that nothing but generated output has — `CMakeCache.txt`, `CACHEDIR.TAG`, or the name `node_modules` — so a directory merely *called* `build` is left alone and nothing under `.git` is considered. `--apply` additionally requires `--older-than` or `--workspace`, re-checks each marker at deletion time, and spares any workspace with a run in flight.
 
 A design for lifting this — a scheduler node, a pull-based worker pool reachable from cloud instances, and workstations as thin clients — is written up in `context/distributed-execution.md`. Not implemented.
 

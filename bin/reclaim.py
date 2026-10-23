@@ -211,26 +211,35 @@ def active_workspaces():
   }
 
 
-def survey(selected, now):
+def survey(selected, now, on_progress=None):
   """Measure reclaimable output for the given workspaces.
 
   Args:
     selected: List of workspace dicts from list_workspaces.
     now: Current epoch seconds.
+    on_progress: Optional callback(index, total, name,
+      size_bytes) invoked after each workspace. Surveying a
+      few hundred workspaces means stat-ing every file in
+      them, which takes minutes; without feedback the tool
+      looks hung.
 
   Returns:
     List of per-workspace dicts, largest first.
   """
   rows = []
-  for ws in selected:
+  total = len(selected)
+  for index, ws in enumerate(selected, start=1):
     items = find_reclaimable(Path(ws["path"]))
+    size = sum(i["bytes"] for i in items)
+    if on_progress:
+      on_progress(index, total, ws["name"], size)
     if not items:
       continue
     rows.append({
       "workspace": ws["name"],
       "path": ws["path"],
       "idle_days": idle_days(ws.get("last_active"), now),
-      "bytes": sum(i["bytes"] for i in items),
+      "bytes": size,
       "items": sorted(
         items, key=lambda i: i["bytes"], reverse=True
       ),
@@ -320,6 +329,10 @@ def main():
     "--json", action="store_true",
     help="Emit JSON instead of a table.",
   )
+  parser.add_argument(
+    "--quiet", action="store_true",
+    help="Suppress the progress line on stderr.",
+  )
   args = parser.parse_args()
 
   # `--older-than 0` is a legitimate explicit choice, so
@@ -356,7 +369,22 @@ def main():
       >= args.older_than
     ]
 
-  rows = survey(workspaces, now)
+  def progress(index, total, name, size):
+    """Report survey progress on stderr.
+
+    stderr so that --json stays machine-readable and the
+    table on stdout stays pipeable.
+    """
+    if args.quiet:
+      return
+    found = f" {human(size)}" if size else ""
+    print(
+      f"\r[{index}/{total}] {name}{found}".ljust(70),
+      end="" if index < total else "\n",
+      file=sys.stderr, flush=True,
+    )
+
+  rows = survey(workspaces, now, on_progress=progress)
   if args.min_size:
     floor = args.min_size * 1024 * 1024
     rows = [r for r in rows if r["bytes"] >= floor]

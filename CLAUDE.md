@@ -115,6 +115,18 @@ Argparse CLI over `lib/commands.py`: `takt ws|target|pipeline|push|service`. Sou
 
 takt has no graphical or terminal UI. Interaction is via the MCP server, the REST API on port 7433, and this CLI.
 
+## Reclaim Build Output (`bin/reclaim.py`)
+
+Workspace clones are hardlinked and nearly free; the build trees inside them dominate storage and nothing else reclaims them. Dry run by default.
+
+```bash
+bin/reclaim.py                              # survey only
+bin/reclaim.py --older-than 30              # idle 30+ days
+bin/reclaim.py --older-than 30 --apply      # delete
+```
+
+Only removes directories carrying a marker that proves they are regenerable (`CMakeCache.txt`, `CACHEDIR.TAG`, `node_modules`); never descends into `.git`; re-checks the marker before deleting; spares workspaces with a run in flight.
+
 ## Push to GitHub (`bin/push_to_github.py`)
 
 Push branches from root repos to GitHub in dependency order.
