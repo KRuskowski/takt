@@ -1,50 +1,65 @@
 <p align="center"> <img src="graphics/takt.plain.darkmode.svg" width="280" alt="takt" /> </p>
 
-Multi-agent pipeline orchestration for running Claude Code agents across multi-repo projects.
+Multi-agent pipeline orchestration for running Claude Code agents across multi-repo projects, on one machine or many.
 
 ## What it does
 
 - Creates isolated **workspaces** (local clones + branches) for parallel agent work across multiple repos
-- Defines **pipelines** per workspace — ordered sequences of agent steps (with per-step model selection) and script steps (push, PR creation, upstream merge)
+- Defines **pipelines** per workspace — ordered sequences of agent steps (per-step model) and script steps (test, QA, push, PR creation, upstream merge)
 - Runs pipelines via a **background service** that watches for branch changes and executes steps in temporary worktrees
-- Manages **deployment targets** (VMs and hardware) with exclusive locking and qcow2-backed VM cloning
+- **Distributes runs across machines** — a scheduler owns the state and queue; workers dial out, lease runs, and execute them on their own hardware, including cloud VMs behind NAT
+- Manages **deployment targets** (VMs and hardware) with exclusive, atomic locking and qcow2-backed VM cloning
 - Runs **meta agents** for cross-cutting tasks (CLAUDE.md generation, pipeline setup, role template improvement)
 - Accumulates a **searchable knowledge base** — scoped, attributed facts agents record as they work, plus section-level retrieval over the project docs
-- Exposes everything through an **MCP server**, a **REST/SSE API**, and a **CLI** — no GUI
+- Exposes everything through an **MCP server**, a **REST/SSE API**, and one **CLI** — no GUI
 
 ## Architecture
 
 ```
 GitHub (upstream)
-  |
+  |                                    ← operator gates what goes up
   v
-~/dev/root/<repo>           Local mirrors (fetch-only)
+~/dev/root/<repo>           Local mirrors, on the scheduler
   |
-  v
-~/dev/workspaces/<name>/    Isolated clones, one per task
-  |
+  +--> ~/dev/workspaces/<name>/    Isolated clones, one per task
+  |                                 (where implementation happens)
   v
 ~/dev/runs/<ws>-<id>/<repo> Temporary worktrees per run
+```
+
+A run executes either on the scheduler itself or on a worker:
+
+```
+        scheduler                         worker (LAN or cloud)
+  ┌───────────────────────┐         ┌──────────────────────────┐
+  │ SQLite state + queue  │◀────────│ lease / heartbeat        │
+  │ root repos            │  HTTP   │ own git mirrors          │
+  │ renders agent prompts │────────▶│ worktrees at exact SHAs  │
+  │ unbundles results     │◀────────│ runs steps, returns      │
+  │ pushes to GitHub      │ bundle  │ commits as a git bundle  │
+  └───────────────────────┘         └──────────────────────────┘
+          workers dial out — no inbound access needed
 ```
 
 ### Data flow
 
 1. **Pull**: GitHub -> root repos (fetch via service or manual `git pull`)
-2. **Clone**: root repos -> workspace clones (`workspace.py create`)
-3. **Work**: agent modifies workspace clones, pushes to root repo (its origin)
-4. **Watch**: takt-service detects branch changes in root repos, creates pipeline runs
-5. **Execute**: pipeline steps run sequentially in temporary worktrees — agents via Claude Code SDK, scripts via Python functions
-6. **Push**: operator reviews and pushes from root repos to GitHub (`push_to_github.py`)
+2. **Clone**: root repos -> workspace clones (`takt ws create`)
+3. **Work**: agent writes and commits the implementation in the workspace clones, pushes to the root repo (its origin). All building happens here.
+4. **Watch**: takt-service detects branch changes in root repos and creates a pipeline run
+5. **Execute**: steps run sequentially in temporary worktrees, on the scheduler or on a worker that leased the run — agent steps via the Claude Code SDK in-process, or the `claude` CLI on a worker; script steps via Python functions
+6. **Deliver**: the run pushes to GitHub and opens a PR; the operator reviews. Work produced on a worker returns to the scheduler as a git bundle first.
 
 ### Design principles
 
 - **Workspace name = branch name** across all repos. One identifier ties together repos, tools, and git history.
-- **No direct GitHub push.** Agents push to origin (root repo) only. Human operator gates what reaches GitHub.
-- **All state in SQLite.** Pipeline definitions, runs, steps, agent output, and branch refs live in `.state/takt.db` (WAL mode).
-- **Per-step model selection.** Each agent step can run with a different Claude model (sonnet/opus/haiku).
+- **No direct GitHub push.** Agents push to origin (the root repo) only, and workers only ever *fetch* — the scheduler is the single thing that talks to GitHub, so the operator gates what reaches it.
+- **All state in SQLite.** Pipeline definitions, runs, steps, agent output, branch refs, worker registry, and target claims live in `.state/takt.db` (WAL mode), on the scheduler.
+- **Claims are leases, not flags.** A worker holds a run under a generation-stamped lease. One that goes dark loses the lease and is refused when it returns, so a run is never executed or reported twice.
+- **Per-step model selection.** Each agent step names its own model, by alias (`opus`, `sonnet`, `fable`, `haiku`) or full ID.
 - **Progressive context disclosure.** CLAUDE.md files are lean and point to context packets. Agents fetch what they need rather than loading everything upfront.
 - **Knowledge outlives the session.** What an agent learns during a run is recorded with its scope and provenance, so the next agent searches it instead of rediscovering it. See `context/context-engine.md`.
-- **Pooled targets.** Deployment targets (VMs, hardware) are shared resources with exclusive locking. Agents claim, use, and release.
+- **Pooled targets.** Deployment targets (VMs, hardware) are shared resources. Claiming one is a single atomic statement, so two machines cannot both believe they hold it.
 
 ## Interfaces
 
@@ -70,8 +85,7 @@ curl http://localhost:7433/api/events?topics=step.update
 
 ### CLI
 
-One executable covers everything — workspaces, targets, pipelines, pushes, the
-service, workers, and reclamation:
+One executable covers everything — workspaces, targets, pipelines, pushes, the service, workers, and reclamation:
 
 ```bash
 takt ws list
@@ -81,28 +95,27 @@ takt worker --scheduler https://takt:7433 --id build-01
 takt reclaim --older-than 30
 ```
 
-Source `config/takt.zsh` from `~/.zshrc` for the `takt` shell function with
-completions for every subcommand. The individual `bin/*.py` scripts still work
-and remain thin wrappers over the same code.
+Source `config/takt.zsh` from `~/.zshrc` for the `takt` shell function with completions for every subcommand. The individual `bin/*.py` scripts still work and remain thin wrappers over the same code.
 
 ## Tools
 
+`bin/takt.py` is the entry point for day-to-day use. The scripts below it still work directly, and the ones marked "also" are reachable as `takt` subcommands.
+
 | Tool | Purpose |
 |------|---------|
-| `bin/workspace.py` | Create/delete workspaces, define pipelines |
-| `bin/takt_service.py` | Background service (REST API + pipeline execution) |
-| `bin/takt.py` | **The CLI** — ws, target, pipeline, push, service, worker, reclaim |
-| `bin/takt_agent.py` | Conversational REPL for managing takt |
+| `bin/takt.py` | **The CLI** — `ws`, `target`, `pipeline`, `push`, `service`, `worker`, `reclaim` |
+| `bin/takt_service.py` | Background service: REST API, branch watching, pipeline execution |
+| `bin/takt_worker.py` | Worker daemon (also `takt worker`) |
 | `bin/takt_mcp.py` | MCP server for Claude sessions |
+| `bin/takt_agent.py` | Conversational REPL for managing takt |
+| `bin/reclaim.py` | Report/reclaim build output (also `takt reclaim`) |
+| `bin/workspace.py` | Create/delete workspaces, define pipelines (also `takt ws`) |
+| `bin/target.py` | Claim/release targets, VM lifecycle, SSH (also `takt target`) |
+| `bin/push_to_github.py` | Push branches from root repos to GitHub (also `takt push`) |
 | `bin/pipeline_watch.py` | Standalone poll for branch changes |
-| `bin/target.py` | Claim/release targets, VM lifecycle, SSH |
+| `bin/setup_takt.py` | First-time setup (venv, systemd unit, MCP) |
 | `bin/clone_vm.py` | Create/delete qcow2-backed VM clones |
 | `bin/provision_vm.py` | Provision Debian VM (build tools, shell config) |
-| `bin/push_to_github.py` | Push branches from root repos to GitHub |
-| `bin/takt_worker.py` | Worker daemon (also `takt worker`) |
-| `bin/reclaim.py` | Report/reclaim build output (also `takt reclaim`) |
-| `lib/context_store.py` | Context engine (FTS5 search + recorded facts) |
-| `bin/setup_takt.py` | First-time setup (systemd unit, venv, MCP) |
 | `bin/setup_win_vm.py` | Create Windows 11 VM (unattended) |
 | `bin/provision_win_vm.py` | Provision Windows VM (VS2022, Git, Samba) |
 | `bin/setup_libvirt.py` | Install libvirt/QEMU and configure networking |
@@ -113,25 +126,35 @@ and remain thin wrappers over the same code.
 # First-time setup (venv, systemd unit, MCP server)
 python3 bin/setup_takt.py
 
-# Create a workspace across multiple repos
-bin/workspace.py create feature-auth RepoA RepoB
-
-# Define a pipeline
-bin/workspace.py pipeline-set feature-auth test push_to_github
-
 # Start the background service
 systemctl --user start takt-service
 
-# Trigger a run
-bin/workspace.py trigger feature-auth
+# Create a workspace across multiple repos
+takt ws create feature-auth RepoA RepoB
 
-# Push to GitHub when ready
-bin/push_to_github.py feature-auth
+# ... write and commit the implementation in
+# ~/dev/workspaces/feature-auth/, then push to the root repo ...
+
+# Define what happens to it: verify, then deliver
+takt pipeline set feature-auth test review push_to_github create_pr
+
+# Watch it run
+takt pipeline runs feature-auth
 ```
+
+A run starts when takt-service notices the branch move in the root repo. To start one by hand, use the MCP `trigger_run` tool or the API directly — there is deliberately no `takt` subcommand for it, since a run is normally a consequence of pushing rather than something you invoke:
+
+```bash
+curl -X POST http://localhost:7433/api/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"workspace": "feature-auth"}'
+```
+
+To add a second machine, see [Compute](#compute).
 
 ## Pipeline
 
-Pipelines are ordered sequences of steps defined per workspace. Steps are either **agent** (Claude Code via SDK) or **script** (built-in Python functions).
+Pipelines are ordered sequences of steps defined per workspace. Steps are either **agent** (Claude Code — the SDK in-process on the scheduler, or the `claude` CLI on a worker) or **script** (built-in Python functions).
 
 **A pipeline is how finished work gets upstream.** It runs post-implementation: the steps test, review, document and QA an implementation that is already written and committed, and then deliver it — pushing to GitHub and opening a PR. Delivery is the point of it.
 
@@ -144,9 +167,11 @@ Built-in scripts:
 - `create_pr` — create GitHub PRs via `gh` CLI
 - `merge_upstream` — fetch and merge default branch into workspace branch
 
-Agent steps run with a configurable model (sonnet/opus/haiku) and get a role prompt from `templates/pipeline_roles.md`. Per-step custom prompts are set via `set_pipeline`. Results are written to `.stage-result.json` in the worktree.
+Agent steps name their own model (alias or full ID) and get a role prompt from `templates/pipeline_roles.md`. Per-step custom prompts are set via `set_pipeline`. The prompt is always rendered on the scheduler, so the role templates are authoritative in one place even when the step runs elsewhere.
 
-Steps execute on the machine running takt-service, with `max_agents` capping how many runs proceed concurrently. See [Compute](#compute) for what that implies.
+A step reports its own verdict by writing `.stage-result.json` in the worktree. That verdict decides the step: an agent finishing cleanly but writing `{"status": "fail"}` is a failed step, not a passed one — so a failing test suite cannot come back green.
+
+Where a run executes is decided by whoever leases it first — the scheduler itself, or any worker whose capabilities satisfy it. `max_agents` caps concurrent runs on a single machine; adding capacity means adding machines. See [Compute](#compute).
 
 ## Context engine
 
@@ -184,10 +209,12 @@ sudo python3 bin/clone_vm.py create deb-01 deb-02 \
 python3 bin/provision_vm.py deb-02
 
 # Manage targets
-bin/target.py list
-bin/target.py claim deb-02 feature-auth
-bin/target.py run deb-02 "cmake --build ."
+takt target list
+takt target claim deb-02 feature-auth
+takt target run deb-02 "cmake --build ."
 ```
+
+Claims live in the database rather than in lock files, so they are visible to every machine and claiming is atomic — two workers cannot both believe they hold the same VM.
 
 ## Compute
 
@@ -217,11 +244,11 @@ Claims are leases carrying a generation, so a worker that goes dark long enough 
 
 Design notes and the remaining stage (elastic cloud provisioning): `context/distributed-execution.md`
 
-Two things that distribution does **not** solve:
+Three things worth knowing before adding machines:
 
-- **Claude capacity is per account, not per machine.** Rate and usage limits attach to the account in `config/takt.yaml`, so running agents on more machines does not raise how much model work you can do concurrently. Extra machines help with CPU-bound work — compiles, test suites, VM-based verification — not with agent throughput.
+- **Claude capacity is per account, not per machine.** Rate and usage limits attach to the account, so running agents on more machines does not by itself raise how much model work can happen at once — give each worker its own account via `--claude-home` if that is the goal. Extra machines help CPU-bound work — compiles, test suites, VM-based verification — unconditionally.
 - **State stays on the scheduler.** `.state/takt.db` is WAL-mode SQLite and does not lock correctly over NFS/SMB, so a worker never touches it — everything goes through the worker endpoints. Target claims moved out of `.locks/*.lock` into the database for the same reason: a lock file is invisible to the other machines, and the check-then-write it replaced let two claimants both think they had won the same VM.
-- **Build output is the storage cost, not git.** Workspace clones are hardlinked against the root repos and so cost almost nothing; the build trees agents create inside them dominate. Nothing reclaimed them until `bin/reclaim.py`, and workspaces are deliberately durable, so reclamation has to tell the clone apart from the build output within it.
+- **Build output is the storage cost, not git.** Workspace clones are hardlinked against the root repos and so cost almost nothing; the build trees agents create inside them dominate, and nothing reclaimed them before `takt reclaim`. Workspaces are deliberately durable, so reclamation has to tell the clone apart from the build output within it — and a worker reclaims its own, since nobody is logged in to notice it filling up.
 
 ```bash
 takt reclaim                        # survey; deletes nothing
@@ -236,34 +263,56 @@ Dry run by default. A directory is a candidate only if it carries a marker that 
 ## Project layout
 
 ```
-bin/                  CLI tools and scripts
+bin/
+  takt.py             The CLI — every subcommand
+  takt_service.py     Background service entry point
+  takt_worker.py      Worker daemon (also `takt worker`)
+  takt_mcp.py         MCP server
+  reclaim.py          Build-output reclamation (also `takt reclaim`)
+  ...                 VM provisioning, setup, push
 lib/                  Shared Python library
   config.py           Constants, config loaders
-  db.py               SQLite state layer
-  pipeline.py         Pipeline executor
+  db.py               SQLite state layer (incl. leases, locks)
+  commands.py         Shared CLI/API command dispatch
+  pipeline.py         Pipeline executor, script steps, prompts
+  checks.py           Built-in check steps
   service.py          Background service (ZMQ + asyncio)
-  api.py              REST/SSE API (aiohttp)
-  agent_runner.py     Claude Code SDK wrapper
+  api.py              REST/SSE API (aiohttp), worker endpoints
+  agent_runner.py     Claude Code SDK wrapper (in-process agents)
+  worker.py           Worker side: mirrors, worktrees, claude CLI
+  worker_ops.py       Scheduler side: leases, reports, bundles
   workspace_ops.py    Workspace operations
+  target_ops.py       Target config and claims
   git_utils.py        Git helpers
+  worktree.py         Run worktree lifecycle
   meta_runner.py      Meta agent executor
   context_store.py    Context engine (FTS5 + facts)
 config/
   repos.yaml          Managed repo registry (gitignored)
   targets.yaml        Target inventory (gitignored)
-  takt.yaml           Service config (API port, agent model)
+  takt.yaml           Service config (bind address, token, state dir,
+                      agent accounts)
+  takt.zsh            Shell function + completions
 templates/            CLAUDE.md templates, pipeline roles
 context/              Architecture and decision docs
 graphics/             Logos and icons
-tests/                Unit tests
+tests/                594 tests
 ```
 
 ## Requirements
 
+**Scheduler:**
+
 - Python 3.11+ with PyYAML, pyzmq, aiohttp, claude-code-sdk
 - Git
-- libvirt + QEMU (for VM management, optional)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) for in-process agent steps
+- libvirt + QEMU (for VM targets, optional)
+
+**Worker** (anything beyond this is per-workload):
+
+- Python 3.11+ and Git
+- The `claude` CLI, only if it should run agent steps — otherwise start it with `--no-agent-steps` and it will only be offered build and test work
+- Whatever toolchains the steps need (cmake, ninja, compilers, …). A worker reports what it has on registration.
 
 ## License
 
