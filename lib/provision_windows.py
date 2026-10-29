@@ -504,46 +504,46 @@ def python_path(host):
 
 def install_service(host, scheduler_host=None,
                     upstream="scheduler", user=None,
-                    agent_steps=True):
+                    agent_steps=True, claude_home=None):
   """Run the worker as a scheduled task.
 
   Windows has no systemd, and a scheduled task is the
-  equivalent. Which identity it runs as is not a free
-  choice -- it follows from whether the worker does agent
-  steps, and the two options exclude each other:
+  equivalent. It runs as SYSTEM on an at-startup trigger,
+  which is the only identity Windows will start with nobody
+  logged in unless a password is stored -- and a password
+  would have to go on a command line. Verified on this
+  hardware with no user logged on: `Logon Mode:
+  Interactive/Background`, and the worker registered.
 
-  **Build-only -> SYSTEM, at startup.** Runs unattended
-  with nobody logged in, which is the whole point of using
-  a machine that is "just on". Verified on this hardware:
-  with no user logged on, a SYSTEM/ONSTART task reports
-  `Logon Mode: Interactive/Background` and ran to
-  completion. It works because the interpreter is named
-  absolutely and git is on the *machine* PATH.
+  Running as SYSTEM does **not** prevent agent steps, which
+  an earlier version of this assumed. Measured as
+  nt authority\\system on this machine: `where claude`
+  resolves through the launcher's PATH, `claude --version`
+  runs, and a config directory under the operator's profile
+  is readable. The only thing SYSTEM lacks is credentials,
+  and those are supplied by pointing --claude-home at a
+  config directory -- which also happens to be how each
+  worker gets its own account, the thing that actually
+  multiplies agent throughput.
 
-  **Agent steps -> the user, at logon.** The Claude CLI
-  keeps its credentials in the user profile and lives on the
-  user's PATH, so SYSTEM has no account to run as. The cost
-  is real: schtasks will only create a named-user task
-  without a stored password as "Interactive only", so it
-  does **not** run while the machine sits at the login
-  screen. Observed here: `Last Result: 267011`
-  (SCHED_S_TASK_HAS_NOT_RUN) with no user logged on.
-
-  A password would avoid that and is not an option: it
-  would have to go on the command line.
+  Signing that directory in needs no console either: the
+  CLI prints a URL and a code, which works in an
+  interactive SSH session.
 
   Args:
     host: user@host.
     scheduler_host: Passed to the worker for --upstream
       scheduler.
     upstream: Where mirrors refresh from.
-    user: Account to run as for the agent-capable mode.
-      Defaults to the SSH user.
-    agent_steps: False to declare the worker build-only,
-      which is also what makes unattended operation
-      possible. Right while the Claude CLI is installed but
-      not yet signed in -- otherwise the scheduler hands it
-      agent runs that fail.
+    user: Unused; retained so the signature matches the
+      POSIX side.
+    agent_steps: False to declare the worker build-only.
+      Right while the Claude CLI is installed but not yet
+      signed in -- otherwise the scheduler hands it agent
+      runs that fail.
+    claude_home: Directory to use as CLAUDE_CONFIG_DIR for
+      agent steps. Required for agent steps under SYSTEM,
+      which has no user profile of its own.
 
   Returns:
     Dict with the task's state.
@@ -552,8 +552,6 @@ def install_service(host, scheduler_host=None,
     ProvisionError: If the task could not be created or is
       not ready.
   """
-  if user is None:
-    user = host.split("@")[0] if "@" in host else "%USERNAME%"
   python = python_path(host)
   home = home_dir(host)
 
@@ -581,6 +579,8 @@ def install_service(host, scheduler_host=None,
     flags += f" --scheduler-host {scheduler_host}"
   if not agent_steps:
     flags += " --no-agent-steps"
+  if claude_home:
+    flags += f' --claude-home "{claude_home}"'
 
   script = (
     "@echo off\r\n"
@@ -608,21 +608,31 @@ def install_service(host, scheduler_host=None,
     host,
     f'if not exist "{work_dir}" mkdir "{work_dir}"',
   )
+  if claude_home:
+    # Created here, and granted to SYSTEM, because the task
+    # runs as SYSTEM and the CLI needs to both read and
+    # write this directory. Karl signs it in over SSH:
+    #   set CLAUDE_CONFIG_DIR=<dir> && claude setup-token
+    provision.ssh(
+      host,
+      f'if not exist "{claude_home}" '
+      f'mkdir "{claude_home}"',
+    )
+    provision.ssh(
+      host,
+      f'icacls "{claude_home}" /grant "SYSTEM":(OI)(CI)F',
+      check=False,
+    )
   with tempfile.TemporaryDirectory() as tmp:
     local = Path(tmp) / "takt-worker.cmd"
     local.write_text(script)
     _scp(local, host, f"{SFTP_WORK}/takt-worker.cmd",
          timeout=120)
 
-  if agent_steps:
-    identity = f"/sc onlogon /ru {user}"
-    runs_as, unattended = user, False
-  else:
-    identity = "/sc onstart /ru SYSTEM"
-    runs_as, unattended = "SYSTEM", True
   provision.ssh(
     host,
-    f'schtasks /create /tn {TASK_NAME} {identity} '
+    f'schtasks /create /tn {TASK_NAME} '
+    f'/sc onstart /ru SYSTEM '
     f'/f /tr "\'{launcher_win}\'"',
     timeout=180,
   )
@@ -652,10 +662,10 @@ def install_service(host, scheduler_host=None,
     # "linger" is the POSIX name for the same property the
     # caller cares about: does this keep working with nobody
     # logged in.
-    "linger": unattended,
+    "linger": True,
     "task": TASK_NAME,
-    "runs_as": runs_as,
-    "unattended": unattended,
+    "runs_as": "SYSTEM",
+    "unattended": True,
     "agent_steps": agent_steps,
     "log": log_path,
     "launcher": launcher_win,

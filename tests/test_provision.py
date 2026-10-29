@@ -760,22 +760,39 @@ class TestWindowsService:
     assert "/ru SYSTEM" in create
     assert result["unattended"] is True
 
-  def test_agent_capable_runs_as_the_user_at_logon(
+  def test_agent_steps_also_run_unattended(
     self, monkeypatch
   ):
-    """Agent steps need the user's Claude credentials.
+    """SYSTEM does not preclude agent steps.
 
-    They live in the user profile, so SYSTEM has no account.
+    An earlier version assumed it did and fell back to a
+    named-user logon task, which never fires on a machine
+    sitting at the login screen. Measured as
+    nt authority\\system on the real hardware: `where
+    claude` resolves through the launcher PATH,
+    `claude --version` runs, and a config directory under
+    the operator's profile is readable. Only credentials
+    are missing, and --claude-home supplies those.
     """
     from lib import provision_windows as win
-    rec, _ = self._setup(monkeypatch)
+    rec, written = self._setup(monkeypatch)
     result = win.install_service(
-      "karl@win-desk", agent_steps=True
+      "karl@win-desk", agent_steps=True,
+      claude_home=r"C:\Users\Karl\takt-worker\claude-home",
     )
     create = rec.commands_matching("/create")[0]
-    assert "/sc onlogon" in create
-    assert "/ru karl" in create
-    assert result["unattended"] is False
+    assert "/sc onstart" in create
+    assert "/ru SYSTEM" in create
+    assert result["unattended"] is True
+    assert "--claude-home" in written[0]
+
+  def test_claude_home_is_omitted_when_unset(
+    self, monkeypatch
+  ):
+    from lib import provision_windows as win
+    _, written = self._setup(monkeypatch)
+    win.install_service("karl@win-desk", agent_steps=False)
+    assert "--claude-home" not in written[0]
 
   def test_no_password_on_the_command_line(
     self, monkeypatch
@@ -929,3 +946,22 @@ class TestWindowsService:
     assert "/end" in order[0], (
       "must end the running task before starting it"
     )
+
+  def test_claude_home_is_created_and_granted(
+    self, monkeypatch
+  ):
+    """SYSTEM must be able to read and write it.
+
+    The task runs as SYSTEM and the CLI stores its
+    credentials there, so a directory the operator alone
+    can touch would leave agent steps failing.
+    """
+    from lib import provision_windows as win
+    rec, _ = self._setup(monkeypatch)
+    home = r"C:\Users\Karl\takt-worker\claude-home"
+    win.install_service(
+      "karl@win-desk", agent_steps=True, claude_home=home,
+    )
+    assert rec.commands_matching(f'mkdir "{home}"')
+    grant = rec.commands_matching("icacls")
+    assert any('"SYSTEM"' in c for c in grant)

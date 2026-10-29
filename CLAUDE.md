@@ -231,14 +231,11 @@ A loopback `--scheduler` is refused: on the worker it would mean the worker itse
 - **Files go over SFTP**, not through the shell. Quoting a multi-line file through ssh → cmd.exe → powershell reliably produces something subtly wrong, and the credential file holds the token. It is locked down with `icacls /inheritance:r`, then the ACL is read back and refused if it still grants Everyone or BUILTIN\Users. SYSTEM is granted read deliberately (see below); that is not a weakening, since SYSTEM can take ownership of anything regardless.
 - **Repos arrive as git bundles**, not pushes. git sends `git-receive-pack 'path'` and cmd.exe does not strip the quotes, so git looks for a directory whose name contains them (`''repo.git'' does not appear to be a git repository`). The usual fix — repointing the host's SSH `DefaultShell` at powershell — is a machine-wide registry change affecting every other tool that connects. A bundle is a plain file, so no shell parses a git path. Bundles are incremental against the refs the worker already holds.
 
-**The service identity is not a free choice**, and `--no-agent-steps` selects it:
+**The task runs as SYSTEM at startup**, the only identity Windows will start with nobody logged in unless a password is stored — and a password would have to go on a command line. Verified with no user logged on: `Logon Mode: Interactive/Background`, worker registered.
 
-| | identity | trigger | unattended | agent steps |
-|---|---|---|---|---|
-| build-only | SYSTEM | at startup | **yes** | no |
-| agent-capable | the user | at logon | no | yes |
+SYSTEM does **not** preclude agent steps. Measured as `nt authority\system` on win-desk: `where claude` resolves through the launcher's PATH, `claude --version` runs, and a config directory under the operator's profile is readable. The only thing SYSTEM lacks is *credentials*, supplied with `--claude-home <dir>` — which provisioning creates and grants SYSTEM full control over. That is also how each worker gets its own Claude account, which is the thing that actually multiplies agent throughput, since limits attach to the account rather than the machine.
 
-A passwordless named-user task is created `Interactive only`, so it never fires while the machine sits at the login screen (seen as `Last Result: 267011`, `SCHED_S_TASK_HAS_NOT_RUN`). SYSTEM has no such limit but also no user profile — and the Claude CLI keeps its credentials there. A stored password would dissolve the choice and is not an option: it would have to go on a command line.
+Signing that directory in needs no console: over an interactive SSH session, `set CLAUDE_CONFIG_DIR=<dir>` then `claude setup-token` (a long-lived token) or `claude auth`, which print a URL and a code. `ANTHROPIC_API_KEY` in the worker's env file is the fully non-interactive alternative. Until one of those is done, provision with `--no-agent-steps`: the CLI being *present* is not the same as usable, and `detect_capabilities()` only checks presence, so the scheduler would otherwise hand the worker agent runs that fail.
 
 Consequences of running as SYSTEM, each of which bit once:
 

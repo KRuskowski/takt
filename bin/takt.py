@@ -277,6 +277,16 @@ def build_parser():
     ),
   )
   prov.add_argument(
+    "--claude-home", default=None,
+    help=(
+      "CLAUDE_CONFIG_DIR the worker uses for agent steps. "
+      "Give each worker its own, since Claude limits "
+      "attach to the account, not the machine -- and on "
+      "Windows it is how a SYSTEM-run worker gets "
+      "credentials at all."
+    ),
+  )
+  prov.add_argument(
     "--no-agent-steps", action="store_true",
     help=(
       "Declare the worker build-only. Use when the Claude "
@@ -383,6 +393,7 @@ def _run_provision(args):
       scheduler_host=args.scheduler_host,
       upstream=args.upstream,
       agent_steps=not args.no_agent_steps,
+      claude_home=args.claude_home,
       on_progress=progress,
     )
   except ProvisionError as e:

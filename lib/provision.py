@@ -351,7 +351,7 @@ def _push_env():
 
 
 def worker_unit(scheduler_host=None, upstream="scheduler",
-                agent_steps=True):
+                agent_steps=True, claude_home=None):
   """Render the systemd user unit for a worker.
 
   Generated rather than shipped as a file because the unit
@@ -368,6 +368,11 @@ def worker_unit(scheduler_host=None, upstream="scheduler",
     scheduler_host: user@host holding the root repos, for
       --upstream scheduler.
     upstream: Where mirrors fetch from.
+    claude_home: CLAUDE_CONFIG_DIR for the worker's agent
+      steps. Gives the machine its own Claude account, which
+      is what actually multiplies agent throughput, and is
+      how a service account with no user profile gets
+      credentials at all.
     agent_steps: False to declare the worker build-only.
 
   Returns:
@@ -382,6 +387,8 @@ def worker_unit(scheduler_host=None, upstream="scheduler",
     args.append(f"--scheduler-host {scheduler_host}")
   if not agent_steps:
     args.append("--no-agent-steps")
+  if claude_home:
+    args.append(f"--claude-home {claude_home}")
   exec_args = " ".join(args)
   return f"""\
 [Unit]
@@ -410,7 +417,8 @@ WantedBy=default.target
 
 
 def install_service(host, scheduler_host=None,
-                    upstream="scheduler", agent_steps=True):
+                    upstream="scheduler", agent_steps=True,
+                    claude_home=None):
   """Install, enable and start the worker as a service.
 
   Also enables lingering, without which a systemd *user*
@@ -430,7 +438,9 @@ def install_service(host, scheduler_host=None,
   Raises:
     ProvisionError: If the unit did not come up.
   """
-  unit = worker_unit(scheduler_host, upstream, agent_steps)
+  unit = worker_unit(
+    scheduler_host, upstream, agent_steps, claude_home
+  )
   # `enable --now` does nothing to an already-running unit,
   # so re-provisioning would update the checkout and leave
   # the worker executing the old code -- and a rewritten
@@ -541,7 +551,7 @@ def provision(host, worker_id=None, repos=None,
               takt_repo=TAKT_REPO, skip_repos=False,
               service=False, scheduler_host=None,
               upstream="scheduler", agent_steps=True,
-              on_progress=None):
+              claude_home=None, on_progress=None):
   """Set a machine up as a takt worker.
 
   Ordered so the cheap checks fail first: a machine missing
@@ -644,6 +654,8 @@ def provision(host, worker_id=None, repos=None,
     # ignoring the flag.
     if not agent_steps:
       kwargs["agent_steps"] = False
+    if claude_home:
+      kwargs["claude_home"] = claude_home
     svc = ops.install_service(host, **kwargs)
 
   return {
