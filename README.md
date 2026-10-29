@@ -246,11 +246,17 @@ Note that once a token is set, **loopback is authenticated too**. That is delibe
 takt provision laptop --scheduler http://10.0.1.33:7433   # all managed repos
 takt provision laptop --repos OTC.SDK OTC.Relay           # a subset
 takt provision laptop --check                             # checks only, changes nothing
+
+# Install it as a service so the machine takes work unattended
+takt provision laptop --scheduler http://10.0.1.33:7433 \
+  --service --scheduler-host karl@10.0.1.33
 ```
 
 Run from the scheduler. It installs takt on the machine (HTTPS clone, so no git credentials needed), writes `~/.config/takt/env` at mode 0600, creates the work and mirror directories, then **pushes** the root repos over as bare mirrors and prints what the machine reports about itself.
 
 The push direction is deliberate. `--upstream scheduler` has the worker *fetch*, which needs an unlocked key on the worker — the usual blocker on a laptop whose key is passphrase-protected. Provisioning instead uses the SSH connection the scheduler already has, so a worker can be fully stocked while holding no git credentials of its own. Re-running it is the refresh path: git sends only what the far side lacks. Accordingly, a worker that cannot refresh an *existing* mirror logs a warning and carries on — whether the run can proceed is decided by the commit check in `materialise()`, which fails precisely if the needed commit really is missing.
+
+`--service` installs a systemd user unit and enables lingering, so the worker keeps taking work with nobody logged in. The unit sets `PATH` to include `~/.local/bin` — a unit inherits almost none, and a worker that cannot find `claude` starts anyway, declares itself build-only, and is never handed an agent step.
 
 `--check` runs the cheap checks alone: a clean SSH channel and the required tools. The channel check exists because that failure is so badly disguised — anything written to stdout on login (an sshd `Banner`, a `~/.ssh/rc` that echoes, a shell rc greeting, and for zsh `~/.zshenv`, which non-interactive shells also read) gets spliced in front of every command's output, and git and rsync then fail with "protocol incompatibility" or "is your shell clean?", naming neither the file nor the machine at fault.
 

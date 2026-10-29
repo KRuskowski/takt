@@ -254,6 +254,28 @@ def build_parser():
       "tools); change nothing."
     ),
   )
+  prov.add_argument(
+    "--service", action="store_true",
+    help=(
+      "Install, enable and start the worker as a systemd "
+      "user service, with lingering so it keeps taking "
+      "work with nobody logged in."
+    ),
+  )
+  prov.add_argument(
+    "--scheduler-host", default=None,
+    help=(
+      "user@host holding the root repos, for the worker's "
+      "--upstream scheduler. Used in the service unit."
+    ),
+  )
+  prov.add_argument(
+    "--upstream", default="scheduler",
+    help=(
+      "Where the worker's mirrors refresh from: "
+      "'scheduler' or 'github'."
+    ),
+  )
 
   # -- reclaim --
   rec = sub.add_parser(
@@ -342,6 +364,9 @@ def _run_provision(args):
       scheduler_url=args.scheduler,
       ref=args.ref,
       skip_repos=args.skip_repos,
+      service=args.service,
+      scheduler_host=args.scheduler_host,
+      upstream=args.upstream,
       on_progress=progress,
     )
   except ProvisionError as e:
@@ -363,9 +388,23 @@ def _run_provision(args):
              if r["updated"]]
   print(f"    repos       {len(result['repos'])} seeded"
         + (f", {len(updated)} updated" if updated else ""))
-  print()
-  print("  start it with:")
-  print(f"    ssh {args.host} '{result['start_command']}'")
+  svc = result.get("service")
+  if svc:
+    print(f"    service     {svc['state']}"
+          f", lingering={'yes' if svc['linger'] else 'NO'}")
+    if not svc["linger"]:
+      print("    note: lingering is off, so the worker "
+            "stops when the user logs out")
+    print()
+    print("  running as a service. Inspect with:")
+    print(f"    ssh {args.host} "
+          "'journalctl --user -u takt-worker -f'")
+  else:
+    print()
+    print("  start it with:")
+    print(f"    ssh {args.host} '{result['start_command']}'")
+    print("  or re-run with --service to install it as a "
+          "systemd user service.")
   return 0
 
 

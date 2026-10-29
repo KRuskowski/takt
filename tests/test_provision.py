@@ -311,3 +311,115 @@ class TestProvisionGuards:
     with pytest.raises(provision.ProvisionError):
       provision.provision("laptop")
     assert not installed, "changed something despite failing"
+
+
+class TestWorkerUnit:
+  """The systemd unit a provisioned worker runs under."""
+
+  def test_path_includes_local_bin(self):
+    """Without it the worker silently goes build-only.
+
+    A systemd unit inherits almost no PATH, and `claude`
+    usually lives in ~/.local/bin. A worker that cannot find
+    it starts fine, registers with agent_steps=False and is
+    never handed an agent step -- so the machine looks
+    healthy while doing none of the work it was added for.
+    """
+    unit = provision.worker_unit("karl@sched")
+    path = [
+      l for l in unit.splitlines()
+      if l.startswith("Environment=PATH=")
+    ]
+    assert path, "unit sets no PATH"
+    assert "%h/.local/bin" in path[0]
+
+  def test_loads_the_credential_file(self):
+    unit = provision.worker_unit("karl@sched")
+    assert (
+      "EnvironmentFile=%h/.config/takt/env" in unit
+    )
+
+  def test_restarts_on_failure(self):
+    """A worker that dies must come back by itself."""
+    unit = provision.worker_unit("karl@sched")
+    assert "Restart=always" in unit
+
+  def test_passes_the_scheduler_host_for_ssh_upstream(self):
+    unit = provision.worker_unit("karl@sched")
+    assert "--scheduler-host karl@sched" in unit
+    assert "--upstream scheduler" in unit
+
+  def test_github_upstream_needs_no_scheduler_host(self):
+    """A cloud worker has no route back to the scheduler."""
+    unit = provision.worker_unit(None, upstream="github")
+    assert "--upstream github" in unit
+    assert "--scheduler-host" not in unit
+
+  def test_work_and_mirror_dirs_match_provisioning(self):
+    """The unit must use the dirs the repos were pushed to.
+
+    If these drift, the worker builds a second, empty set of
+    mirrors and every run fails on a missing commit.
+    """
+    unit = provision.worker_unit("karl@sched")
+    assert f"--work-dir %h/{provision.REMOTE_WORK}" in unit
+    assert (
+      f"--mirror-dir %h/{provision.REMOTE_MIRRORS}" in unit
+    )
+
+
+class TestInstallService:
+  """Bringing the unit up."""
+
+  def test_enables_lingering(self, monkeypatch):
+    """Otherwise it stops when the operator logs out.
+
+    The machines this exists for are ones that are "on
+    anyway" with nobody necessarily logged in.
+    """
+    rec = Recorder({
+      "is-active": FakeProc("active\n"),
+      "Linger": FakeProc("yes\n"),
+    })
+    monkeypatch.setattr(provision, "ssh", rec)
+    result = provision.install_service("laptop", "karl@s")
+    assert result["linger"] is True
+    assert rec.commands_matching("enable-linger")
+
+  def test_failure_reports_the_journal(self, monkeypatch):
+    """A dead unit must say why, not just 'failed'."""
+    rec = Recorder({
+      "is-active": FakeProc("failed\n"),
+      "Linger": FakeProc("yes\n"),
+      "journalctl": FakeProc("ModuleNotFoundError: yaml\n"),
+    })
+    monkeypatch.setattr(provision, "ssh", rec)
+    with pytest.raises(
+      provision.ProvisionError, match="ModuleNotFound"
+    ):
+      provision.install_service("laptop", "karl@s")
+
+  def test_not_installed_unless_asked(self, monkeypatch):
+    """provision() must not add a service by default."""
+    called = []
+    monkeypatch.setattr(
+      provision, "check_channel", lambda h: "klaptop")
+    monkeypatch.setattr(
+      provision, "check_prereqs", lambda h: {})
+    monkeypatch.setattr(
+      provision, "install_takt", lambda *a, **k: "abc123")
+    monkeypatch.setattr(
+      provision, "write_env", lambda *a, **k: "600")
+    monkeypatch.setattr(
+      provision, "remote_capabilities", lambda h: {})
+    monkeypatch.setattr(
+      provision, "install_service",
+      lambda *a, **k: called.append(1))
+    monkeypatch.setattr(
+      provision, "ssh",
+      lambda *a, **k: FakeProc())
+    provision.provision(
+      "laptop", scheduler_url="http://sched:7433",
+      skip_repos=True,
+    )
+    assert not called

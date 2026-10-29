@@ -210,6 +210,10 @@ The old monkey-patch over the SDK's private `message_parser` is gone: it existed
 takt provision laptop --scheduler http://10.0.1.33:7433   # all managed repos
 takt provision laptop --repos OTC.SDK OTC.Relay           # a subset
 takt provision laptop --check                             # checks only
+
+# Run it as a service, so the machine takes work unattended
+takt provision laptop --scheduler http://10.0.1.33:7433 \
+  --service --scheduler-host karl@10.0.1.33
 ```
 
 Run **from the scheduler**. It installs takt on the machine (HTTPS clone of the public repo), writes `~/.config/takt/env` at mode 0600, creates `~/takt-worker{,/mirrors}` and then **pushes** the root repos across as bare mirrors.
@@ -219,6 +223,8 @@ The push direction is the point. `--upstream scheduler` has the worker *fetch*, 
 `check_channel()` runs first and on its own. Anything writing to stdout on login (an sshd `Banner`, a `~/.ssh/rc` that echoes, a shell rc greeting — for zsh that is `~/.zshenv`, which non-interactive shells also read) is spliced in front of every command's output, and git/rsync then fail with "protocol incompatibility" or "is your shell clean?", naming neither the file nor the machine. The check names them.
 
 A loopback `--scheduler` is refused: on the worker it would mean the worker itself.
+
+`--service` installs a systemd **user** unit (`takt-worker.service`) and enables lingering, without which it would stop the moment the operator logs out — defeating the point of using a machine that is "on anyway". The unit sets `PATH` explicitly to include `~/.local/bin`: a unit inherits almost no PATH, and a worker that cannot find `claude` still starts, registers `agent_steps=False`, and is then never handed an agent step — healthy-looking and useless. Tested, including that the unit's work and mirror dirs match the ones provisioning pushed to, since drift there means every run fails on a missing commit.
 
 ## Worker (`bin/takt_worker.py`)
 

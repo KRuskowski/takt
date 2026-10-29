@@ -350,6 +350,118 @@ def _push_env():
   return env
 
 
+def worker_unit(scheduler_host=None, upstream="scheduler"):
+  """Render the systemd user unit for a worker.
+
+  Generated rather than shipped as a file because the unit
+  needs values only provisioning knows (the scheduler host).
+  A half-substituted template on disk would drift.
+
+  PATH is set explicitly: a systemd unit inherits almost
+  nothing, and the worker must be able to find `claude` --
+  which usually lives in ~/.local/bin, not a system path.
+  Without it the worker would start, declare itself
+  build-only, and silently never take an agent step.
+
+  Args:
+    scheduler_host: user@host holding the root repos, for
+      --upstream scheduler.
+    upstream: Where mirrors fetch from.
+
+  Returns:
+    Unit file text.
+  """
+  args = [
+    f"worker --work-dir %h/{REMOTE_WORK}",
+    f"--mirror-dir %h/{REMOTE_MIRRORS}",
+    f"--upstream {upstream}",
+  ]
+  if upstream == "scheduler" and scheduler_host:
+    args.append(f"--scheduler-host {scheduler_host}")
+  exec_args = " ".join(args)
+  return f"""\
+[Unit]
+Description=takt worker
+Documentation=https://github.com/KRuskowski/takt
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Scheduler URL, worker id and token. Not in the checkout:
+# config/takt.yaml is tracked in a public repo.
+EnvironmentFile=%h/.config/takt/env
+# A unit inherits no PATH worth having, and the worker needs
+# to find `claude` to be given agent steps at all.
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/{REMOTE_TAKT}
+ExecStart=/usr/bin/python3 %h/{REMOTE_TAKT}/bin/takt.py \
+{exec_args}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def install_service(host, scheduler_host=None,
+                    upstream="scheduler"):
+  """Install, enable and start the worker as a service.
+
+  Also enables lingering, without which a systemd *user*
+  service stops when the operator logs out -- which would
+  make a machine that is "on anyway" stop taking work the
+  moment nobody is sitting at it.
+
+  Args:
+    host: user@host.
+    scheduler_host: For --upstream scheduler.
+    upstream: Where mirrors fetch from.
+
+  Returns:
+    Dict with the unit's active state and whether lingering
+    is enabled.
+
+  Raises:
+    ProvisionError: If the unit did not come up.
+  """
+  unit = worker_unit(scheduler_host, upstream)
+  ssh(
+    host,
+    "set -e; mkdir -p ~/.config/systemd/user; "
+    "cat > ~/.config/systemd/user/takt-worker.service "
+    f"<<'TAKT_UNIT_EOF'\n{unit}TAKT_UNIT_EOF\n"
+    "systemctl --user daemon-reload; "
+    "systemctl --user enable --now takt-worker.service",
+    timeout=180,
+  )
+  # Needs no password for one's own user.
+  linger = ssh(
+    host,
+    "loginctl enable-linger $USER >/dev/null 2>&1; "
+    "loginctl show-user $USER -p Linger --value",
+    check=False,
+  ).stdout.strip()
+  state = ssh(
+    host,
+    "systemctl --user is-active takt-worker.service",
+    check=False,
+  ).stdout.strip()
+  if state != "active":
+    logs = ssh(
+      host,
+      "journalctl --user -u takt-worker.service -n 20 "
+      "--no-pager",
+      check=False,
+    ).stdout
+    raise ProvisionError(
+      f"takt-worker did not start on {host} (state="
+      f"{state!r}):\n{logs[-800:]}"
+    )
+  return {"state": state, "linger": linger == "yes"}
+
+
 def remote_capabilities(host):
   """Ask the worker what it reports about itself.
 
@@ -390,7 +502,8 @@ def remote_capabilities(host):
 def provision(host, worker_id=None, repos=None,
               scheduler_url=None, token=None, ref="master",
               takt_repo=TAKT_REPO, skip_repos=False,
-              on_progress=None):
+              service=False, scheduler_host=None,
+              upstream="scheduler", on_progress=None):
   """Set a machine up as a takt worker.
 
   Ordered so the cheap checks fail first: a machine missing
@@ -407,6 +520,12 @@ def provision(host, worker_id=None, repos=None,
     ref: takt branch to check out on the worker.
     takt_repo: URL to clone takt from.
     skip_repos: Set up the worker but push no repos.
+    service: Install, enable and start the worker as a
+      systemd user service, with lingering, so the machine
+      takes work without anyone logged in.
+    scheduler_host: user@host for the worker's --upstream
+      scheduler, used in the unit.
+    upstream: Where the worker's mirrors fetch from.
     on_progress: Optional callback(stage, detail) so a CLI
       can report during a push that takes minutes.
 
@@ -461,6 +580,13 @@ def provision(host, worker_id=None, repos=None,
   progress("verify", hostname)
   caps = remote_capabilities(host)
 
+  svc = None
+  if service:
+    progress("service", "takt-worker.service")
+    svc = install_service(
+      host, scheduler_host=scheduler_host, upstream=upstream,
+    )
+
   return {
     "host": host,
     "hostname": hostname,
@@ -471,6 +597,7 @@ def provision(host, worker_id=None, repos=None,
     "tools": tools,
     "repos": seeded,
     "capabilities": caps,
+    "service": svc,
     "start_command": (
       f"cd ~/{REMOTE_TAKT} && python3 bin/takt.py worker "
       f"--work-dir ~/{REMOTE_WORK} "
