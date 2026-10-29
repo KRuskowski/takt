@@ -205,7 +205,7 @@ class TestShellCompletion:
 class TestWorkerNeedsNoSchedulerDeps:
   """A worker machine needs only the `claude` CLI.
 
-  lib.commands pulls in claude_code_sdk through
+  lib.commands pulls in claude_agent_sdk through
   lib.pipeline -> lib.agent_runner. That is a scheduler
   dependency: a worker runs agent steps by invoking the
   `claude` binary as a subprocess, never the Python SDK. If
@@ -233,7 +233,7 @@ class TestWorkerNeedsNoSchedulerDeps:
       "that breaks `takt worker` on a worker machine"
     )
 
-  def test_worker_runs_without_claude_code_sdk(self):
+  def test_worker_runs_without_the_agent_sdk(self):
     """`takt worker --help` works with the SDK absent.
 
     Simulated by blocking the module in a subprocess, so
@@ -244,11 +244,11 @@ class TestWorkerNeedsNoSchedulerDeps:
       "import sys\n"
       "class Blocker:\n"
       "  def find_module(self, name, path=None):\n"
-      "    if name == 'claude_code_sdk':\n"
+      "    if name == 'claude_agent_sdk':\n"
       "      raise ImportError('blocked by test')\n"
       "    return None\n"
       "  def find_spec(self, name, path=None, target=None):\n"
-      "    if name == 'claude_code_sdk':\n"
+      "    if name == 'claude_agent_sdk':\n"
       "      raise ImportError('blocked by test')\n"
       "    return None\n"
       "sys.meta_path.insert(0, Blocker())\n"

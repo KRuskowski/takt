@@ -1,4 +1,4 @@
 PyYAML>=6.0
 pyzmq>=26.0
-claude-code-sdk>=0.0.10
+claude-agent-sdk>=0.2.174
 aiohttp>=3.9

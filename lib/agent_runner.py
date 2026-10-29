@@ -1,35 +1,46 @@
 """SDK wrapper for running Claude agents inline.
 
-Uses claude-code-sdk to run agents as subprocesses with
+Uses claude-agent-sdk to run agents as subprocesses with
 async streaming. Each agent is one query() call.
+
+The SDK does not talk to the API itself -- it locates the
+`claude` binary and drives it over stream-json. So the CLI
+is the requirement on any machine running agent steps,
+whether through this module or, on a worker, through
+lib/worker.py's direct subprocess call.
 """
 
 import asyncio
 import logging
+import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 
-from claude_code_sdk import (
-  ClaudeCodeOptions,
+from claude_agent_sdk import (
+  ClaudeAgentOptions,
   ProcessError,
   ResultMessage,
   SystemMessage,
   query,
 )
-from claude_code_sdk._internal import client as _sdk_client
-from claude_code_sdk._internal import message_parser
-from claude_code_sdk._internal.message_parser import (
-  MessageParseError,
-)
-from claude_code_sdk.types import StreamEvent
 
 log = logging.getLogger("takt.agent")
 
-# Monkey-patch the SDK message parser to handle unknown
-# event types (e.g. rate_limit_event) instead of raising.
-_original_parse = message_parser.parse_message
+# Leaving system_prompt unset does NOT mean "the default".
+# This SDK sends `--system-prompt ""` for None, which starts
+# the agent with no system prompt at all -- no Claude Code
+# behaviour, no tool conventions. The preset asks for the
+# CLI's own default explicitly, which is what pipeline roles
+# are written against. (The predecessor claude-code-sdk
+# omitted the flag when it was falsy, so porting without
+# this would have silently stripped it from every agent.)
+_CLAUDE_CODE_PRESET = {
+  "type": "preset",
+  "preset": "claude_code",
+}
 
 _TRANSIENT_PATTERNS = re.compile(
   r"rate_limit|overloaded|529|too many requests|capacity",
@@ -39,26 +50,32 @@ _MAX_RETRIES = 2
 _BACKOFF_SECS = (30, 60)
 
 
-def _patched_parse(data):
-  """Parse message, returning StreamEvent for unknown types.
+def claude_cli_path():
+  """Return the `claude` binary agent steps should run.
 
-  Only catches MessageParseError so real bugs propagate.
+  claude-agent-sdk ships its own copy of the CLI (~292 MB)
+  and prefers it over PATH. For takt that is the wrong
+  default: a worker runs agent steps by invoking PATH's
+  `claude` directly (lib/worker.py), and declares the
+  capability from `shutil.which("claude")`. Letting the
+  scheduler quietly use a different, bundled build means the
+  same step runs on two different Claude Code versions
+  depending on where it lands -- here 2.1.310 bundled versus
+  2.1.220 on PATH -- and the operator's own upgrades stop
+  affecting pipeline runs.
+
+  So PATH wins, and the bundled copy is the fallback for a
+  machine with no CLI installed. TAKT_CLAUDE_CLI overrides
+  both.
+
+  Returns:
+    Path to the binary, or None to let the SDK choose (which
+    picks its bundled copy).
   """
-  try:
-    return _original_parse(data)
-  except MessageParseError:
-    log.debug("Skipped unparseable event: %s", data)
-    return StreamEvent(
-      uuid=data.get("uuid", ""),
-      session_id=data.get("session_id", ""),
-      event=data,
-      parent_tool_use_id=data.get(
-        "parent_tool_use_id"
-      ),
-    )
-
-message_parser.parse_message = _patched_parse
-_sdk_client.parse_message = _patched_parse
+  override = os.environ.get("TAKT_CLAUDE_CLI")
+  if override:
+    return override
+  return shutil.which("claude")
 
 
 def _is_transient(err):
@@ -145,12 +162,19 @@ class AgentRunner:
       self.info.model,
       self.info.cwd,
     )
-    opts = ClaudeCodeOptions(
+    cli_path = claude_cli_path()
+    log.info(
+      "Agent %s using claude CLI: %s",
+      self.info.agent_id, cli_path or "SDK-bundled",
+    )
+    opts = ClaudeAgentOptions(
       cwd=self.info.cwd,
       permission_mode=self._permission_mode,
       model=self.info.model,
       add_dirs=self._add_dirs,
       settings='{"sandbox":{"enabled":false}}',
+      system_prompt=_CLAUDE_CODE_PRESET,
+      cli_path=cli_path,
     )
     attempt = 0
     while True:

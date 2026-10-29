@@ -7,7 +7,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
   AssistantMessage,
   ResultMessage,
   SystemMessage,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """takt agent REPL.
 
-Conversational AI for managing takt. Uses claude-code-sdk
+Conversational AI for managing takt. Uses claude-agent-sdk
 with the active account from config/takt.yaml.
 """
 
@@ -14,8 +14,8 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from claude_code_sdk import ClaudeCodeOptions, query
-from claude_code_sdk.types import (
+from claude_agent_sdk import ClaudeAgentOptions, query
+from claude_agent_sdk.types import (
   AssistantMessage,
   ResultMessage,
   TextBlock,
@@ -114,7 +114,7 @@ async def run_agent_async():
 
   os.environ["CLAUDE_CONFIG_DIR"] = claude_home
 
-  opts = ClaudeCodeOptions(
+  opts = ClaudeAgentOptions(
     cwd=str(PROJECT_DIR),
     system_prompt=SYSTEM,
     permission_mode="bypassPermissions",

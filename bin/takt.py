@@ -28,7 +28,7 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 # lib.commands is NOT imported here. It reaches
-# lib.pipeline -> lib.agent_runner -> claude_code_sdk, which
+# lib.pipeline -> lib.agent_runner -> claude_agent_sdk, which
 # only the scheduler needs. A worker machine is promised to
 # need nothing but the `claude` CLI, so importing it at
 # module scope would make `takt worker` die on exactly the

@@ -193,6 +193,17 @@ The service refuses to bind a non-loopback address without a token set — the A
 
 Clients resolve the scheduler through `lib.config.api_base_url()` and `api_token()`, which read the real environment first, then the env file, then `takt.yaml`. Once a token is set it applies to loopback too: a TLS reverse proxy terminates on loopback, so exempting it would be an unauthenticated way in. `tests/conftest.py` points `TAKT_ENV_FILE` at a non-existent path for every test, so the suite never picks up the operator's live token.
 
+## Agent steps (`lib/agent_runner.py`)
+
+Scheduler-side agent steps run through **`claude-agent-sdk`** (the old `claude-code-sdk` is abandoned at 0.0.25). The SDK does not talk to the API — it locates the `claude` binary and drives it over stream-json — so the CLI is the real requirement everywhere, and a worker uses it directly (`lib/worker.py`).
+
+Two things about that SDK are load-bearing and easy to undo by accident; both have tests that fail loudly:
+
+- **`system_prompt` must be set to the `claude_code` preset.** Leaving it unset does *not* mean "the default": this SDK sends `--system-prompt ""`, which starts the agent with no system prompt at all. The predecessor omitted the flag when falsy, so the CLI applied its own — meaning a naive port silently strips Claude Code's behaviour from every pipeline agent, with nothing failing.
+- **`cli_path` is set to PATH's `claude`.** The SDK bundles its own CLI (~292 MB) and prefers it, which would have the scheduler on a different Claude Code version than workers — they invoke PATH's binary and declare `agent_steps` from `shutil.which("claude")`. `TAKT_CLAUDE_CLI` overrides; the bundled copy is the fallback for a machine with no CLI installed. The runner logs which binary it used.
+
+The old monkey-patch over the SDK's private `message_parser` is gone: it existed for `rate_limit_event` (emitted once per run), which this SDK parses natively as `RateLimitEvent`. `serialize_sdk_message` ignores unknown types, so it costs no output line.
+
 ## Provisioning a worker (`lib/provision.py`)
 
 ```bash

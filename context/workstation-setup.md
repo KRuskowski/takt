@@ -29,7 +29,7 @@ git clone <github-url> takt
 pip install -r ~/dev/takt/requirements.txt
 ```
 
-Dependencies: `PyYAML>=6.0`, `textual>=1.0.0`, `pyzmq>=26.0`, `claude-code-sdk>=0.1.0`.
+Dependencies: `PyYAML>=6.0`, `textual>=1.0.0`, `pyzmq>=26.0`, `claude-agent-sdk>=0.2.174`.
 
 For linting and testing (optional but recommended):
 ```bash

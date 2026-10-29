@@ -1,6 +1,6 @@
 """Output line serialization for agent messages.
 
-Converts claude-code-sdk message objects into persistable
+Converts claude-agent-sdk message objects into persistable
 dicts for storage in JSONL files and ZMQ transport.
 
 Output line format:
@@ -10,7 +10,7 @@ Kinds: text, tool_use, tool_result, thinking, result,
   system, error.
 """
 
-from claude_code_sdk import (
+from claude_agent_sdk import (
   AssistantMessage,
   ResultMessage,
   SystemMessage,

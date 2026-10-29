@@ -47,7 +47,7 @@ A run executes either on the scheduler itself or on a worker:
 2. **Clone**: root repos -> workspace clones (`takt ws create`)
 3. **Work**: agent writes and commits the implementation in the workspace clones, pushes to the root repo (its origin). All building happens here.
 4. **Watch**: takt-service detects branch changes in root repos and creates a pipeline run
-5. **Execute**: steps run sequentially in temporary worktrees, on the scheduler or on a worker that leased the run — agent steps via the Claude Code SDK in-process, or the `claude` CLI on a worker; script steps via Python functions
+5. **Execute**: steps run sequentially in temporary worktrees, on the scheduler or on a worker that leased the run — agent steps via `claude-agent-sdk` in-process, or the `claude` CLI on a worker; script steps via Python functions
 6. **Deliver**: the run pushes to GitHub and opens a PR; the operator reviews. Work produced on a worker returns to the scheduler as a git bundle first.
 
 ### Design principles
@@ -154,7 +154,7 @@ To add a second machine, see [Compute](#compute).
 
 ## Pipeline
 
-Pipelines are ordered sequences of steps defined per workspace. Steps are either **agent** (Claude Code — the SDK in-process on the scheduler, or the `claude` CLI on a worker) or **script** (built-in Python functions).
+Pipelines are ordered sequences of steps defined per workspace. Steps are either **agent** (Claude Code — `claude-agent-sdk` in-process on the scheduler, or the `claude` CLI on a worker) or **script** (built-in Python functions).
 
 **A pipeline is how finished work gets upstream.** It runs post-implementation: the steps test, review, document and QA an implementation that is already written and committed, and then deliver it — pushing to GitHub and opening a PR. Delivery is the point of it.
 
@@ -296,7 +296,7 @@ lib/                  Shared Python library
   checks.py           Built-in check steps
   service.py          Background service (ZMQ + asyncio)
   api.py              REST/SSE API (aiohttp), worker endpoints
-  agent_runner.py     Claude Code SDK wrapper (in-process agents)
+  agent_runner.py     claude-agent-sdk wrapper (in-process agents)
   worker.py           Worker side: mirrors, worktrees, claude CLI
   worker_ops.py       Scheduler side: leases, reports, bundles
   workspace_ops.py    Workspace operations
@@ -321,7 +321,7 @@ tests/                594 tests
 
 **Scheduler:**
 
-- Python 3.11+ with PyYAML, pyzmq, aiohttp, claude-code-sdk
+- Python 3.11+ with PyYAML, pyzmq, aiohttp, claude-agent-sdk
 - Git
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) for in-process agent steps
 - libvirt + QEMU (for VM targets, optional)
