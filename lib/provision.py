@@ -427,13 +427,21 @@ def install_service(host, scheduler_host=None,
     ProvisionError: If the unit did not come up.
   """
   unit = worker_unit(scheduler_host, upstream)
+  # `enable --now` does nothing to an already-running unit,
+  # so re-provisioning would update the checkout and leave
+  # the worker executing the old code -- and a rewritten
+  # unit file unused. Observed: checkout moved to the new
+  # commit while the process stayed on the previous one.
+  # restart covers both: it starts a stopped unit and
+  # replaces a running one.
   ssh(
     host,
     "set -e; mkdir -p ~/.config/systemd/user; "
     "cat > ~/.config/systemd/user/takt-worker.service "
     f"<<'TAKT_UNIT_EOF'\n{unit}TAKT_UNIT_EOF\n"
     "systemctl --user daemon-reload; "
-    "systemctl --user enable --now takt-worker.service",
+    "systemctl --user enable takt-worker.service; "
+    "systemctl --user restart takt-worker.service",
     timeout=180,
   )
   # Needs no password for one's own user.

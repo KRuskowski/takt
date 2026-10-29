@@ -423,3 +423,36 @@ class TestInstallService:
       skip_repos=True,
     )
     assert not called
+
+  def test_restarts_an_already_running_unit(
+    self, monkeypatch
+  ):
+    """Re-provisioning must put the new code into service.
+
+    `systemctl enable --now` does nothing to a unit that is
+    already active, so provisioning would update the
+    checkout and leave the worker executing the previous
+    commit -- and a rewritten unit file unused. Observed on
+    the laptop: the checkout moved to the new commit while
+    the process stayed on the old one.
+    """
+    rec = Recorder({
+      "is-active": FakeProc("active\n"),
+      "Linger": FakeProc("yes\n"),
+    })
+    monkeypatch.setattr(provision, "ssh", rec)
+    provision.install_service("laptop", "karl@s")
+    assert rec.commands_matching(
+      "systemctl --user restart takt-worker"
+    ), "unit was not restarted, so stale code keeps running"
+
+  def test_unit_is_enabled_for_boot(self, monkeypatch):
+    rec = Recorder({
+      "is-active": FakeProc("active\n"),
+      "Linger": FakeProc("yes\n"),
+    })
+    monkeypatch.setattr(provision, "ssh", rec)
+    provision.install_service("laptop", "karl@s")
+    assert rec.commands_matching(
+      "systemctl --user enable takt-worker"
+    )
