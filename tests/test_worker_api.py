@@ -552,7 +552,7 @@ class TestBundleDelivery:
     )
     monkeypatch.setattr(
       worker_ops, "load_repos_config",
-      lambda: {"repo-a": {"push_order": 1}},
+      lambda: {"repos": {"repo-a": {"push_order": 1}}},
     )
     monkeypatch.setattr(
       worker_ops, "get_repo_path", lambda name: root
@@ -668,6 +668,37 @@ class TestBundleDelivery:
         f"/api/workers/w1/bundle?run_id={work['run_id']}"
         f"&generation={work['generation']}"
         f"&repo=../../etc&branch=main",
+        data=bundle,
+      )
+      assert resp.status == 400
+      assert "unknown repo" in (await resp.json())[
+        "message"
+      ]
+
+    run_client(body)
+
+  def test_the_word_repos_is_not_a_repo(
+    self, tmp_db, root_repo
+  ):
+    """'repos' must not pass the managed-repo check.
+
+    load_repos_config() normalises a flat repos.yaml by
+    adding a "repos" key alongside the repo names. Testing
+    membership against the top level would therefore accept
+    repo="repos" -- a name no registry contains -- and let
+    a worker past the check that exists to stop it naming
+    arbitrary paths.
+    """
+    _, bundle = root_repo
+    make_run(tmp_db)
+
+    async def body(client):
+      await register(client, "w1")
+      work = await take_lease(client)
+      resp = await client.post(
+        f"/api/workers/w1/bundle?run_id={work['run_id']}"
+        f"&generation={work['generation']}"
+        f"&repo=repos&branch=main",
         data=bundle,
       )
       assert resp.status == 400

@@ -517,9 +517,26 @@ def ensure_mirror(repo, mirror_dir, upstream):
     return mirror
   git(["remote", "set-url", "origin", upstream],
       cwd=mirror, check=False)
-  git(["fetch", "--prune", "origin",
-       "+refs/heads/*:refs/heads/*"],
-      cwd=mirror, timeout=7200)
+  # A failed refresh is not fatal when a mirror is already
+  # here. It legitimately has no upstream it can reach: a
+  # worker provisioned by `takt provision` had its mirrors
+  # *pushed* to it from the scheduler, so it may hold no
+  # credentials for fetching at all. Whether the run can
+  # proceed is decided by materialise(), which checks for
+  # the exact commit and fails with a precise message if it
+  # is genuinely missing. Failing here instead would reject
+  # work the worker can perfectly well do.
+  proc = git(
+    ["fetch", "--prune", "origin",
+     "+refs/heads/*:refs/heads/*"],
+    cwd=mirror, timeout=7200, check=False,
+  )
+  if proc.returncode != 0:
+    log.warning(
+      "Could not refresh mirror %s from %s: %s. Continuing "
+      "with what the mirror already holds.",
+      repo, upstream, proc.stderr.strip()[:200],
+    )
   return mirror
 
 

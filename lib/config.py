@@ -148,10 +148,37 @@ def api_base_url():
 
 
 def load_repos_config():
-  """Load and return repos.yaml as a dict."""
+  """Load repos.yaml, normalised to {"repos": {...}}.
+
+  Two shapes exist on disk. The documented one nests the
+  registry under a top-level "repos" key; the file this
+  project actually carries is a flat mapping of repo name to
+  settings. Almost all callers do .get("repos", {}), so
+  against a flat file they silently saw *no repos at all* --
+  and no test caught it, because every test mocks this
+  function with the nested shape instead of reading a file.
+  That is how push, pr_ops and checks came to be quietly
+  operating on an empty registry.
+
+  Both shapes are accepted and returned nested, so callers
+  need one form.
+
+  Returns:
+    Dict with a "repos" key mapping repo name -> settings,
+    plus any other top-level keys the file carried.
+  """
   path = CONFIG_DIR / "repos.yaml"
   with open(path) as f:
-    return yaml.safe_load(f) or {}
+    data = yaml.safe_load(f) or {}
+  if not isinstance(data, dict):
+    return {"repos": {}}
+  nested = data.get("repos")
+  if isinstance(nested, dict):
+    return data
+  # Flat file: every top-level key is a repo. A repo named
+  # "repos" would be ambiguous, which is why the nested
+  # form is the one to prefer in new files.
+  return {**data, "repos": data}
 
 
 def load_targets_config():

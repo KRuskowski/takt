@@ -335,8 +335,11 @@ def accept_bundle(worker_id, run_id, generation, repo,
       f"{MAX_BUNDLE_BYTES} limit"
     )
   # Only repos takt already manages, so a worker cannot
-  # name a path and have it treated as a repo.
-  if repo not in load_repos_config():
+  # name a path and have it treated as a repo. Read the
+  # nested registry rather than the top level: the loader
+  # normalises a flat file by adding a "repos" key, so
+  # testing the top level would accept repo="repos".
+  if repo not in load_repos_config().get("repos", {}):
     raise DeliveryError(f"unknown repo: {repo!r}")
   if not _SAFE_REF.match(branch or ""):
     raise DeliveryError(f"unsafe branch name: {branch!r}")

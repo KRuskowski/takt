@@ -208,6 +208,53 @@ def build_parser():
   )
   _worker_module().add_worker_args(wrk)
 
+  # -- provision --
+  prov = sub.add_parser(
+    "provision",
+    help="Set up another machine as a takt worker.",
+    description=(
+      "Install takt on a machine, give it credentials for "
+      "this scheduler, and push the root repos to it. Run "
+      "from the scheduler: the repos travel outward over "
+      "the SSH connection that already works, so the "
+      "worker needs no git credentials of its own."
+    ),
+  )
+  prov.add_argument(
+    "host",
+    help="user@host, or an ssh config alias (e.g. laptop).",
+  )
+  prov.add_argument(
+    "--id", dest="worker_id", default=None,
+    help="Name to register under. Default: remote hostname.",
+  )
+  prov.add_argument(
+    "--repos", nargs="+", default=None,
+    help="Root repos to push. Default: all managed repos.",
+  )
+  prov.add_argument(
+    "--skip-repos", action="store_true",
+    help="Set the worker up but push no repos.",
+  )
+  prov.add_argument(
+    "--scheduler", default=None,
+    help=(
+      "URL the worker should dial. Must be reachable from "
+      "the worker, so not loopback."
+    ),
+  )
+  prov.add_argument(
+    "--ref", default="master",
+    help="takt branch to check out on the worker.",
+  )
+  prov.add_argument(
+    "--check", action="store_true",
+    help=(
+      "Only run the checks (clean SSH channel, required "
+      "tools); change nothing."
+    ),
+  )
+
   # -- reclaim --
   rec = sub.add_parser(
     "reclaim",
@@ -250,6 +297,78 @@ def _worker_module():
   return _load_bin_module("takt_worker")
 
 
+def _run_provision(args):
+  """Provision a worker machine, reporting as it goes.
+
+  Args:
+    args: Parsed arguments for the provision group.
+
+  Returns:
+    Process exit code.
+  """
+  from lib.provision import (
+    ProvisionError, check_channel, check_prereqs, provision,
+  )
+
+  def progress(stage, detail):
+    label = {
+      "channel": "checking ssh channel",
+      "prereqs": "checking tools",
+      "takt": "installing takt",
+      "credentials": "writing credentials",
+      "repo": "pushing",
+      "verify": "verifying",
+    }.get(stage, stage)
+    print(f"  {label}: {detail}", flush=True)
+
+  try:
+    if args.check:
+      hostname = check_channel(args.host)
+      print(f"  ssh channel to {hostname}: clean")
+      tools = check_prereqs(args.host)
+      for name, present in sorted(tools.items()):
+        print(f"    {name:<14} {'yes' if present else 'no'}")
+      if not tools.get("claude"):
+        print(
+          "  note: no claude CLI, so this machine would be "
+          "build-only and never given agent steps."
+        )
+      return 0
+
+    result = provision(
+      args.host,
+      worker_id=args.worker_id,
+      repos=args.repos,
+      scheduler_url=args.scheduler,
+      ref=args.ref,
+      skip_repos=args.skip_repos,
+      on_progress=progress,
+    )
+  except ProvisionError as e:
+    print(f"takt provision: {e}", file=sys.stderr)
+    return 1
+
+  caps = result["capabilities"]
+  print()
+  print(f"  {result['worker_id']} ready on "
+        f"{result['hostname']}")
+  print(f"    takt        {result['takt_commit']}")
+  print(f"    scheduler   {result['scheduler_url']}"
+        f"{'' if result['authenticated'] else ' (no token)'}")
+  print(f"    cores       {caps.get('cores')}")
+  print(f"    free disk   {caps.get('free_disk_mb')} MB")
+  print(f"    agent steps "
+        f"{caps.get('capabilities', {}).get('agent_steps')}")
+  updated = [r["repo"] for r in result["repos"]
+             if r["updated"]]
+  print(f"    repos       {len(result['repos'])} seeded"
+        + (f", {len(updated)} updated" if updated else ""))
+  print()
+  print("  start it with:")
+  print(f"    ssh {args.host} '{result['start_command']}'")
+  return 0
+
+
 def _reclaim_module():
   """Load bin/reclaim.py."""
   return _load_bin_module("reclaim")
@@ -278,6 +397,11 @@ def main():
     sys.exit(
       _reclaim_module().run_reclaim(args, parser=parser)
     )
+
+  # -- provision: reports progress as it goes, because a
+  # repo push takes minutes and silence looks like a hang --
+  if group == "provision":
+    sys.exit(_run_provision(args))
 
   # Everything past here is a scheduler-side command.
   from lib.commands import dispatch

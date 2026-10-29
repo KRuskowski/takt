@@ -193,6 +193,22 @@ The service refuses to bind a non-loopback address without a token set — the A
 
 Clients resolve the scheduler through `lib.config.api_base_url()` and `api_token()`, which read the real environment first, then the env file, then `takt.yaml`. Once a token is set it applies to loopback too: a TLS reverse proxy terminates on loopback, so exempting it would be an unauthenticated way in. `tests/conftest.py` points `TAKT_ENV_FILE` at a non-existent path for every test, so the suite never picks up the operator's live token.
 
+## Provisioning a worker (`lib/provision.py`)
+
+```bash
+takt provision laptop --scheduler http://10.0.1.33:7433   # all managed repos
+takt provision laptop --repos OTC.SDK OTC.Relay           # a subset
+takt provision laptop --check                             # checks only
+```
+
+Run **from the scheduler**. It installs takt on the machine (HTTPS clone of the public repo), writes `~/.config/takt/env` at mode 0600, creates `~/takt-worker{,/mirrors}` and then **pushes** the root repos across as bare mirrors.
+
+The push direction is the point. `--upstream scheduler` has the worker *fetch*, which needs an unlocked key on the worker — the usual blocker on a laptop whose key is passphrase-protected. Provisioning uses the SSH connection the scheduler already has, so a worker can be fully stocked while holding no git credentials at all. Re-running is the refresh path: git sends only what the far side lacks. To make that usable, `ensure_mirror()` treats a failed refresh of an *existing* mirror as a warning — `materialise()` is the real gate, and it fails precisely if the needed commit is absent.
+
+`check_channel()` runs first and on its own. Anything writing to stdout on login (an sshd `Banner`, a `~/.ssh/rc` that echoes, a shell rc greeting — for zsh that is `~/.zshenv`, which non-interactive shells also read) is spliced in front of every command's output, and git/rsync then fail with "protocol incompatibility" or "is your shell clean?", naming neither the file nor the machine. The check names them.
+
+A loopback `--scheduler` is refused: on the worker it would mean the worker itself.
+
 ## Worker (`bin/takt_worker.py`)
 
 ```bash

@@ -1,0 +1,479 @@
+"""Set a machine up as a takt worker, from the scheduler.
+
+A worker needs four things: the takt code, a credential
+file naming the scheduler, somewhere to build, and mirrors
+of the root repos to cut worktrees from. Doing that by hand
+is a dozen steps and the failure modes are obscure, so takt
+does it.
+
+The direction of travel matters. A worker normally *fetches*
+root repos (`--upstream scheduler`), which means the worker
+needs an unlocked key of its own. Provisioning runs the
+other way: the scheduler already has working SSH to the
+machine, so it **pushes** the repos across. A worker can
+therefore be fully stocked while holding no git credentials
+at all, which is the usual state of a laptop whose key is
+passphrase-protected.
+
+Mirrors are pushed as bare repos and the worker's fetch
+becomes a refresh it is allowed to fail: see ensure_mirror()
+in lib/worker.py.
+"""
+
+import logging
+import shlex
+import subprocess
+from pathlib import Path
+
+from lib.config import (
+  ROOT_DIR,
+  api_base_url,
+  api_token,
+  load_repos_config,
+)
+
+log = logging.getLogger("takt.provision")
+
+TAKT_REPO = "https://github.com/KRuskowski/takt.git"
+
+# Where things land on the worker. Relative to its login
+# directory so the same values work for any user.
+REMOTE_TAKT = "dev/takt"
+REMOTE_MIRRORS = "takt-worker/mirrors"
+REMOTE_WORK = "takt-worker"
+
+SSH_OPTS = [
+  "-o", "BatchMode=yes",
+  "-o", "ConnectTimeout=10",
+]
+
+
+class ProvisionError(Exception):
+  """Provisioning could not continue."""
+
+
+def ssh(host, command, timeout=120, check=True):
+  """Run a command on the worker over SSH.
+
+  Args:
+    host: user@host, or an ssh config alias.
+    command: Shell command to run remotely.
+    timeout: Seconds before giving up.
+    check: Raise ProvisionError on a non-zero exit.
+
+  Returns:
+    subprocess.CompletedProcess.
+
+  Raises:
+    ProvisionError: If check and the command failed.
+  """
+  proc = subprocess.run(
+    ["ssh"] + SSH_OPTS + [host, command],
+    capture_output=True, text=True, timeout=timeout,
+  )
+  if check and proc.returncode != 0:
+    raise ProvisionError(
+      f"ssh {host}: {command!r} failed "
+      f"({proc.returncode}): {proc.stderr.strip()[:400]}"
+    )
+  return proc
+
+
+def check_channel(host):
+  """Verify the SSH channel carries nothing but the output.
+
+  This is checked first and on its own because the symptom
+  is so far from the cause. Anything that writes to stdout
+  on login -- an sshd `Banner`, a `~/.ssh/rc` that echoes, a
+  shell rc printing a greeting -- is spliced in front of
+  every command's output. git-over-ssh and rsync then fail
+  with "protocol incompatibility" or "is your shell clean?",
+  which names neither the file nor the machine at fault.
+
+  Args:
+    host: user@host to test.
+
+  Returns:
+    The remote hostname.
+
+  Raises:
+    ProvisionError: If the channel carries extra output,
+      naming the likely culprits.
+  """
+  sentinel = "takt-channel-ok"
+  proc = ssh(host, f"printf '%s' {sentinel}")
+  if proc.stdout != sentinel:
+    extra = proc.stdout.replace(sentinel, "")
+    raise ProvisionError(
+      f"the SSH channel to {host} is not clean: it carries "
+      f"{extra.strip()[:200]!r} in front of command output. "
+      "git and rsync over this connection will fail with a "
+      "confusing 'protocol incompatibility' error. Look for "
+      "an sshd Banner directive (/etc/ssh/sshd_config and "
+      "sshd_config.d/), a ~/.ssh/rc that writes to stdout, "
+      "or a shell startup file printing a greeting -- for "
+      "zsh that is ~/.zshenv, which non-interactive shells "
+      "also read."
+    )
+  return ssh(host, "hostname").stdout.strip()
+
+
+def check_prereqs(host):
+  """Report what the worker machine has installed.
+
+  Args:
+    host: user@host to inspect.
+
+  Returns:
+    Dict of tool name -> True/False. 'claude' decides
+    whether this worker can be given agent steps; 'git' and
+    'python3' are required.
+
+  Raises:
+    ProvisionError: If git or python3 is missing, or the
+      Python yaml module is absent.
+  """
+  tools = ("git", "python3", "claude", "cmake", "ninja",
+           "gcc", "rsync")
+  found = {}
+  for tool in tools:
+    proc = ssh(
+      host, f"command -v {tool} >/dev/null 2>&1", check=False
+    )
+    found[tool] = proc.returncode == 0
+  missing = [t for t in ("git", "python3") if not found[t]]
+  if missing:
+    raise ProvisionError(
+      f"{host} is missing {', '.join(missing)}; install it "
+      "there and run provisioning again"
+    )
+  proc = ssh(
+    host, "python3 -c 'import yaml'", check=False
+  )
+  found["python3-yaml"] = proc.returncode == 0
+  if not found["python3-yaml"]:
+    raise ProvisionError(
+      f"{host} has no Python yaml module. Install "
+      "python3-yaml (apt) there; it is the only "
+      "third-party module a worker needs."
+    )
+  return found
+
+
+def install_takt(host, repo=TAKT_REPO, ref="master"):
+  """Clone or update the takt checkout on the worker.
+
+  Cloned over HTTPS from the public repo, so the worker
+  needs no git credentials for this either.
+
+  Args:
+    host: user@host.
+    repo: URL to clone takt from.
+    ref: Branch to check out.
+
+  Returns:
+    The commit now checked out on the worker.
+  """
+  quoted_repo = shlex.quote(repo)
+  quoted_ref = shlex.quote(ref)
+  script = (
+    f"set -e; "
+    f"if [ -d ~/{REMOTE_TAKT}/.git ]; then "
+    f"  git -C ~/{REMOTE_TAKT} remote set-url origin "
+    f"{quoted_repo}; "
+    f"  git -C ~/{REMOTE_TAKT} fetch --quiet origin "
+    f"{quoted_ref}; "
+    f"  git -C ~/{REMOTE_TAKT} reset --hard --quiet "
+    f"FETCH_HEAD; "
+    f"else "
+    f"  mkdir -p ~/$(dirname {REMOTE_TAKT}); "
+    f"  git clone --quiet --branch {quoted_ref} "
+    f"{quoted_repo} ~/{REMOTE_TAKT}; "
+    f"fi; "
+    f"git -C ~/{REMOTE_TAKT} log --oneline -1"
+  )
+  return ssh(host, script, timeout=600).stdout.strip()
+
+
+def write_env(host, scheduler_url, token, worker_id):
+  """Install the worker's credential file.
+
+  Written with a restrictive umask and verified afterwards,
+  because this file holds the API token. It is deliberately
+  not part of the checkout: takt's config/takt.yaml is in a
+  public repo.
+
+  Args:
+    host: user@host.
+    scheduler_url: URL the worker should dial.
+    token: API token, or None if the scheduler has none.
+    worker_id: Name this worker registers under.
+
+  Returns:
+    The file mode as reported by the worker, e.g. '600'.
+
+  Raises:
+    ProvisionError: If the file did not end up private.
+  """
+  lines = [
+    "# Written by `takt provision`. Holds the scheduler",
+    "# API token, so it is kept out of the takt checkout:",
+    "# config/takt.yaml is tracked in a public repo.",
+    f"TAKT_API_URL={scheduler_url}",
+    f"TAKT_WORKER_ID={worker_id}",
+  ]
+  if token:
+    lines.append(f"TAKT_API_TOKEN={token}")
+  body = "\n".join(lines) + "\n"
+  script = (
+    "set -e; umask 077; mkdir -p ~/.config/takt; "
+    f"cat > ~/.config/takt/env <<'TAKT_EOF'\n{body}"
+    "TAKT_EOF\n"
+    "chmod 600 ~/.config/takt/env; "
+    "stat -c '%a' ~/.config/takt/env"
+  )
+  mode = ssh(host, script).stdout.strip()
+  if mode != "600":
+    raise ProvisionError(
+      f"credential file on {host} has mode {mode}, "
+      "expected 600"
+    )
+  return mode
+
+
+def repos_to_seed(selected=None):
+  """Decide which root repos to push to a worker.
+
+  Args:
+    selected: Explicit repo names, or None for all managed
+      repos.
+
+  Returns:
+    List of (name, path) for repos that exist locally.
+
+  Raises:
+    ProvisionError: If a named repo is not managed or not
+      present.
+  """
+  config = load_repos_config().get("repos", {})
+  if selected:
+    unknown = [r for r in selected if r not in config]
+    if unknown:
+      raise ProvisionError(
+        f"not managed repos: {', '.join(unknown)}. See "
+        "config/repos.yaml."
+      )
+    names = list(selected)
+  else:
+    names = list(config)
+  pairs = []
+  for name in names:
+    path = ROOT_DIR / name
+    if not (path / ".git").is_dir() and not (
+      path / "HEAD"
+    ).is_file():
+      if selected:
+        raise ProvisionError(
+          f"root repo {name} is not at {path}"
+        )
+      log.warning("Skipping %s: not at %s", name, path)
+      continue
+    pairs.append((name, path))
+  return pairs
+
+
+def seed_mirror(host, repo, path, mirrors=REMOTE_MIRRORS,
+                timeout=7200):
+  """Push one root repo to the worker as a bare mirror.
+
+  Pushed rather than fetched so the worker needs no
+  credentials. Re-running is cheap: git sends only what the
+  far side lacks, so this doubles as the refresh path.
+
+  Args:
+    host: user@host.
+    repo: Repo name.
+    path: Local path to the root repo.
+    mirrors: Remote mirror directory, relative to login dir.
+    timeout: Seconds before giving up on the push.
+
+  Returns:
+    True if objects were transferred, False if already
+    up to date.
+
+  Raises:
+    ProvisionError: If the push failed.
+  """
+  remote = f"{mirrors}/{repo}.git"
+  ssh(
+    host,
+    f"set -e; mkdir -p ~/{shlex.quote(mirrors)}; "
+    f"if [ ! -d ~/{shlex.quote(remote)} ]; then "
+    f"git init --quiet --bare ~/{shlex.quote(remote)}; fi",
+  )
+  # --mirror would also delete refs the scheduler no longer
+  # has, which is right: the scheduler is the source of
+  # truth for what branches exist.
+  proc = subprocess.run(
+    [
+      "git", "push", "--mirror",
+      f"{host}:{remote}",
+    ],
+    cwd=str(path), capture_output=True, text=True,
+    timeout=timeout,
+    env=_push_env(),
+  )
+  if proc.returncode != 0:
+    raise ProvisionError(
+      f"pushing {repo} to {host} failed: "
+      f"{proc.stderr.strip()[:400]}"
+    )
+  return "Everything up-to-date" not in (
+    proc.stderr + proc.stdout
+  )
+
+
+def _push_env():
+  """Environment for the seeding push.
+
+  BatchMode so a missing key fails instead of hanging on a
+  prompt, matching how every other call here behaves.
+
+  Returns:
+    Dict suitable for subprocess env.
+  """
+  import os
+  env = dict(os.environ)
+  env["GIT_SSH_COMMAND"] = (
+    "ssh " + " ".join(SSH_OPTS)
+  )
+  return env
+
+
+def remote_capabilities(host):
+  """Ask the worker what it reports about itself.
+
+  Runs the same detect_capabilities() the worker uses at
+  registration, so provisioning ends by showing exactly
+  what the scheduler will see.
+
+  Args:
+    host: user@host.
+
+  Returns:
+    Parsed capability dict.
+
+  Raises:
+    ProvisionError: If the output could not be parsed.
+  """
+  import json
+  # expanduser, not the bare relative path: this runs with
+  # the takt checkout as cwd, so a relative work dir does
+  # not resolve and free_disk_mb() silently reports None.
+  script = (
+    f"cd ~/{REMOTE_TAKT} && python3 -c "
+    "\"import sys, json, os; sys.path.insert(0, '.'); "
+    "from lib.worker import detect_capabilities; "
+    "print(json.dumps(detect_capabilities("
+    f"os.path.expanduser('~/{REMOTE_WORK}'))))\""
+  )
+  out = ssh(host, script, timeout=120).stdout.strip()
+  try:
+    return json.loads(out)
+  except ValueError as e:
+    raise ProvisionError(
+      f"could not read capabilities from {host}: {e}: "
+      f"{out[:200]!r}"
+    ) from e
+
+
+def provision(host, worker_id=None, repos=None,
+              scheduler_url=None, token=None, ref="master",
+              takt_repo=TAKT_REPO, skip_repos=False,
+              on_progress=None):
+  """Set a machine up as a takt worker.
+
+  Ordered so the cheap checks fail first: a machine missing
+  git should not be found out after a 4 GB push.
+
+  Args:
+    host: user@host, or an ssh config alias.
+    worker_id: Name to register under. Defaults to the
+      remote hostname.
+    repos: Root repos to seed, or None for all managed.
+    scheduler_url: URL the worker dials. Defaults to this
+      machine's configured API URL.
+    token: API token. Defaults to the configured one.
+    ref: takt branch to check out on the worker.
+    takt_repo: URL to clone takt from.
+    skip_repos: Set up the worker but push no repos.
+    on_progress: Optional callback(stage, detail) so a CLI
+      can report during a push that takes minutes.
+
+  Returns:
+    Dict describing what was done.
+
+  Raises:
+    ProvisionError: On any step that could not complete.
+  """
+  def progress(stage, detail=""):
+    if on_progress:
+      on_progress(stage, detail)
+
+  progress("channel", host)
+  hostname = check_channel(host)
+
+  progress("prereqs", hostname)
+  tools = check_prereqs(host)
+
+  url = scheduler_url or api_base_url()
+  if "127.0.0.1" in url or "localhost" in url:
+    raise ProvisionError(
+      f"scheduler URL {url!r} points at loopback, which on "
+      f"{host} means {host} itself. Pass --scheduler with "
+      "an address the worker can reach, or set TAKT_API_URL."
+    )
+  resolved_token = token if token is not None else api_token()
+  name = worker_id or hostname
+
+  progress("takt", f"{ref} on {hostname}")
+  commit = install_takt(host, repo=takt_repo, ref=ref)
+
+  progress("credentials", "~/.config/takt/env")
+  write_env(host, url, resolved_token, name)
+
+  ssh(
+    host,
+    f"mkdir -p ~/{shlex.quote(REMOTE_WORK)} "
+    f"~/{shlex.quote(REMOTE_MIRRORS)}",
+  )
+
+  seeded = []
+  if not skip_repos:
+    pairs = repos_to_seed(repos)
+    for index, (repo, path) in enumerate(pairs, start=1):
+      progress(
+        "repo", f"{repo} ({index}/{len(pairs)})"
+      )
+      changed = seed_mirror(host, repo, path)
+      seeded.append({"repo": repo, "updated": changed})
+
+  progress("verify", hostname)
+  caps = remote_capabilities(host)
+
+  return {
+    "host": host,
+    "hostname": hostname,
+    "worker_id": name,
+    "scheduler_url": url,
+    "authenticated": bool(resolved_token),
+    "takt_commit": commit,
+    "tools": tools,
+    "repos": seeded,
+    "capabilities": caps,
+    "start_command": (
+      f"cd ~/{REMOTE_TAKT} && python3 bin/takt.py worker "
+      f"--work-dir ~/{REMOTE_WORK} "
+      f"--mirror-dir ~/{REMOTE_MIRRORS}"
+    ),
+  }

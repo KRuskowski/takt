@@ -1,9 +1,10 @@
-"""Tests for lib/config.py role parsing and saving."""
+"""Tests for lib/config.py loaders and role parsing."""
 
 import textwrap
 
 import pytest
 
+from lib import config
 from lib.config import (
   _slugify_role,
   parse_pipeline_roles,
@@ -156,3 +157,72 @@ class TestSlugifyRole:
 
   def test_multi_word(self):
     assert _slugify_role("Code Review Agent") == "code_review"
+
+
+class TestLoadReposConfig:
+  """Reading the repo registry off disk.
+
+  These read a real file on purpose. Every other test in
+  the suite mocks load_repos_config() with the nested
+  shape, so nothing checked that the loader and the file
+  that ships actually agree -- and they did not. The flat
+  file that ships made .get("repos", {}) return nothing,
+  which is what the 16 callers all do.
+  """
+
+  def _load(self, tmp_path, monkeypatch, text):
+    (tmp_path / "repos.yaml").write_text(text)
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    return config.load_repos_config()
+
+  def test_flat_file_is_normalised(
+    self, tmp_path, monkeypatch
+  ):
+    """A flat mapping is the shape that ships."""
+    data = self._load(tmp_path, monkeypatch, (
+      "OTC.SDK:\n"
+      "  push_order: 1\n"
+      "  github: Optris/OTC.SDK\n"
+      "OTC.Relay:\n"
+      "  push_order: 3\n"
+    ))
+    repos = data.get("repos", {})
+    assert set(repos) == {"OTC.SDK", "OTC.Relay"}
+    assert repos["OTC.SDK"]["push_order"] == 1
+
+  def test_nested_file_is_passed_through(
+    self, tmp_path, monkeypatch
+  ):
+    data = self._load(tmp_path, monkeypatch, (
+      "repos:\n"
+      "  OTC.SDK:\n"
+      "    push_order: 1\n"
+    ))
+    assert set(data["repos"]) == {"OTC.SDK"}
+
+  def test_the_shipped_file_yields_repos(self):
+    """The real config/repos.yaml must not read as empty.
+
+    This is the assertion that would have caught the bug:
+    whatever shape the operator's file is in, the registry
+    the callers read must not be empty.
+    """
+    path = config.CONFIG_DIR / "repos.yaml"
+    if not path.exists():
+      pytest.skip("no repos.yaml on this machine")
+    repos = config.load_repos_config().get("repos", {})
+    assert repos, (
+      "config/repos.yaml parses to an empty registry; "
+      "every caller doing .get('repos', {}) sees no repos"
+    )
+
+  def test_empty_file_is_safe(self, tmp_path, monkeypatch):
+    data = self._load(tmp_path, monkeypatch, "")
+    assert data.get("repos", {}) == {}
+
+  def test_a_list_is_not_treated_as_a_registry(
+    self, tmp_path, monkeypatch
+  ):
+    """A malformed file must not crash the callers."""
+    data = self._load(tmp_path, monkeypatch, "- a\n- b\n")
+    assert data.get("repos", {}) == {}

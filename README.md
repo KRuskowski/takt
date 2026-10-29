@@ -240,6 +240,20 @@ The service refuses to bind a non-loopback address unless a token is set: the AP
 
 Note that once a token is set, **loopback is authenticated too**. That is deliberate: a TLS reverse proxy terminating in front of takt connects from loopback, and exempting it would hand every proxied request an unauthenticated path in.
 
+### Provisioning a worker
+
+```bash
+takt provision laptop --scheduler http://10.0.1.33:7433   # all managed repos
+takt provision laptop --repos OTC.SDK OTC.Relay           # a subset
+takt provision laptop --check                             # checks only, changes nothing
+```
+
+Run from the scheduler. It installs takt on the machine (HTTPS clone, so no git credentials needed), writes `~/.config/takt/env` at mode 0600, creates the work and mirror directories, then **pushes** the root repos over as bare mirrors and prints what the machine reports about itself.
+
+The push direction is deliberate. `--upstream scheduler` has the worker *fetch*, which needs an unlocked key on the worker — the usual blocker on a laptop whose key is passphrase-protected. Provisioning instead uses the SSH connection the scheduler already has, so a worker can be fully stocked while holding no git credentials of its own. Re-running it is the refresh path: git sends only what the far side lacks. Accordingly, a worker that cannot refresh an *existing* mirror logs a warning and carries on — whether the run can proceed is decided by the commit check in `materialise()`, which fails precisely if the needed commit really is missing.
+
+`--check` runs the cheap checks alone: a clean SSH channel and the required tools. The channel check exists because that failure is so badly disguised — anything written to stdout on login (an sshd `Banner`, a `~/.ssh/rc` that echoes, a shell rc greeting, and for zsh `~/.zshenv`, which non-interactive shells also read) gets spliced in front of every command's output, and git and rsync then fail with "protocol incompatibility" or "is your shell clean?", naming neither the file nor the machine at fault.
+
 Each worker keeps its own git mirrors — a worktree's `.git` points into its parent repo, so it cannot live on a different machine — and materialises worktrees at the exact commit the run recorded, not the branch tip. Commits produced on a worker return as a **git bundle** over the same outbound connection; workers only ever *fetch*, so the operator still gates what reaches GitHub, and `push_to_github`/`create_pr` are refused on a worker.
 
 Claims are leases carrying a generation, so a worker that goes dark long enough to lose its lease is refused when it returns instead of reporting over whoever took the run over. A worker without Claude Code declares itself build-only and is never offered a run containing an agent step. `--disk-floor-mb` stops it accepting work when nearly full, and worktrees are removed at run completion.
