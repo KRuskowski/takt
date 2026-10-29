@@ -244,7 +244,29 @@ def claude_cli_argv(prompt, model=None, add_dirs=(),
   return argv
 
 
-def claude_env(claude_home=None, base_env=None):
+# Credentials the CLI will accept from its environment, and
+# which a worker may therefore be given. An allowlist, not a
+# passthrough of the whole takt env file: that file also
+# holds TAKT_API_TOKEN, and handing the scheduler's API
+# token to every agent subprocess would let an agent create
+# workspaces and trigger runs.
+#
+# CLAUDE_CODE_OAUTH_TOKEN is the one worth distributing. The
+# interactive login writes ~/.claude/.credentials.json,
+# whose access token lasts about an hour and whose refresh
+# token rotates -- so copying that file to several machines
+# has them refresh against the same token and invalidate
+# each other. `claude setup-token` mints a long-lived token
+# for exactly this, and it is consumed through this variable.
+CLAUDE_AUTH_VARS = (
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+)
+
+
+def claude_env(claude_home=None, base_env=None,
+               env_file=None):
   """Build the environment for a Claude CLI subprocess.
 
   CLAUDE_CONFIG_DIR selects which account the CLI
@@ -253,9 +275,17 @@ def claude_env(claude_home=None, base_env=None):
   multiplies agent throughput — more machines sharing one
   account do not.
 
+  Credentials in CLAUDE_AUTH_VARS are filled in from takt's
+  credential file when absent from the environment. systemd
+  loads that file for a Linux worker, but a Windows
+  scheduled task does not, and the token must not go on the
+  task's command line where a process listing would show
+  it. Reading it here makes both platforms behave the same.
+
   Args:
     claude_home: Directory to use as CLAUDE_CONFIG_DIR.
     base_env: Environment to copy. Defaults to os.environ.
+    env_file: Credential file to read. Defaults to takt's.
 
   Returns:
     Environment dict.
@@ -267,6 +297,11 @@ def claude_env(claude_home=None, base_env=None):
     env["CLAUDE_CONFIG_DIR"] = str(
       Path(claude_home).expanduser()
     )
+  from lib.config import load_env_file
+  stored = load_env_file(env_file)
+  for name in CLAUDE_AUTH_VARS:
+    if not env.get(name) and stored.get(name):
+      env[name] = stored[name]
   return env
 
 

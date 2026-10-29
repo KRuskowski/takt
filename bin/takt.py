@@ -248,6 +248,14 @@ def build_parser():
     help="takt branch to check out on the worker.",
   )
   prov.add_argument(
+    "--creds-only", action="store_true",
+    help=(
+      "Rewrite the worker's credential file and restart it, "
+      "nothing else. The fast path for after you rotate the "
+      "Claude login."
+    ),
+  )
+  prov.add_argument(
     "--check", action="store_true",
     help=(
       "Only run the checks (clean SSH channel, required "
@@ -382,8 +390,12 @@ def _run_provision(args):
         )
       return 0
 
+    if args.creds_only:
+      args.skip_repos = True
+      args.ref = args.ref  # checkout left as it is
     result = provision(
       args.host,
+      creds_only=args.creds_only,
       worker_id=args.worker_id,
       repos=args.repos,
       scheduler_url=args.scheduler,
@@ -407,14 +419,19 @@ def _run_provision(args):
   print(f"    takt        {result['takt_commit']}")
   print(f"    scheduler   {result['scheduler_url']}"
         f"{'' if result['authenticated'] else ' (no token)'}")
-  print(f"    cores       {caps.get('cores')}")
-  print(f"    free disk   {caps.get('free_disk_mb')} MB")
-  print(f"    agent steps "
-        f"{caps.get('capabilities', {}).get('agent_steps')}")
-  updated = [r["repo"] for r in result["repos"]
-             if r["updated"]]
-  print(f"    repos       {len(result['repos'])} seeded"
-        + (f", {len(updated)} updated" if updated else ""))
+  creds = result.get("claude_creds") or []
+  print(f"    claude auth {', '.join(creds) if creds else 'none'}"
+        f"{'' if creds else ' -- agent steps cannot run'}")
+  if caps:
+    print(f"    cores       {caps.get('cores')}")
+    print(f"    free disk   {caps.get('free_disk_mb')} MB")
+    print(f"    agent steps "
+          f"{caps.get('capabilities', {}).get('agent_steps')}")
+  if result["repos"]:
+    updated = [r["repo"] for r in result["repos"]
+               if r["updated"]]
+    print(f"    repos       {len(result['repos'])} seeded"
+          + (f", {len(updated)} updated" if updated else ""))
   windows = result.get("platform") == "windows"
   svc = result.get("service")
   if svc:

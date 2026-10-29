@@ -29,6 +29,7 @@ from lib.config import (
   ROOT_DIR,
   api_base_url,
   api_token,
+  load_env_file,
   load_repos_config,
 )
 
@@ -195,7 +196,8 @@ def install_takt(host, repo=TAKT_REPO, ref="master"):
   return ssh(host, script, timeout=600).stdout.strip()
 
 
-def write_env(host, scheduler_url, token, worker_id):
+def write_env(host, scheduler_url, token, worker_id,
+              claude_creds=None):
   """Install the worker's credential file.
 
   Written with a restrictive umask and verified afterwards,
@@ -208,6 +210,8 @@ def write_env(host, scheduler_url, token, worker_id):
     scheduler_url: URL the worker should dial.
     token: API token, or None if the scheduler has none.
     worker_id: Name this worker registers under.
+    claude_creds: Claude auth variables to include, so the
+      worker's agent steps can authenticate.
 
   Returns:
     The file mode as reported by the worker, e.g. '600'.
@@ -224,6 +228,8 @@ def write_env(host, scheduler_url, token, worker_id):
   ]
   if token:
     lines.append(f"TAKT_API_TOKEN={token}")
+  for name, value in (claude_creds or {}).items():
+    lines.append(f"{name}={value}")
   body = "\n".join(lines) + "\n"
   script = (
     "set -e; umask 077; mkdir -p ~/.config/takt; "
@@ -239,6 +245,32 @@ def write_env(host, scheduler_url, token, worker_id):
       "expected 600"
     )
   return mode
+
+
+def claude_credentials():
+  """The Claude credential to hand a worker, if any.
+
+  Read from the real environment first, then takt's
+  credential file. Deliberately NOT read from
+  ~/.claude/.credentials.json: that file's access token
+  lasts about an hour and its refresh token rotates on use,
+  so copying it to several machines has them refresh against
+  the same token and invalidate each other. `claude
+  setup-token` mints a long-lived token for this, and that
+  is what belongs in the env file.
+
+  Returns:
+    Dict of variable name -> value, empty if none is set.
+  """
+  import os
+  from lib.worker import CLAUDE_AUTH_VARS
+  stored = load_env_file()
+  found = {}
+  for name in CLAUDE_AUTH_VARS:
+    value = os.environ.get(name) or stored.get(name)
+    if value:
+      found[name] = value
+  return found
 
 
 def repos_to_seed(selected=None):
@@ -368,6 +400,10 @@ def worker_unit(scheduler_host=None, upstream="scheduler",
     scheduler_host: user@host holding the root repos, for
       --upstream scheduler.
     upstream: Where mirrors fetch from.
+    creds_only: Rewrite the credential file and restart,
+      skipping the checkout update and the repos. The fast
+      path for rotating the Claude login, which the operator
+      does often.
     claude_home: CLAUDE_CONFIG_DIR for the worker's agent
       steps. Gives the machine its own Claude account, which
       is what actually multiplies agent throughput, and is
@@ -551,7 +587,8 @@ def provision(host, worker_id=None, repos=None,
               takt_repo=TAKT_REPO, skip_repos=False,
               service=False, scheduler_host=None,
               upstream="scheduler", agent_steps=True,
-              claude_home=None, on_progress=None):
+              claude_home=None, creds_only=False,
+              on_progress=None):
   """Set a machine up as a takt worker.
 
   Ordered so the cheap checks fail first: a machine missing
@@ -616,11 +653,17 @@ def provision(host, worker_id=None, repos=None,
   resolved_token = token if token is not None else api_token()
   name = worker_id or hostname
 
-  progress("takt", f"{ref} on {hostname}")
-  commit = ops.install_takt(host, takt_repo, ref=ref)
+  if creds_only:
+    commit = "(unchanged)"
+  else:
+    progress("takt", f"{ref} on {hostname}")
+    commit = ops.install_takt(host, takt_repo, ref=ref)
 
   progress("credentials", "~/.config/takt/env")
-  ops.write_env(host, url, resolved_token, name)
+  creds = claude_credentials()
+  ops.write_env(
+    host, url, resolved_token, name, claude_creds=creds,
+  )
 
   if not windows:
     ssh(
@@ -640,7 +683,7 @@ def provision(host, worker_id=None, repos=None,
       seeded.append({"repo": repo, "updated": changed})
 
   progress("verify", hostname)
-  caps = ops.remote_capabilities(host)
+  caps = {} if creds_only else ops.remote_capabilities(host)
 
   svc = None
   if service:
@@ -665,6 +708,7 @@ def provision(host, worker_id=None, repos=None,
     "worker_id": name,
     "scheduler_url": url,
     "authenticated": bool(resolved_token),
+    "claude_creds": sorted(creds),
     "takt_commit": commit,
     "tools": tools,
     "repos": seeded,

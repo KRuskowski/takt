@@ -652,3 +652,83 @@ class TestCrossPlatformProbes:
     )
     assert worker._ram_mb() is None
     assert not called
+
+
+class TestClaudeCredentials:
+  """Giving a worker's agent steps an identity."""
+
+  def test_oauth_token_comes_from_the_env_file(
+    self, tmp_path, monkeypatch
+  ):
+    """systemd loads it; a Windows task does not.
+
+    Reading it here makes both platforms behave the same,
+    and keeps the token off the task's command line where a
+    process listing would show it.
+    """
+    env = tmp_path / "env"
+    env.write_text("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-x\n")
+    monkeypatch.delenv(
+      "CLAUDE_CODE_OAUTH_TOKEN", raising=False
+    )
+    result = worker.claude_env(
+      base_env={}, env_file=env,
+    )
+    assert result["CLAUDE_CODE_OAUTH_TOKEN"] == (
+      "sk-ant-oat-x"
+    )
+
+  def test_the_real_environment_wins(
+    self, tmp_path, monkeypatch
+  ):
+    env = tmp_path / "env"
+    env.write_text("CLAUDE_CODE_OAUTH_TOKEN=from-file\n")
+    result = worker.claude_env(
+      base_env={"CLAUDE_CODE_OAUTH_TOKEN": "from-env"},
+      env_file=env,
+    )
+    assert result["CLAUDE_CODE_OAUTH_TOKEN"] == "from-env"
+
+  def test_scheduler_api_token_is_not_leaked(
+    self, tmp_path
+  ):
+    """The agent must not receive takt's own credential.
+
+    The credential file holds TAKT_API_TOKEN alongside the
+    Claude token. Passing the whole file through would hand
+    every agent subprocess the scheduler's API token, which
+    can create workspaces and trigger runs. Hence an
+    allowlist rather than a passthrough.
+    """
+    env = tmp_path / "env"
+    env.write_text(
+      "TAKT_API_TOKEN=scheduler-secret\n"
+      "TAKT_API_URL=http://sched:7433\n"
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-x\n"
+    )
+    result = worker.claude_env(base_env={}, env_file=env)
+    assert "TAKT_API_TOKEN" not in result
+    assert "TAKT_API_URL" not in result
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in result
+
+  def test_api_key_is_also_accepted(self, tmp_path):
+    """The fully non-interactive route."""
+    env = tmp_path / "env"
+    env.write_text("ANTHROPIC_API_KEY=sk-ant-api-x\n")
+    result = worker.claude_env(base_env={}, env_file=env)
+    assert result["ANTHROPIC_API_KEY"] == "sk-ant-api-x"
+
+  def test_claude_home_still_set(self, tmp_path):
+    env = tmp_path / "env"
+    env.write_text("")
+    result = worker.claude_env(
+      claude_home="/srv/ch", base_env={}, env_file=env,
+    )
+    assert result["CLAUDE_CONFIG_DIR"] == "/srv/ch"
+
+  def test_no_credentials_is_not_an_error(self, tmp_path):
+    """A build-only worker needs none of this."""
+    result = worker.claude_env(
+      base_env={}, env_file=tmp_path / "absent",
+    )
+    assert result == {}

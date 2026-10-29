@@ -235,7 +235,24 @@ A loopback `--scheduler` is refused: on the worker it would mean the worker itse
 
 SYSTEM does **not** preclude agent steps. Measured as `nt authority\system` on win-desk: `where claude` resolves through the launcher's PATH, `claude --version` runs, and a config directory under the operator's profile is readable. The only thing SYSTEM lacks is *credentials*, supplied with `--claude-home <dir>` — which provisioning creates and grants SYSTEM full control over. That is also how each worker gets its own Claude account, which is the thing that actually multiplies agent throughput, since limits attach to the account rather than the machine.
 
-Signing that directory in needs no console: over an interactive SSH session, `set CLAUDE_CONFIG_DIR=<dir>` then `claude setup-token` (a long-lived token) or `claude auth`, which print a URL and a code. `ANTHROPIC_API_KEY` in the worker's env file is the fully non-interactive alternative. Until one of those is done, provision with `--no-agent-steps`: the CLI being *present* is not the same as usable, and `detect_capabilities()` only checks presence, so the scheduler would otherwise hand the worker agent runs that fail.
+### Giving workers a Claude identity
+
+**Do not copy `~/.claude/.credentials.json` to workers.** Measured on this machine: its access token expires in about **1 hour**, and it carries a `refreshToken` that rotates on use — so several machines refreshing against the same copy invalidate each other. It is the wrong artefact to distribute.
+
+The right one is a long-lived token from `claude setup-token`, consumed through **`CLAUDE_CODE_OAUTH_TOKEN`** (confirmed present in the CLI binary alongside `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`). Put it in the scheduler's `~/.config/takt/env`; provisioning copies it into each worker's env file:
+
+```bash
+claude setup-token                      # once, interactively; prints a token
+# add CLAUDE_CODE_OAUTH_TOKEN=... to ~/.config/takt/env, then:
+takt provision laptop --creds-only --service --scheduler-host karl@10.0.1.33
+takt provision karl@10.0.0.25 --creds-only --service
+```
+
+`--creds-only` rewrites the credential file and restarts the worker, skipping the checkout update and the repos — the fast path for a rotated login. `takt provision` prints which auth variables a worker ended up with, or `none -- agent steps cannot run`.
+
+`claude_env()` fills these in from takt's credential file when they are absent from the environment, so Linux (where systemd loads the file) and Windows (where a scheduled task does not) behave identically, and the token never goes on a command line. It is an **allowlist** — `CLAUDE_AUTH_VARS` — not a passthrough: the same file holds `TAKT_API_TOKEN`, and handing the scheduler's API token to every agent subprocess would let an agent create workspaces and trigger runs. Tested.
+
+Until a credential is distributed, provision with `--no-agent-steps`: the CLI being *present* is not the same as usable, and `detect_capabilities()` only checks presence, so the scheduler would otherwise hand the worker agent runs that fail.
 
 Consequences of running as SYSTEM, each of which bit once:
 

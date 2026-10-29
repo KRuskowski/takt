@@ -209,7 +209,8 @@ def _scp(local, host, remote_path, timeout=3600):
     )
 
 
-def write_env(host, scheduler_url, token, worker_id):
+def write_env(host, scheduler_url, token, worker_id,
+              claude_creds=None):
   """Install the worker's credential file.
 
   Written via SFTP then locked down with icacls. There is no
@@ -222,6 +223,8 @@ def write_env(host, scheduler_url, token, worker_id):
     scheduler_url: URL the worker should dial.
     token: API token, or None.
     worker_id: Name to register under.
+    claude_creds: Claude auth variables to include, so the
+      worker's agent steps can authenticate.
 
   Returns:
     The icacls listing for the file.
@@ -238,6 +241,8 @@ def write_env(host, scheduler_url, token, worker_id):
   ]
   if token:
     lines.append(f"TAKT_API_TOKEN={token}")
+  for name, value in (claude_creds or {}).items():
+    lines.append(f"{name}={value}")
   body = "\n".join(lines) + "\n"
 
   provision.ssh(
