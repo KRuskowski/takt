@@ -221,9 +221,9 @@ Claims live in the database rather than in lock files, so they are visible to ev
 Runs can execute on other machines. One **scheduler** owns the SQLite state, the queue and the root repos; **workers** dial out, lease runs, execute them locally and report back over HTTP. Outbound only, so a NAT'd cloud VM needs no inbound access.
 
 ```bash
-# On the scheduler: config/takt.yaml
-#   api_host: 0.0.0.0
-#   api_token: <secret>
+# On the scheduler: ~/.config/takt/env, mode 0600
+#   TAKT_API_HOST=0.0.0.0
+#   TAKT_API_TOKEN=<secret>
 
 # LAN worker — root repos fetched from the scheduler over SSH
 takt worker --id build-01 --scheduler https://takt:7433 \
@@ -234,7 +234,11 @@ takt worker --id cloud-01 --scheduler https://takt.example.com \
   --token <secret> --upstream github
 ```
 
-The service refuses to bind a non-loopback address unless `api_token` is set: the API creates workspaces and triggers runs, so unauthenticated and reachable must never both be true.
+The service refuses to bind a non-loopback address unless a token is set: the API creates workspaces and triggers runs, so unauthenticated and reachable must never both be true.
+
+**Credentials live outside the checkout.** `config/takt.yaml` is tracked in a public repo, so a token written there would be published. takt reads `~/.config/takt/env` (`KEY=value`, mode 0600) instead — systemd loads it into the service via `EnvironmentFile`, and the client tools (MCP, CLI, `reclaim`) read the same file, so turning authentication on does not mean exporting a token in every shell. `TAKT_API_TOKEN`, `TAKT_API_URL` and `TAKT_API_HOST` in the real environment still win, which is how a worker on another machine is configured.
+
+Note that once a token is set, **loopback is authenticated too**. That is deliberate: a TLS reverse proxy terminating in front of takt connects from loopback, and exempting it would hand every proxied request an unauthenticated path in.
 
 Each worker keeps its own git mirrors — a worktree's `.git` points into its parent repo, so it cannot live on a different machine — and materialises worktrees at the exact commit the run recorded, not the branch tip. Commits produced on a worker return as a **git bundle** over the same outbound connection; workers only ever *fetch*, so the operator still gates what reaches GitHub, and `push_to_github`/`create_pr` are refused on a worker.
 

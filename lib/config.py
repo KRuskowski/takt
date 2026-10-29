@@ -62,6 +62,41 @@ WORKSPACES_DIR.mkdir(exist_ok=True)
 STAGES_DIR.mkdir(exist_ok=True)
 
 
+# Credentials live outside the checkout: config/takt.yaml is
+# tracked in a public repo, so a token placed there would be
+# published. systemd loads this file into the service, and
+# load_env_file() lets client tools find it too.
+ENV_FILE = Path(
+  os.environ.get("TAKT_ENV_FILE")
+  or (Path.home() / ".config/takt/env")
+).expanduser()
+
+
+def load_env_file(path=None):
+  """Parse a KEY=value credentials file.
+
+  Args:
+    path: File to read. Defaults to ENV_FILE.
+
+  Returns:
+    Dict of the keys found, empty if the file is absent or
+    unreadable.
+  """
+  target = Path(path) if path else ENV_FILE
+  try:
+    text = target.read_text()
+  except OSError:
+    return {}
+  values = {}
+  for line in text.splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+      continue
+    key, _, value = line.partition("=")
+    values[key.strip()] = value.strip()
+  return values
+
+
 def api_token():
   """Return the shared secret required by the REST API.
 
@@ -75,9 +110,28 @@ def api_token():
   """
   token = (
     os.environ.get("TAKT_API_TOKEN")
+    or load_env_file().get("TAKT_API_TOKEN")
     or load_takt_config().get("api_token")
   )
   return token or None
+
+
+def api_base_url():
+  """Return the scheduler URL a client should call.
+
+  Lets every client — MCP, reclaim, the CLI — agree on one
+  place to look, so enabling the token does not require
+  editing each tool's environment separately.
+
+  Returns:
+    Base URL string.
+  """
+  env = load_env_file()
+  return (
+    os.environ.get("TAKT_API_URL")
+    or env.get("TAKT_API_URL")
+    or f"http://127.0.0.1:{API_PORT}"
+  )
 
 
 def load_repos_config():

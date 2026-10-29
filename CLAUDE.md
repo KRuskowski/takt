@@ -174,14 +174,24 @@ Runs can execute on other machines. One **scheduler** owns the database, the que
 
 ## Scheduler
 
+```ini
+# ~/.config/takt/env — mode 0600, NOT in the repo.
+# config/takt.yaml is tracked in a public repo; a token
+# there would be published. systemd loads this file via
+# EnvironmentFile, and lib.config.load_env_file() lets the
+# client tools find it without it being in every shell.
+TAKT_API_HOST=0.0.0.0
+TAKT_API_TOKEN=<secret>
+```
+
 ```yaml
-# config/takt.yaml
-api_host: 0.0.0.0        # refuses to start without api_token
-api_token: <secret>      # clients send Authorization: Bearer <token>
+# config/takt.yaml — non-secret settings only
 state_dir: /var/lib/takt # optional; default is .state/ in the checkout
 ```
 
-The service refuses to bind a non-loopback address without `api_token` set — the API creates workspaces and triggers runs, so unauthenticated and reachable must never both be true.
+The service refuses to bind a non-loopback address without a token set — the API creates workspaces and triggers runs, so unauthenticated and reachable must never both be true.
+
+Clients resolve the scheduler through `lib.config.api_base_url()` and `api_token()`, which read the real environment first, then the env file, then `takt.yaml`. Once a token is set it applies to loopback too: a TLS reverse proxy terminates on loopback, so exempting it would be an unauthenticated way in. `tests/conftest.py` points `TAKT_ENV_FILE` at a non-existent path for every test, so the suite never picks up the operator's live token.
 
 ## Worker (`bin/takt_worker.py`)
 

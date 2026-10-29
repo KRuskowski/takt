@@ -8,6 +8,10 @@ ExecStart=%h/dev/takt/.venv/bin/python3 %h/dev/takt/bin/takt_service.py
 Restart=on-failure
 RestartSec=5
 Environment=PATH=%h/.nvm/versions/node/v24.11.1/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Bind address and API token live here, not in config/takt.yaml,
+# which is tracked in a public repo. Optional (leading -) so the
+# service still starts on a machine without it, on loopback.
+EnvironmentFile=-%h/.config/takt/env
 WorkingDirectory=%h/dev/takt
 
 [Install]

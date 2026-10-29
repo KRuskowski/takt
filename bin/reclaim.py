@@ -199,10 +199,9 @@ def active_workspaces():
   """
   import urllib.error
   import urllib.request
-  base = os.environ.get(
-    "TAKT_API_URL", "http://127.0.0.1:7433"
-  )
-  token = os.environ.get("TAKT_API_TOKEN", "")
+  from lib.config import api_base_url, api_token
+  base = api_base_url()
+  token = api_token() or ""
   req = urllib.request.Request(
     f"{base}/api/runs?limit=200",
     headers=(

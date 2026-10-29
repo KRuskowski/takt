@@ -21,10 +21,12 @@ from mcp.server.fastmcp import FastMCP
 
 WORKSPACES_DIR = PROJECT_DIR.parent / "workspaces"
 
-TAKT_API = os.environ.get(
-  "TAKT_API_URL", "http://127.0.0.1:7433"
-)
-TAKT_TOKEN = os.environ.get("TAKT_API_TOKEN", "")
+from lib.config import api_base_url, api_token
+
+# Resolved through lib.config so the token can live in
+# ~/.config/takt/env rather than every client's shell.
+TAKT_API = api_base_url()
+TAKT_TOKEN = api_token() or ""
 
 mcp = FastMCP(
   "takt",
