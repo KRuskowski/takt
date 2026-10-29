@@ -368,11 +368,20 @@ def free_disk_mb(path):
   Returns:
     Free megabytes, or None if it cannot be determined.
   """
-  try:
-    usage = shutil.disk_usage(str(path))
-  except OSError:
-    return None
-  return usage.free // (1024 * 1024)
+  # Walk up to an existing ancestor rather than giving up.
+  # The path is usually the worker's work dir, which may not
+  # exist yet on a fresh machine -- and returning None there
+  # disables the --disk-floor-mb guard silently, so the
+  # worker would accept work on a nearly-full disk and fail
+  # partway through a build instead of declining.
+  current = Path(path).resolve()
+  for candidate in [current] + list(current.parents):
+    try:
+      usage = shutil.disk_usage(str(candidate))
+    except OSError:
+      continue
+    return usage.free // (1024 * 1024)
+  return None
 
 
 def detect_capabilities(work_dir, claude_available=None):
@@ -425,12 +434,59 @@ def _os_name():
 
 
 def _ram_mb():
-  """Total RAM in MB, or None if it cannot be read."""
+  """Total RAM in MB, or None if it cannot be read.
+
+  os.sysconf does not exist on Windows, so that path alone
+  reported None there -- leaving the scheduler with no idea
+  how much memory a Windows worker has, which is exactly the
+  figure that decides whether to send it a heavy build.
+  """
   try:
     pages = os.sysconf("SC_PHYS_PAGES")
     size = os.sysconf("SC_PAGE_SIZE")
     return (pages * size) // (1024 * 1024)
   except (ValueError, OSError, AttributeError):
+    pass
+  if platform.system().lower() == "windows":
+    return _ram_mb_windows()
+  return None
+
+
+def _ram_mb_windows():
+  """Total RAM in MB via the Win32 API.
+
+  ctypes rather than shelling out to wmic: wmic is deprecated
+  and absent from recent Windows builds, and this needs no
+  subprocess.
+
+  Returns:
+    Megabytes, or None if the call failed.
+  """
+  import ctypes
+
+  class MemoryStatusEx(ctypes.Structure):
+    _fields_ = [
+      ("dwLength", ctypes.c_ulong),
+      ("dwMemoryLoad", ctypes.c_ulong),
+      ("ullTotalPhys", ctypes.c_ulonglong),
+      ("ullAvailPhys", ctypes.c_ulonglong),
+      ("ullTotalPageFile", ctypes.c_ulonglong),
+      ("ullAvailPageFile", ctypes.c_ulonglong),
+      ("ullTotalVirtual", ctypes.c_ulonglong),
+      ("ullAvailVirtual", ctypes.c_ulonglong),
+      ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+    ]
+
+  try:
+    status = MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(MemoryStatusEx)
+    ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(
+      ctypes.byref(status)
+    )
+    if not ok:
+      return None
+    return status.ullTotalPhys // (1024 * 1024)
+  except (AttributeError, OSError):
     return None
 
 

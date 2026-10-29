@@ -132,11 +132,21 @@ class TestDiskReporting:
     assert isinstance(mb, int)
     assert mb > 0
 
-  def test_missing_path_is_none(self):
-    """An unreadable path yields None, not a crash."""
-    assert worker.free_disk_mb(
-      "/nonexistent/path/xyz"
-    ) is None
+  def test_missing_path_reports_its_future_filesystem(self):
+    """A path that does not exist yet still reports.
+
+    This deliberately replaces an earlier contract of
+    "missing path -> None". None is not a safe answer here:
+    bin/takt_worker.py skips the --disk-floor-mb check when
+    free space is unknown, so a worker whose work dir had
+    not been created yet would accept work on a full disk
+    and fail partway through a build rather than declining.
+    The free space of a path that does not exist is the free
+    space of the filesystem that would hold it, which is
+    what df reports too.
+    """
+    mb = worker.free_disk_mb("/nonexistent/path/xyz")
+    assert mb is not None and mb > 0
 
 
 class TestCapabilityDetection:
@@ -577,3 +587,68 @@ class TestPushSeededMirrors:
     assert "takt provision" in message, (
       "the message should say how to fix it"
     )
+
+
+class TestCrossPlatformProbes:
+  """Machine facts, on a machine that is not this one.
+
+  The Windows workstation reported ram_mb=null and
+  free_disk_mb=null. Both are figures the scheduler uses to
+  decide what to send a worker, and a null is not neutral:
+  the --disk-floor-mb guard is skipped when free space is
+  unknown, so the worker accepts work on a full disk and
+  fails partway through a build instead of declining.
+  """
+
+  def test_free_disk_walks_up_to_an_existing_parent(
+    self, tmp_path
+  ):
+    """A work dir that does not exist yet still reports."""
+    missing = tmp_path / "not" / "created" / "yet"
+    assert not missing.exists()
+    got = worker.free_disk_mb(missing)
+    assert got is not None and got > 0
+
+  def test_free_disk_matches_an_existing_path(
+    self, tmp_path
+  ):
+    direct = worker.free_disk_mb(tmp_path)
+    nested = worker.free_disk_mb(tmp_path / "a" / "b")
+    assert direct is not None
+    # Same filesystem, so within rounding of each other.
+    assert abs(direct - nested) < 50
+
+  def test_ram_is_reported_on_this_platform(self):
+    """Whatever the OS, the number must come back."""
+    assert worker._ram_mb() is not None
+
+  def test_ram_falls_back_to_windows_api(
+    self, monkeypatch
+  ):
+    """When sysconf is absent, the Win32 path is used.
+
+    Simulated, so this is meaningful on Linux: os.sysconf
+    does not exist on Windows at all.
+    """
+    monkeypatch.delattr(worker.os, "sysconf", raising=False)
+    monkeypatch.setattr(
+      worker.platform, "system", lambda: "Windows"
+    )
+    monkeypatch.setattr(
+      worker, "_ram_mb_windows", lambda: 16384
+    )
+    assert worker._ram_mb() == 16384
+
+  def test_no_windows_fallback_on_linux(self, monkeypatch):
+    """A Linux box with no sysconf must not call Win32."""
+    monkeypatch.delattr(worker.os, "sysconf", raising=False)
+    monkeypatch.setattr(
+      worker.platform, "system", lambda: "Linux"
+    )
+    called = []
+    monkeypatch.setattr(
+      worker, "_ram_mb_windows",
+      lambda: called.append(1) or 1,
+    )
+    assert worker._ram_mb() is None
+    assert not called

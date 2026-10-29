@@ -56,10 +56,25 @@ API_PORT = int(
 )
 
 # Ensure runtime dirs exist.
-STATE_DIR.mkdir(parents=True, exist_ok=True)
-LOCKS_DIR.mkdir(exist_ok=True)
-WORKSPACES_DIR.mkdir(exist_ok=True)
-STAGES_DIR.mkdir(exist_ok=True)
+#
+# Best-effort, because these are scheduler-side conveniences
+# and this module is imported by things that need none of
+# them. BASE_DIR defaults to a path on the scheduler, so on
+# any other machine these are the wrong directories to be
+# creating -- and on Windows '/home/karl/dev' becomes
+# '\home\karl\dev', whose parent does not exist, so mkdir
+# raised and the import died. That took `takt worker` down on
+# the Windows workstation before it could parse an argument.
+#
+# A component that genuinely requires one of these creates it
+# itself; failing to pre-make them is never the real error.
+for _runtime_dir in (
+  STATE_DIR, LOCKS_DIR, WORKSPACES_DIR, STAGES_DIR,
+):
+  try:
+    _runtime_dir.mkdir(parents=True, exist_ok=True)
+  except OSError:
+    pass
 
 
 # Credentials live outside the checkout: config/takt.yaml is
