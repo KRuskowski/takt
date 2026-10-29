@@ -224,6 +224,32 @@ The push direction is the point. `--upstream scheduler` has the worker *fetch*, 
 
 A loopback `--scheduler` is refused: on the worker it would mean the worker itself.
 
+### Windows workers (`lib/provision_windows.py`)
+
+`provision()` probes the far side with cmd's `ver` before touching anything and switches dialect: none of the POSIX steps apply to a host whose SSH shell is cmd.exe. Two transport decisions, both forced:
+
+- **Files go over SFTP**, not through the shell. Quoting a multi-line file through ssh → cmd.exe → powershell reliably produces something subtly wrong, and the credential file holds the token. It is locked down with `icacls /inheritance:r`, then the ACL is read back and refused if it still grants Everyone or BUILTIN\Users. SYSTEM is granted read deliberately (see below); that is not a weakening, since SYSTEM can take ownership of anything regardless.
+- **Repos arrive as git bundles**, not pushes. git sends `git-receive-pack 'path'` and cmd.exe does not strip the quotes, so git looks for a directory whose name contains them (`''repo.git'' does not appear to be a git repository`). The usual fix — repointing the host's SSH `DefaultShell` at powershell — is a machine-wide registry change affecting every other tool that connects. A bundle is a plain file, so no shell parses a git path. Bundles are incremental against the refs the worker already holds.
+
+**The service identity is not a free choice**, and `--no-agent-steps` selects it:
+
+| | identity | trigger | unattended | agent steps |
+|---|---|---|---|---|
+| build-only | SYSTEM | at startup | **yes** | no |
+| agent-capable | the user | at logon | no | yes |
+
+A passwordless named-user task is created `Interactive only`, so it never fires while the machine sits at the login screen (seen as `Last Result: 267011`, `SCHED_S_TASK_HAS_NOT_RUN`). SYSTEM has no such limit but also no user profile — and the Claude CLI keeps its credentials there. A stored password would dissolve the choice and is not an option: it would have to go on a command line.
+
+Consequences of running as SYSTEM, each of which bit once:
+
+- The command lives in a generated `takt-worker.cmd`, because `schtasks /tr` caps at **261 characters**.
+- Every path in that launcher is absolute: under SYSTEM `%USERPROFILE%` is the service profile, not the operator's.
+- The launcher sets `TAKT_ENV_FILE`, because `env_file_path()` falls back to `Path.home()` — which under SYSTEM would miss the credential file entirely (`--scheduler is required`).
+- The launcher prepends the user's `PATH`: a SYSTEM task inherits only the *machine* PATH, which here covers cmake and git but not ninja or python.
+- Python modules must be in the **interpreter's** site-packages, not a `--user` install. `pip install --user pyyaml` is invisible to SYSTEM; `python -s -c "import yaml"` is the check that reproduces what SYSTEM sees.
+- Output is redirected to `~/takt-worker/worker.log`. A scheduled task discards stdout, so without it a worker dying at startup leaves only `Last Result: 1`. It is the only diagnostic on this platform — there is no journalctl.
+- The task is `/end`ed before `/run`, since `schtasks /run` is a no-op on a running task and would otherwise leave the previous process on the old code.
+
 `--service` installs a systemd **user** unit (`takt-worker.service`) and enables lingering, without which it would stop the moment the operator logs out — defeating the point of using a machine that is "on anyway". The unit sets `PATH` explicitly to include `~/.local/bin`: a unit inherits almost no PATH, and a worker that cannot find `claude` still starts, registers `agent_steps=False`, and is then never handed an agent step — healthy-looking and useless. Tested, including that the unit's work and mirror dirs match the ones provisioning pushed to, since drift there means every run fails on a missing commit.
 
 ## Worker (`bin/takt_worker.py`)

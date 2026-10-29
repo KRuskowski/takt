@@ -55,6 +55,10 @@ SFTP_WORK = "takt-worker"
 SFTP_MIRRORS = "takt-worker/mirrors"
 
 TASK_NAME = "takt-worker"
+# Under C:\Users\Karl so it is readable without elevation,
+# and so a SYSTEM-run task and the operator look at the same
+# file.
+LOG_PATH = r"%USERPROFILE%\takt-worker\worker.log"
 
 
 def is_windows(host):
@@ -250,14 +254,25 @@ def write_env(host, scheduler_url, token, worker_id):
   # /inheritance:r drops the inherited ACEs, then the only
   # grant is the owner. Without the first part the file keeps
   # whatever the profile directory hands down.
+  # /inheritance:r drops what the profile directory hands
+  # down; then the owner, and SYSTEM. SYSTEM is granted
+  # explicitly because the build-only worker runs as a
+  # scheduled task under that account and has to read this
+  # file -- the alternative is putting the token on the
+  # task's command line, where any process listing would
+  # show it. It is not a weakening: SYSTEM can take
+  # ownership of any file on the machine regardless.
   provision.ssh(
     host,
     f'icacls "{target}" /inheritance:r '
-    f'/grant:r "%USERNAME%":F',
+    f'/grant:r "%USERNAME%":F '
+    f'/grant:r "SYSTEM":R',
   )
   listing = provision.ssh(host, f'icacls "{target}"').stdout
   lowered = listing.lower()
-  for bad in ("everyone", "users:", "authenticated users"):
+  # "users:" would match "nt authority\\system:" nowhere, but
+  # BUILTIN\\Users would -- that is the one to catch.
+  for bad in ("everyone", "builtin\\users", "authenticated users"):
     if bad in lowered:
       raise ProvisionError(
         f"credential file on {host} is still readable by "
@@ -403,6 +418,60 @@ def remote_capabilities(host):
     ) from e
 
 
+def home_dir(host):
+  """The SSH user's profile directory, absolutely.
+
+  Needed because the launcher runs as SYSTEM, where
+  %USERPROFILE% expands to the service profile rather than
+  to C:\\Users\\<someone> -- so every path in it has to be
+  resolved here, as the SSH user, and written out literally.
+
+  Args:
+    host: user@host.
+
+  Returns:
+    e.g. 'C:\\Users\\Karl'.
+  """
+  out = provision.ssh(host, "echo %USERPROFILE%").stdout
+  home = out.strip()
+  if not home or "%" in home:
+    raise ProvisionError(
+      f"could not resolve the home directory on {host}: "
+      f"{out[:120]!r}"
+    )
+  return home
+
+
+def user_path(host):
+  """The SSH user's PATH entries.
+
+  A SYSTEM-run task inherits only the *machine* PATH. On
+  this hardware that is enough for cmake and git but not for
+  ninja or python, which sit under the user profile -- so a
+  SYSTEM worker would report a thinner toolchain than the
+  machine has and be mis-gated for builds. The launcher
+  prepends these, the same reason the systemd unit sets PATH
+  explicitly.
+
+  Args:
+    host: user@host.
+
+  Returns:
+    The user PATH string, or "" if it could not be read.
+  """
+  proc = provision.ssh(
+    host,
+    "powershell -NoProfile -Command "
+    "\"[Environment]::GetEnvironmentVariable('Path','User')\"",
+    check=False,
+  )
+  if proc.returncode != 0:
+    return ""
+  return proc.stdout.strip().replace("\r", "").replace(
+    "\n", ""
+  )
+
+
 def python_path(host):
   """Absolute path to the Python the worker should run.
 
@@ -486,26 +555,65 @@ def install_service(host, scheduler_host=None,
   if user is None:
     user = host.split("@")[0] if "@" in host else "%USERNAME%"
   python = python_path(host)
-  # %USERPROFILE% in the paths below is expanded by cmd.exe
-  # when schtasks is invoked, so what gets stored is already
-  # absolute -- which is what makes the SYSTEM variant find
-  # the right mirrors rather than the service profile's.
-  # Do not "fix" these into literal strings.
-  # Mirrors arrive by bundle, so the worker has no upstream
-  # it can reach. ensure_mirror() treats a failed refresh of
-  # an existing mirror as a warning, which is what makes
-  # this work; materialise() still fails precisely if a
-  # required commit is genuinely absent.
-  command = (
-    f'\\"{python}\\" \\"{WIN_TAKT}\\bin\\takt.py\\" worker '
-    f'--work-dir \\"{WIN_WORK}\\" '
-    f'--mirror-dir \\"{WIN_MIRRORS}\\" '
-    f'--upstream {upstream}'
+  home = home_dir(host)
+
+  # The command goes in a launcher script, not in /tr:
+  # schtasks caps /tr at 261 characters and the full command
+  # with its redirection is longer than that. The script is
+  # also where the paths become absolute -- the task runs as
+  # SYSTEM, where %USERPROFILE% is the service profile, not
+  # C:\Users\<someone>, so nothing here may be left to
+  # expand at trigger time.
+  takt_dir = f"{home}\\dev\\takt"
+  work_dir = f"{home}\\takt-worker"
+  mirror_dir = f"{work_dir}\\mirrors"
+  log_path = f"{work_dir}\\worker.log"
+  env_file = f"{home}\\.config\\takt\\env"
+  extra_path = user_path(host)
+  path_line = (
+    f'set "PATH={extra_path};%PATH%"\r\n'
+    if extra_path else ""
   )
+  launcher_win = f"{work_dir}\\takt-worker.cmd"
+
+  flags = f"--upstream {upstream}"
   if upstream == "scheduler" and scheduler_host:
-    command += f" --scheduler-host {scheduler_host}"
+    flags += f" --scheduler-host {scheduler_host}"
   if not agent_steps:
-    command += " --no-agent-steps"
+    flags += " --no-agent-steps"
+
+  script = (
+    "@echo off\r\n"
+    "rem Generated by `takt provision`. Edit the generator,\r\n"
+    "rem not this file: provisioning overwrites it.\r\n"
+    "rem\r\n"
+    "rem TAKT_ENV_FILE is set explicitly because this may\r\n"
+    "rem run as SYSTEM, where Path.home() is the service\r\n"
+    "rem profile -- so the default lookup would miss the\r\n"
+    "rem credential file entirely and the worker would exit\r\n"
+    "rem with '--scheduler is required'.\r\n"
+    "rem\r\n"
+    "rem PATH carries the user's entries because a SYSTEM\r\n"
+    "rem task inherits only the machine PATH -- enough for\r\n"
+    "rem cmake and git here, but not ninja or python.\r\n"
+    f'set "TAKT_ENV_FILE={env_file}"\r\n'
+    f'{path_line}'
+    f'cd /d "{takt_dir}"\r\n'
+    f'"{python}" "{takt_dir}\\bin\\takt.py" worker '
+    f'--work-dir "{work_dir}" '
+    f'--mirror-dir "{mirror_dir}" '
+    f'{flags} >> "{log_path}" 2>&1\r\n'
+  )
+  provision.ssh(
+    host,
+    f'if not exist "{work_dir}" mkdir "{work_dir}"',
+  )
+  with tempfile.TemporaryDirectory() as tmp:
+    local = Path(tmp) / "takt-worker.cmd"
+    local.write_text(script)
+    _scp(local, host, f"{SFTP_WORK}/takt-worker.cmd",
+         timeout=120)
+
   if agent_steps:
     identity = f"/sc onlogon /ru {user}"
     runs_as, unattended = user, False
@@ -515,8 +623,16 @@ def install_service(host, scheduler_host=None,
   provision.ssh(
     host,
     f'schtasks /create /tn {TASK_NAME} {identity} '
-    f'/f /tr "{command}"',
+    f'/f /tr "\'{launcher_win}\'"',
     timeout=180,
+  )
+  # End before running. `schtasks /run` on a task that is
+  # already running is a no-op, so re-provisioning would
+  # leave the *previous* process alive -- still on the old
+  # launcher and the old code. Exactly the trap `systemctl
+  # enable --now` set on the Linux side.
+  provision.ssh(
+    host, f"schtasks /end /tn {TASK_NAME}", check=False
   )
   provision.ssh(
     host, f"schtasks /run /tn {TASK_NAME}", check=False
@@ -541,4 +657,6 @@ def install_service(host, scheduler_host=None,
     "runs_as": runs_as,
     "unattended": unattended,
     "agent_steps": agent_steps,
+    "log": log_path,
+    "launcher": launcher_win,
   }

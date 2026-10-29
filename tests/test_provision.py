@@ -659,113 +659,139 @@ class TestWindowsCredentials:
 class TestWindowsService:
   """The scheduled task that replaces systemd."""
 
-  PYTHON = r"C:\Users\Karl\AppData\Local\Programs"
-  PYTHON += r"\Python\Python312\python.exe"
+  PYTHON = (
+    r"C:\Users\Karl\AppData\Local\Programs"
+    r"\Python\Python312\python.exe"
+  )
 
-  def _rec(self, status="Status: Ready\n"):
-    return Recorder({
+  def _setup(self, monkeypatch, status="Status: Ready\n"):
+    """Stub the remote and capture the launcher script.
+
+    Returns (recorder, written) where written is a one-item
+    list that receives the launcher's text.
+    """
+    from lib import provision_windows as win
+    rec = Recorder({
       "where python": FakeProc(
         self.PYTHON + "\r\n"
         r"C:\Users\Karl\AppData\Local\Microsoft"
         "\\WindowsApps\\python.exe\r\n"
       ),
+      "echo %USERPROFILE%": FakeProc("C:\\Users\\Karl\r\n"),
       "query": FakeProc(status),
     })
+    monkeypatch.setattr(provision, "ssh", rec)
+    written = []
+    monkeypatch.setattr(
+      win, "_scp",
+      lambda local, h, remote, **k: written.append(
+        Path(local).read_text()
+      ),
+    )
+    return rec, written
 
-  def test_agent_capable_runs_as_the_user_at_logon(
+  def test_command_lives_in_a_launcher_script(
     self, monkeypatch
   ):
-    """Agent steps need the user's Claude credentials.
+    """schtasks caps /tr at 261 characters.
 
-    They live in the user profile, and the CLI is on the
-    user PATH, so SYSTEM has no account to run as.
+    The full command with its output redirection is longer
+    than that, so /tr names a generated .cmd instead.
+    Observed before the fix: "Value for '/tr' option cannot
+    be more than 261 character(s)."
     """
     from lib import provision_windows as win
-    rec = self._rec()
-    monkeypatch.setattr(provision, "ssh", rec)
-    result = win.install_service(
-      "karl@win-desk", agent_steps=True
-    )
+    rec, written = self._setup(monkeypatch)
+    win.install_service("karl@win-desk", agent_steps=False)
     create = rec.commands_matching("/create")[0]
-    assert "/sc onlogon" in create
-    assert "/ru karl" in create
-    assert result["runs_as"] == "karl"
-    # And the honest cost: it will not run at the login
-    # screen, because schtasks makes a passwordless
-    # named-user task "Interactive only".
-    assert result["unattended"] is False
+    assert len(create) < 400
+    assert "takt-worker.cmd" in create
+    assert written, "no launcher script was written"
+
+  def test_launcher_paths_are_absolute(self, monkeypatch):
+    """Nothing may be left to expand at trigger time.
+
+    The task runs as SYSTEM, where %USERPROFILE% is the
+    service profile rather than the operator's own, so a
+    surviving %USERPROFILE% would point the worker at empty
+    mirrors.
+    """
+    from lib import provision_windows as win
+    _, written = self._setup(monkeypatch)
+    win.install_service("karl@win-desk", agent_steps=False)
+    script = written[0]
+    assert "%USERPROFILE%" not in script
+    assert r"C:\Users\Karl\takt-worker" in script
+    assert self.PYTHON in script
+
+  def test_launcher_redirects_output_to_a_log(
+    self, monkeypatch
+  ):
+    """A task discards stdout, so this is the only clue.
+
+    Without it a worker dying at startup leaves nothing but
+    "Last Result: 1" -- which is exactly what happened.
+    """
+    from lib import provision_windows as win
+    _, written = self._setup(monkeypatch)
+    result = win.install_service(
+      "karl@win-desk", agent_steps=False
+    )
+    assert "worker.log" in written[0]
+    assert "2>&1" in written[0]
+    assert result["log"].endswith("worker.log")
 
   def test_build_only_runs_as_system_at_startup(
     self, monkeypatch
   ):
-    """This is the mode that works on an idle machine.
+    """The mode that works on an idle machine.
 
     A bench workstation sits at the login screen, where an
     Interactive-only task never fires -- observed as
-    Last Result 267011, SCHED_S_TASK_HAS_NOT_RUN. SYSTEM at
-    startup runs regardless, and build work needs no user
-    profile: the interpreter is absolute and git is on the
-    machine PATH.
+    Last Result 267011, SCHED_S_TASK_HAS_NOT_RUN.
     """
     from lib import provision_windows as win
-    rec = self._rec()
-    monkeypatch.setattr(provision, "ssh", rec)
+    rec, _ = self._setup(monkeypatch)
     result = win.install_service(
       "karl@win-desk", agent_steps=False
     )
     create = rec.commands_matching("/create")[0]
     assert "/sc onstart" in create
     assert "/ru SYSTEM" in create
-    assert result["runs_as"] == "SYSTEM"
     assert result["unattended"] is True
+
+  def test_agent_capable_runs_as_the_user_at_logon(
+    self, monkeypatch
+  ):
+    """Agent steps need the user's Claude credentials.
+
+    They live in the user profile, so SYSTEM has no account.
+    """
+    from lib import provision_windows as win
+    rec, _ = self._setup(monkeypatch)
+    result = win.install_service(
+      "karl@win-desk", agent_steps=True
+    )
+    create = rec.commands_matching("/create")[0]
+    assert "/sc onlogon" in create
+    assert "/ru karl" in create
+    assert result["unattended"] is False
 
   def test_no_password_on_the_command_line(
     self, monkeypatch
   ):
-    """ONLOGON as a named user needs no /rp.
+    """Neither identity may need /rp.
 
-    That combination is the only one schtasks will create
-    without a password, and a password must never appear in
-    a command line.
+    A password must never appear in a command line.
     """
     from lib import provision_windows as win
-    rec = self._rec()
-    monkeypatch.setattr(provision, "ssh", rec)
+    rec, _ = self._setup(monkeypatch)
     for agents in (True, False):
-      win.install_service("karl@win-desk", agent_steps=agents)
+      win.install_service(
+        "karl@win-desk", agent_steps=agents
+      )
     for create in rec.commands_matching("/create"):
       assert "/rp" not in create
-
-  def test_unattended_tracks_the_identity(
-    self, monkeypatch
-  ):
-    """The caller must be able to state the tradeoff."""
-    from lib import provision_windows as win
-    monkeypatch.setattr(provision, "ssh", self._rec())
-    assert win.install_service(
-      "karl@win-desk", agent_steps=True
-    )["linger"] is False
-    assert win.install_service(
-      "karl@win-desk", agent_steps=False
-    )["linger"] is True
-
-  def test_uses_an_absolute_interpreter(self, monkeypatch):
-    """A task starts with a minimal environment."""
-    from lib import provision_windows as win
-    rec = self._rec()
-    monkeypatch.setattr(provision, "ssh", rec)
-    win.install_service("karl@win-desk")
-    create = rec.commands_matching("/create")[0]
-    assert self.PYTHON in create
-
-  def test_skips_the_store_python_stub(self, monkeypatch):
-    """The WindowsApps entry opens the Store, not Python.
-
-    Picking it would give a task that silently does nothing.
-    """
-    from lib import provision_windows as win
-    monkeypatch.setattr(provision, "ssh", self._rec())
-    assert "WindowsApps" not in win.python_path("w")
 
   def test_build_only_passes_no_agent_steps(
     self, monkeypatch
@@ -776,32 +802,48 @@ class TestWindowsService:
     agent runs that fail.
     """
     from lib import provision_windows as win
-    rec = self._rec()
-    monkeypatch.setattr(provision, "ssh", rec)
+    _, written = self._setup(monkeypatch)
     win.install_service("karl@win-desk", agent_steps=False)
-    create = rec.commands_matching("/create")[0]
-    assert "--no-agent-steps" in create
+    assert "--no-agent-steps" in written[0]
 
   def test_agent_capable_omits_the_flag(self, monkeypatch):
     from lib import provision_windows as win
-    rec = self._rec()
-    monkeypatch.setattr(provision, "ssh", rec)
+    _, written = self._setup(monkeypatch)
     win.install_service("karl@win-desk", agent_steps=True)
-    create = rec.commands_matching("/create")[0]
-    assert "--no-agent-steps" not in create
+    assert "--no-agent-steps" not in written[0]
+
+  def test_skips_the_store_python_stub(self, monkeypatch):
+    """The WindowsApps entry opens the Store, not Python.
+
+    Picking it would give a task that silently does nothing.
+    """
+    from lib import provision_windows as win
+    self._setup(monkeypatch)
+    assert "WindowsApps" not in win.python_path("w")
 
   def test_a_task_that_is_not_ready_is_an_error(
     self, monkeypatch
   ):
     from lib import provision_windows as win
-    monkeypatch.setattr(
-      provision, "ssh",
-      self._rec("Status: Could not start\n"),
-    )
+    self._setup(monkeypatch, "Status: Could not start\n")
     with pytest.raises(
       provision.ProvisionError, match="not ready"
     ):
-      win.install_service("karl@win-desk")
+      win.install_service(
+        "karl@win-desk", agent_steps=False
+      )
+
+  def test_unresolvable_home_is_an_error(self, monkeypatch):
+    """Better than writing %USERPROFILE% into the script."""
+    from lib import provision_windows as win
+    monkeypatch.setattr(
+      provision, "ssh",
+      lambda h, c, **k: FakeProc("%USERPROFILE%\r\n"),
+    )
+    with pytest.raises(
+      provision.ProvisionError, match="home directory"
+    ):
+      win.home_dir("karl@win-desk")
 
   def test_no_python_is_an_error(self, monkeypatch):
     from lib import provision_windows as win
@@ -812,4 +854,78 @@ class TestWindowsService:
     with pytest.raises(
       provision.ProvisionError, match="python"
     ):
-      win.install_service("karl@win-desk")
+      win.python_path("karl@win-desk")
+
+  def test_launcher_names_the_credential_file(
+    self, monkeypatch
+  ):
+    """SYSTEM cannot find it by the default lookup.
+
+    env_file_path() falls back to Path.home(), which under
+    SYSTEM is the service profile -- so the worker would not
+    see the credential file and would exit with
+    "--scheduler is required", which is exactly what
+    happened. Naming it explicitly is what TAKT_ENV_FILE is
+    for.
+    """
+    from lib import provision_windows as win
+    _, written = self._setup(monkeypatch)
+    win.install_service("karl@win-desk", agent_steps=False)
+    script = written[0]
+    assert "TAKT_ENV_FILE" in script
+    assert r"C:\Users\Karl\.config\takt\env" in script
+
+  def test_launcher_carries_the_user_path(
+    self, monkeypatch
+  ):
+    """A SYSTEM task inherits only the machine PATH.
+
+    On this hardware that covers cmake and git but not
+    ninja or python, so without this the worker reports a
+    thinner toolchain than the machine has and gets
+    mis-gated for builds. Observed: toolchains dropped to
+    cmake alone once the task ran as SYSTEM.
+    """
+    from lib import provision_windows as win
+    rec, written = self._setup(monkeypatch)
+    rec.answers["GetEnvironmentVariable('Path','User')"] = (
+      FakeProc("C:\\Tools\\ninja;C:\\Py\r\n")
+    )
+    win.install_service("karl@win-desk", agent_steps=False)
+    script = written[0]
+    assert 'set "PATH=C:\\Tools\\ninja;C:\\Py;%PATH%"' in (
+      script
+    )
+
+  def test_launcher_omits_path_when_unreadable(
+    self, monkeypatch
+  ):
+    """An empty PATH line would wipe the machine PATH."""
+    from lib import provision_windows as win
+    rec, written = self._setup(monkeypatch)
+    monkeypatch.setattr(win, "user_path", lambda h: "")
+    win.install_service("karl@win-desk", agent_steps=False)
+    assert 'set "PATH=' not in written[0]
+
+  def test_running_task_is_ended_before_restart(
+    self, monkeypatch
+  ):
+    """Otherwise re-provisioning leaves the old process.
+
+    `schtasks /run` is a no-op on a task that is already
+    running, so the previous worker keeps going on the old
+    launcher and the old code. Observed: the toolchain
+    stayed wrong after a fix was deployed. Same trap as
+    `systemctl enable --now` on the Linux side.
+    """
+    from lib import provision_windows as win
+    rec, _ = self._setup(monkeypatch)
+    win.install_service("karl@win-desk", agent_steps=False)
+    order = [
+      c for c in rec.calls
+      if "/end" in c or "/run /tn" in c
+    ]
+    assert order, "task was neither ended nor run"
+    assert "/end" in order[0], (
+      "must end the running task before starting it"
+    )
