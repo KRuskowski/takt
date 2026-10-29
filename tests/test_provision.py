@@ -659,42 +659,157 @@ class TestWindowsCredentials:
 class TestWindowsService:
   """The scheduled task that replaces systemd."""
 
-  def test_runs_at_startup_without_a_login(
+  PYTHON = r"C:\Users\Karl\AppData\Local\Programs"
+  PYTHON += r"\Python\Python312\python.exe"
+
+  def _rec(self, status="Status: Ready\n"):
+    return Recorder({
+      "where python": FakeProc(
+        self.PYTHON + "\r\n"
+        r"C:\Users\Karl\AppData\Local\Microsoft"
+        "\\WindowsApps\\python.exe\r\n"
+      ),
+      "query": FakeProc(status),
+    })
+
+  def test_agent_capable_runs_as_the_user_at_logon(
     self, monkeypatch
   ):
+    """Agent steps need the user's Claude credentials.
+
+    They live in the user profile, and the CLI is on the
+    user PATH, so SYSTEM has no account to run as.
+    """
     from lib import provision_windows as win
-    rec = Recorder({"query": FakeProc("Status: Ready\n")})
+    rec = self._rec()
     monkeypatch.setattr(provision, "ssh", rec)
-    win.install_service("win-desk")
+    result = win.install_service(
+      "karl@win-desk", agent_steps=True
+    )
+    create = rec.commands_matching("/create")[0]
+    assert "/sc onlogon" in create
+    assert "/ru karl" in create
+    assert result["runs_as"] == "karl"
+    # And the honest cost: it will not run at the login
+    # screen, because schtasks makes a passwordless
+    # named-user task "Interactive only".
+    assert result["unattended"] is False
+
+  def test_build_only_runs_as_system_at_startup(
+    self, monkeypatch
+  ):
+    """This is the mode that works on an idle machine.
+
+    A bench workstation sits at the login screen, where an
+    Interactive-only task never fires -- observed as
+    Last Result 267011, SCHED_S_TASK_HAS_NOT_RUN. SYSTEM at
+    startup runs regardless, and build work needs no user
+    profile: the interpreter is absolute and git is on the
+    machine PATH.
+    """
+    from lib import provision_windows as win
+    rec = self._rec()
+    monkeypatch.setattr(provision, "ssh", rec)
+    result = win.install_service(
+      "karl@win-desk", agent_steps=False
+    )
     create = rec.commands_matching("/create")[0]
     assert "/sc onstart" in create
+    assert "/ru SYSTEM" in create
+    assert result["runs_as"] == "SYSTEM"
+    assert result["unattended"] is True
 
   def test_no_password_on_the_command_line(
     self, monkeypatch
   ):
-    """Hence SYSTEM rather than a named user.
+    """ONLOGON as a named user needs no /rp.
 
-    schtasks needs /rp <password> to run as a named user on
-    a non-interactive trigger, and a password must never
-    appear in a command line.
+    That combination is the only one schtasks will create
+    without a password, and a password must never appear in
+    a command line.
     """
     from lib import provision_windows as win
-    rec = Recorder({"query": FakeProc("Status: Ready\n")})
+    rec = self._rec()
     monkeypatch.setattr(provision, "ssh", rec)
-    win.install_service("win-desk")
+    for agents in (True, False):
+      win.install_service("karl@win-desk", agent_steps=agents)
+    for create in rec.commands_matching("/create"):
+      assert "/rp" not in create
+
+  def test_unattended_tracks_the_identity(
+    self, monkeypatch
+  ):
+    """The caller must be able to state the tradeoff."""
+    from lib import provision_windows as win
+    monkeypatch.setattr(provision, "ssh", self._rec())
+    assert win.install_service(
+      "karl@win-desk", agent_steps=True
+    )["linger"] is False
+    assert win.install_service(
+      "karl@win-desk", agent_steps=False
+    )["linger"] is True
+
+  def test_uses_an_absolute_interpreter(self, monkeypatch):
+    """A task starts with a minimal environment."""
+    from lib import provision_windows as win
+    rec = self._rec()
+    monkeypatch.setattr(provision, "ssh", rec)
+    win.install_service("karl@win-desk")
     create = rec.commands_matching("/create")[0]
-    assert "/ru SYSTEM" in create
-    assert "/rp" not in create
+    assert self.PYTHON in create
+
+  def test_skips_the_store_python_stub(self, monkeypatch):
+    """The WindowsApps entry opens the Store, not Python.
+
+    Picking it would give a task that silently does nothing.
+    """
+    from lib import provision_windows as win
+    monkeypatch.setattr(provision, "ssh", self._rec())
+    assert "WindowsApps" not in win.python_path("w")
+
+  def test_build_only_passes_no_agent_steps(
+    self, monkeypatch
+  ):
+    """Right while the CLI is installed but not signed in.
+
+    Declaring agent_steps would have the scheduler hand it
+    agent runs that fail.
+    """
+    from lib import provision_windows as win
+    rec = self._rec()
+    monkeypatch.setattr(provision, "ssh", rec)
+    win.install_service("karl@win-desk", agent_steps=False)
+    create = rec.commands_matching("/create")[0]
+    assert "--no-agent-steps" in create
+
+  def test_agent_capable_omits_the_flag(self, monkeypatch):
+    from lib import provision_windows as win
+    rec = self._rec()
+    monkeypatch.setattr(provision, "ssh", rec)
+    win.install_service("karl@win-desk", agent_steps=True)
+    create = rec.commands_matching("/create")[0]
+    assert "--no-agent-steps" not in create
 
   def test_a_task_that_is_not_ready_is_an_error(
     self, monkeypatch
   ):
     from lib import provision_windows as win
-    rec = Recorder({
-      "query": FakeProc("Status: Could not start\n"),
-    })
-    monkeypatch.setattr(provision, "ssh", rec)
+    monkeypatch.setattr(
+      provision, "ssh",
+      self._rec("Status: Could not start\n"),
+    )
     with pytest.raises(
       provision.ProvisionError, match="not ready"
     ):
-      win.install_service("win-desk")
+      win.install_service("karl@win-desk")
+
+  def test_no_python_is_an_error(self, monkeypatch):
+    from lib import provision_windows as win
+    monkeypatch.setattr(
+      provision, "ssh",
+      lambda h, c, **k: FakeProc("", "", 1),
+    )
+    with pytest.raises(
+      provision.ProvisionError, match="python"
+    ):
+      win.install_service("karl@win-desk")

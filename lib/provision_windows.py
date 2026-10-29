@@ -403,53 +403,124 @@ def remote_capabilities(host):
     ) from e
 
 
-def install_service(host, scheduler_host=None,
-                    upstream="scheduler"):
-  """Run the worker as a scheduled task.
+def python_path(host):
+  """Absolute path to the Python the worker should run.
 
-  Windows has no systemd. A scheduled task with an ONSTART
-  trigger is the equivalent, and it runs without anyone
-  logged in -- the Windows counterpart of enabling
-  lingering.
-
-  Deliberately NOT run as a named user: /ru <user> with a
-  non-interactive trigger requires that user's password on
-  the command line, and a password must never be put there.
-  SYSTEM needs none.
+  A scheduled task starts with a minimal environment, so the
+  interpreter is named absolutely rather than relying on
+  PATH resolution at trigger time.
 
   Args:
     host: user@host.
-    scheduler_host: Unused on Windows; the worker cannot
-      fetch over SSH from here, so mirrors are pushed.
+
+  Returns:
+    Absolute path to python.exe.
+
+  Raises:
+    ProvisionError: If no Python could be located.
+  """
+  out = provision.ssh(host, "where python", check=False).stdout
+  for line in out.splitlines():
+    candidate = line.strip()
+    # The WindowsApps entry is the Store stub that opens the
+    # Microsoft Store instead of running Python.
+    if candidate.endswith("python.exe") and (
+      "WindowsApps" not in candidate
+    ):
+      return candidate
+  raise ProvisionError(
+    f"no usable python.exe found on {host}: {out[:200]!r}"
+  )
+
+
+def install_service(host, scheduler_host=None,
+                    upstream="scheduler", user=None,
+                    agent_steps=True):
+  """Run the worker as a scheduled task.
+
+  Windows has no systemd, and a scheduled task is the
+  equivalent. Which identity it runs as is not a free
+  choice -- it follows from whether the worker does agent
+  steps, and the two options exclude each other:
+
+  **Build-only -> SYSTEM, at startup.** Runs unattended
+  with nobody logged in, which is the whole point of using
+  a machine that is "just on". Verified on this hardware:
+  with no user logged on, a SYSTEM/ONSTART task reports
+  `Logon Mode: Interactive/Background` and ran to
+  completion. It works because the interpreter is named
+  absolutely and git is on the *machine* PATH.
+
+  **Agent steps -> the user, at logon.** The Claude CLI
+  keeps its credentials in the user profile and lives on the
+  user's PATH, so SYSTEM has no account to run as. The cost
+  is real: schtasks will only create a named-user task
+  without a stored password as "Interactive only", so it
+  does **not** run while the machine sits at the login
+  screen. Observed here: `Last Result: 267011`
+  (SCHED_S_TASK_HAS_NOT_RUN) with no user logged on.
+
+  A password would avoid that and is not an option: it
+  would have to go on the command line.
+
+  Args:
+    host: user@host.
+    scheduler_host: Passed to the worker for --upstream
+      scheduler.
     upstream: Where mirrors refresh from.
+    user: Account to run as for the agent-capable mode.
+      Defaults to the SSH user.
+    agent_steps: False to declare the worker build-only,
+      which is also what makes unattended operation
+      possible. Right while the Claude CLI is installed but
+      not yet signed in -- otherwise the scheduler hands it
+      agent runs that fail.
 
   Returns:
     Dict with the task's state.
 
   Raises:
-    ProvisionError: If the task could not be created or did
-      not start.
+    ProvisionError: If the task could not be created or is
+      not ready.
   """
+  if user is None:
+    user = host.split("@")[0] if "@" in host else "%USERNAME%"
+  python = python_path(host)
+  # %USERPROFILE% in the paths below is expanded by cmd.exe
+  # when schtasks is invoked, so what gets stored is already
+  # absolute -- which is what makes the SYSTEM variant find
+  # the right mirrors rather than the service profile's.
+  # Do not "fix" these into literal strings.
   # Mirrors arrive by bundle, so the worker has no upstream
   # it can reach. ensure_mirror() treats a failed refresh of
   # an existing mirror as a warning, which is what makes
   # this work; materialise() still fails precisely if a
   # required commit is genuinely absent.
   command = (
-    f'python "{WIN_TAKT}\\bin\\takt.py" worker '
-    f'--work-dir "{WIN_WORK}" '
-    f'--mirror-dir "{WIN_MIRRORS}" '
+    f'\\"{python}\\" \\"{WIN_TAKT}\\bin\\takt.py\\" worker '
+    f'--work-dir \\"{WIN_WORK}\\" '
+    f'--mirror-dir \\"{WIN_MIRRORS}\\" '
     f'--upstream {upstream}'
   )
   if upstream == "scheduler" and scheduler_host:
     command += f" --scheduler-host {scheduler_host}"
+  if not agent_steps:
+    command += " --no-agent-steps"
+  if agent_steps:
+    identity = f"/sc onlogon /ru {user}"
+    runs_as, unattended = user, False
+  else:
+    identity = "/sc onstart /ru SYSTEM"
+    runs_as, unattended = "SYSTEM", True
   provision.ssh(
     host,
-    f'schtasks /create /tn {TASK_NAME} /sc onstart '
-    f'/ru SYSTEM /rl HIGHEST /f /tr "{command}"',
+    f'schtasks /create /tn {TASK_NAME} {identity} '
+    f'/f /tr "{command}"',
     timeout=180,
   )
-  provision.ssh(host, f"schtasks /run /tn {TASK_NAME}", check=False)
+  provision.ssh(
+    host, f"schtasks /run /tn {TASK_NAME}", check=False
+  )
   query = provision.ssh(
     host, f"schtasks /query /tn {TASK_NAME} /fo list",
     check=False,
@@ -460,4 +531,14 @@ def install_service(host, scheduler_host=None,
       f"\n{query[:600]}"
     )
   state = "running" if "Running" in query else "ready"
-  return {"state": state, "linger": True, "task": TASK_NAME}
+  return {
+    "state": state,
+    # "linger" is the POSIX name for the same property the
+    # caller cares about: does this keep working with nobody
+    # logged in.
+    "linger": unattended,
+    "task": TASK_NAME,
+    "runs_as": runs_as,
+    "unattended": unattended,
+    "agent_steps": agent_steps,
+  }

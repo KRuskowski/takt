@@ -350,7 +350,8 @@ def _push_env():
   return env
 
 
-def worker_unit(scheduler_host=None, upstream="scheduler"):
+def worker_unit(scheduler_host=None, upstream="scheduler",
+                agent_steps=True):
   """Render the systemd user unit for a worker.
 
   Generated rather than shipped as a file because the unit
@@ -367,6 +368,7 @@ def worker_unit(scheduler_host=None, upstream="scheduler"):
     scheduler_host: user@host holding the root repos, for
       --upstream scheduler.
     upstream: Where mirrors fetch from.
+    agent_steps: False to declare the worker build-only.
 
   Returns:
     Unit file text.
@@ -378,6 +380,8 @@ def worker_unit(scheduler_host=None, upstream="scheduler"):
   ]
   if upstream == "scheduler" and scheduler_host:
     args.append(f"--scheduler-host {scheduler_host}")
+  if not agent_steps:
+    args.append("--no-agent-steps")
   exec_args = " ".join(args)
   return f"""\
 [Unit]
@@ -406,7 +410,7 @@ WantedBy=default.target
 
 
 def install_service(host, scheduler_host=None,
-                    upstream="scheduler"):
+                    upstream="scheduler", agent_steps=True):
   """Install, enable and start the worker as a service.
 
   Also enables lingering, without which a systemd *user*
@@ -426,7 +430,7 @@ def install_service(host, scheduler_host=None,
   Raises:
     ProvisionError: If the unit did not come up.
   """
-  unit = worker_unit(scheduler_host, upstream)
+  unit = worker_unit(scheduler_host, upstream, agent_steps)
   # `enable --now` does nothing to an already-running unit,
   # so re-provisioning would update the checkout and leave
   # the worker executing the old code -- and a rewritten
@@ -536,7 +540,8 @@ def provision(host, worker_id=None, repos=None,
               scheduler_url=None, token=None, ref="master",
               takt_repo=TAKT_REPO, skip_repos=False,
               service=False, scheduler_host=None,
-              upstream="scheduler", on_progress=None):
+              upstream="scheduler", agent_steps=True,
+              on_progress=None):
   """Set a machine up as a takt worker.
 
   Ordered so the cheap checks fail first: a machine missing
@@ -559,6 +564,10 @@ def provision(host, worker_id=None, repos=None,
     scheduler_host: user@host for the worker's --upstream
       scheduler, used in the unit.
     upstream: Where the worker's mirrors fetch from.
+    agent_steps: False to declare the worker build-only.
+      Right when the Claude CLI is present but not signed
+      in: the scheduler would otherwise hand it agent runs
+      that fail.
     on_progress: Optional callback(stage, detail) so a CLI
       can report during a push that takes minutes.
 
@@ -626,9 +635,16 @@ def provision(host, worker_id=None, repos=None,
   svc = None
   if service:
     progress("service", "worker")
-    svc = ops.install_service(
-      host, scheduler_host=scheduler_host, upstream=upstream,
-    )
+    kwargs = {
+      "scheduler_host": scheduler_host,
+      "upstream": upstream,
+    }
+    # Only the Windows task takes this today; the systemd
+    # unit is added to in a follow-up rather than silently
+    # ignoring the flag.
+    if not agent_steps:
+      kwargs["agent_steps"] = False
+    svc = ops.install_service(host, **kwargs)
 
   return {
     "host": host,

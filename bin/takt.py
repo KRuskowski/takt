@@ -276,6 +276,14 @@ def build_parser():
       "'scheduler' or 'github'."
     ),
   )
+  prov.add_argument(
+    "--no-agent-steps", action="store_true",
+    help=(
+      "Declare the worker build-only. Use when the Claude "
+      "CLI is installed but not signed in yet, so the "
+      "scheduler does not hand it agent runs that fail."
+    ),
+  )
 
   # -- reclaim --
   rec = sub.add_parser(
@@ -328,9 +336,7 @@ def _run_provision(args):
   Returns:
     Process exit code.
   """
-  from lib.provision import (
-    ProvisionError, check_channel, check_prereqs, provision,
-  )
+  from lib.provision import ProvisionError, provision
 
   def progress(stage, detail):
     label = {
@@ -345,9 +351,18 @@ def _run_provision(args):
 
   try:
     if args.check:
-      hostname = check_channel(args.host)
-      print(f"  ssh channel to {hostname}: clean")
-      tools = check_prereqs(args.host)
+      # Dispatch on the remote platform here too. Running
+      # the POSIX probes against cmd.exe fails on `printf`
+      # and says nothing useful about the machine.
+      from lib import provision as _prov
+      from lib import provision_windows as _win
+      ops = _win if _win.is_windows(args.host) else _prov
+      flavour = "windows" if ops is _win else "posix"
+      hostname = ops.check_channel(args.host)
+      print(
+        f"  ssh channel to {hostname} ({flavour}): clean"
+      )
+      tools = ops.check_prereqs(args.host)
       for name, present in sorted(tools.items()):
         print(f"    {name:<14} {'yes' if present else 'no'}")
       if not tools.get("claude"):
@@ -367,6 +382,7 @@ def _run_provision(args):
       service=args.service,
       scheduler_host=args.scheduler_host,
       upstream=args.upstream,
+      agent_steps=not args.no_agent_steps,
       on_progress=progress,
     )
   except ProvisionError as e:
@@ -388,23 +404,43 @@ def _run_provision(args):
              if r["updated"]]
   print(f"    repos       {len(result['repos'])} seeded"
         + (f", {len(updated)} updated" if updated else ""))
+  windows = result.get("platform") == "windows"
   svc = result.get("service")
   if svc:
-    print(f"    service     {svc['state']}"
-          f", lingering={'yes' if svc['linger'] else 'NO'}")
-    if not svc["linger"]:
+    print(f"    service     {svc['state']}")
+    if windows:
+      print(f"    task        {svc['task']} "
+            f"(runs as {svc.get('runs_as')})")
+      if svc.get("unattended"):
+        print("    starts      at boot; runs with nobody "
+              "logged in")
+      else:
+        print("    starts      at logon only -- a machine "
+              "sitting at the login screen takes no work, "
+              "because schtasks makes a passwordless "
+              "named-user task 'Interactive only'")
+    elif svc.get("linger"):
+      print("    starts      at boot; runs with nobody "
+            "logged in")
+    else:
       print("    note: lingering is off, so the worker "
             "stops when the user logs out")
     print()
-    print("  running as a service. Inspect with:")
-    print(f"    ssh {args.host} "
-          "'journalctl --user -u takt-worker -f'")
+    print("  inspect it with:")
+    if windows:
+      print(f"    ssh {args.host} "
+            f"'schtasks /query /tn {svc['task']} /fo list'")
+    else:
+      print(f"    ssh {args.host} "
+            "'journalctl --user -u takt-worker -f'")
   else:
     print()
     print("  start it with:")
     print(f"    ssh {args.host} '{result['start_command']}'")
-    print("  or re-run with --service to install it as a "
-          "systemd user service.")
+    kind = ("a scheduled task" if windows
+            else "a systemd user service")
+    print(f"  or re-run with --service to install it as "
+          f"{kind}.")
   return 0
 
 
