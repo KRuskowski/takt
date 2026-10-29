@@ -507,6 +507,31 @@ def remote_capabilities(host):
     ) from e
 
 
+def _posix_ops():
+  """The POSIX implementations, as a namespace.
+
+  Lets provision() call ops.<step>(...) without caring which
+  platform it got, so the ordering and the guards live in one
+  place instead of being duplicated per OS.
+
+  Returns:
+    An object exposing the same step names as
+    lib/provision_windows.py.
+  """
+  import types
+  return types.SimpleNamespace(
+    check_channel=check_channel,
+    check_prereqs=check_prereqs,
+    install_takt=lambda host, repo, ref="master": (
+      install_takt(host, repo=repo, ref=ref)
+    ),
+    write_env=write_env,
+    seed_mirror=seed_mirror,
+    remote_capabilities=remote_capabilities,
+    install_service=install_service,
+  )
+
+
 def provision(host, worker_id=None, repos=None,
               scheduler_url=None, token=None, ref="master",
               takt_repo=TAKT_REPO, skip_repos=False,
@@ -547,11 +572,20 @@ def provision(host, worker_id=None, repos=None,
     if on_progress:
       on_progress(stage, detail)
 
-  progress("channel", host)
-  hostname = check_channel(host)
+  # Detect before changing anything: the Windows steps are a
+  # different dialect entirely (no POSIX shell, no systemd,
+  # and git cannot be pushed to through cmd.exe), so the
+  # wrong one half-applied would be worse than neither.
+  from lib import provision_windows as win
+  windows = win.is_windows(host)
+  ops = win if windows else _posix_ops()
 
-  progress("prereqs", hostname)
-  tools = check_prereqs(host)
+  progress("channel", host)
+  hostname = ops.check_channel(host)
+
+  flavour = "windows" if windows else "posix"
+  progress("prereqs", f"{hostname} ({flavour})")
+  tools = ops.check_prereqs(host)
 
   url = scheduler_url or api_base_url()
   if "127.0.0.1" in url or "localhost" in url:
@@ -564,16 +598,17 @@ def provision(host, worker_id=None, repos=None,
   name = worker_id or hostname
 
   progress("takt", f"{ref} on {hostname}")
-  commit = install_takt(host, repo=takt_repo, ref=ref)
+  commit = ops.install_takt(host, takt_repo, ref=ref)
 
   progress("credentials", "~/.config/takt/env")
-  write_env(host, url, resolved_token, name)
+  ops.write_env(host, url, resolved_token, name)
 
-  ssh(
-    host,
-    f"mkdir -p ~/{shlex.quote(REMOTE_WORK)} "
-    f"~/{shlex.quote(REMOTE_MIRRORS)}",
-  )
+  if not windows:
+    ssh(
+      host,
+      f"mkdir -p ~/{shlex.quote(REMOTE_WORK)} "
+      f"~/{shlex.quote(REMOTE_MIRRORS)}",
+    )
 
   seeded = []
   if not skip_repos:
@@ -582,22 +617,23 @@ def provision(host, worker_id=None, repos=None,
       progress(
         "repo", f"{repo} ({index}/{len(pairs)})"
       )
-      changed = seed_mirror(host, repo, path)
+      changed = ops.seed_mirror(host, repo, path)
       seeded.append({"repo": repo, "updated": changed})
 
   progress("verify", hostname)
-  caps = remote_capabilities(host)
+  caps = ops.remote_capabilities(host)
 
   svc = None
   if service:
-    progress("service", "takt-worker.service")
-    svc = install_service(
+    progress("service", "worker")
+    svc = ops.install_service(
       host, scheduler_host=scheduler_host, upstream=upstream,
     )
 
   return {
     "host": host,
     "hostname": hostname,
+    "platform": "windows" if windows else "posix",
     "worker_id": name,
     "scheduler_url": url,
     "authenticated": bool(resolved_token),
@@ -607,6 +643,10 @@ def provision(host, worker_id=None, repos=None,
     "capabilities": caps,
     "service": svc,
     "start_command": (
+      f'cd /d "{win.WIN_TAKT}" && python bin\\takt.py '
+      f'worker --work-dir "{win.WIN_WORK}" '
+      f'--mirror-dir "{win.WIN_MIRRORS}"'
+      if windows else
       f"cd ~/{REMOTE_TAKT} && python3 bin/takt.py worker "
       f"--work-dir ~/{REMOTE_WORK} "
       f"--mirror-dir ~/{REMOTE_MIRRORS}"

@@ -15,6 +15,11 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 from lib import provision
+# Captured before the autouse fixture stubs it, so the
+# detection tests can exercise the real implementation.
+from lib.provision_windows import (
+  is_windows as REAL_IS_WINDOWS,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +47,22 @@ def no_real_ssh(monkeypatch):
   monkeypatch.setattr(provision, "ssh", forbidden)
   monkeypatch.setattr(
     provision.subprocess, "run", forbidden
+  )
+  yield
+
+
+@pytest.fixture(autouse=True)
+def posix_remote(monkeypatch):
+  """Default the remote platform to POSIX.
+
+  provision() probes the far side before doing anything, and
+  that probe is an ssh call. Tests must decide the platform
+  rather than reach the network for it; the Windows tests
+  override this.
+  """
+  from lib import provision_windows
+  monkeypatch.setattr(
+    provision_windows, "is_windows", lambda host: False
   )
   yield
 
@@ -456,3 +477,224 @@ class TestInstallService:
     assert rec.commands_matching(
       "systemctl --user enable takt-worker"
     )
+
+
+class TestWindowsDetection:
+  """Choosing the dialect before changing anything."""
+
+  def test_ver_identifies_windows(self, monkeypatch):
+    monkeypatch.setattr(
+      provision, "ssh",
+      lambda h, c, **k: FakeProc(
+        "Microsoft Windows [Version 10.0.26200.9711]\r\n"
+      ),
+    )
+    assert REAL_IS_WINDOWS("win-desk") is True
+
+  def test_posix_host_is_not_windows(self, monkeypatch):
+    """`ver` is a cmd builtin no POSIX shell has."""
+    monkeypatch.setattr(
+      provision, "ssh",
+      lambda h, c, **k: FakeProc(
+        "", "bash: ver: command not found", 127
+      ),
+    )
+    assert REAL_IS_WINDOWS("laptop") is False
+
+  def test_provision_dispatches_to_windows(
+    self, monkeypatch
+  ):
+    """A Windows host must not get the POSIX steps.
+
+    Half-applying the POSIX dialect would be worse than
+    doing nothing: `umask`, heredocs and systemd all fail in
+    different ways partway through.
+    """
+    from lib import provision_windows as win
+    monkeypatch.setattr(
+      win, "is_windows", lambda host: True
+    )
+    used = []
+    for name, value in (
+      ("check_channel", lambda h: "DESKTOP-X"),
+      ("check_prereqs", lambda h: {"claude": False}),
+      ("install_takt",
+       lambda h, r, ref="master": "abc123"),
+      ("write_env", lambda *a, **k: "ok"),
+      ("remote_capabilities", lambda h: {"os": "windows"}),
+    ):
+      monkeypatch.setattr(
+        win, name,
+        lambda *a, _n=name, _v=value, **k: (
+          used.append(_n) or _v(*a, **k)
+        ),
+      )
+    # The POSIX versions must not be touched at all.
+    def posix_forbidden(*a, **k):
+      raise AssertionError("POSIX step used on Windows")
+    for name in ("check_channel", "check_prereqs",
+                 "install_takt", "write_env",
+                 "remote_capabilities", "seed_mirror"):
+      monkeypatch.setattr(provision, name, posix_forbidden)
+
+    result = provision.provision(
+      "win-desk", scheduler_url="http://sched:7433",
+      skip_repos=True,
+    )
+    assert result["platform"] == "windows"
+    assert "check_channel" in used
+    assert "write_env" in used
+
+
+class TestWindowsChannel:
+  """The channel check, in a cmd.exe dialect."""
+
+  def test_crlf_is_not_treated_as_dirt(self, monkeypatch):
+    """cmd.exe ends lines with CRLF; that is normal.
+
+    Counting it as stray output would make every Windows
+    host look permanently broken.
+    """
+    from lib import provision_windows as win
+    calls = []
+
+    def fake(h, c, **k):
+      calls.append(c)
+      if "hostname" in c:
+        return FakeProc("DESKTOP-X\r\n")
+      return FakeProc(f"{win.SENTINEL}\r\n")
+    monkeypatch.setattr(provision, "ssh", fake)
+    assert win.check_channel("win-desk") == "DESKTOP-X"
+
+  def test_banner_is_still_caught(self, monkeypatch):
+    from lib import provision_windows as win
+
+    def fake(h, c, **k):
+      return FakeProc(f"WELCOME\r\n{win.SENTINEL}\r\n")
+    monkeypatch.setattr(provision, "ssh", fake)
+    with pytest.raises(
+      provision.ProvisionError, match="not clean"
+    ):
+      win.check_channel("win-desk")
+
+  def test_the_message_names_windows_places(
+    self, monkeypatch
+  ):
+    """POSIX advice would send the reader nowhere useful."""
+    from lib import provision_windows as win
+    monkeypatch.setattr(
+      provision, "ssh",
+      lambda h, c, **k: FakeProc(f"hi\r\n{win.SENTINEL}\r\n"),
+    )
+    with pytest.raises(provision.ProvisionError) as e:
+      win.check_channel("win-desk")
+    message = str(e.value)
+    assert "sshd_config" in message
+    assert "Command Processor" in message
+
+
+class TestWindowsCredentials:
+  """Locking down the token file without chmod."""
+
+  def test_acl_is_reset_then_granted_to_owner(
+    self, monkeypatch
+  ):
+    """Inherited ACEs must be dropped, not added to.
+
+    Without /inheritance:r the file keeps whatever the
+    profile directory grants, so the token could stay
+    readable by a group.
+    """
+    from lib import provision_windows as win
+    rec = Recorder({
+      "icacls": FakeProc("env NT-AUTH\\Karl:(F)\n"),
+    })
+    monkeypatch.setattr(provision, "ssh", rec)
+    monkeypatch.setattr(win, "_scp", lambda *a, **k: None)
+    win.write_env(
+      "win-desk", "http://s:7433", "tok", "win-01"
+    )
+    acl = rec.commands_matching("icacls")
+    assert any("/inheritance:r" in c for c in acl)
+    assert any("/grant:r" in c for c in acl)
+
+  def test_world_readable_result_is_refused(
+    self, monkeypatch
+  ):
+    """The verification must actually reject a bad ACL."""
+    from lib import provision_windows as win
+    rec = Recorder({
+      "icacls": FakeProc("env Everyone:(F)\n"),
+    })
+    monkeypatch.setattr(provision, "ssh", rec)
+    monkeypatch.setattr(win, "_scp", lambda *a, **k: None)
+    with pytest.raises(
+      provision.ProvisionError, match="Everyone"
+    ):
+      win.write_env(
+        "win-desk", "http://s:7433", "tok", "win-01"
+      )
+
+  def test_token_never_crosses_the_command_line(
+    self, monkeypatch
+  ):
+    """The token goes over SFTP, not as an argument.
+
+    A command line is visible to anything that can list
+    processes on the far side.
+    """
+    from lib import provision_windows as win
+    rec = Recorder({
+      "icacls": FakeProc("env Karl:(F)\n"),
+    })
+    monkeypatch.setattr(provision, "ssh", rec)
+    monkeypatch.setattr(win, "_scp", lambda *a, **k: None)
+    win.write_env(
+      "win-desk", "http://s:7433", "sup3rsecret", "win-01"
+    )
+    for command in rec.calls:
+      assert "sup3rsecret" not in command
+
+
+class TestWindowsService:
+  """The scheduled task that replaces systemd."""
+
+  def test_runs_at_startup_without_a_login(
+    self, monkeypatch
+  ):
+    from lib import provision_windows as win
+    rec = Recorder({"query": FakeProc("Status: Ready\n")})
+    monkeypatch.setattr(provision, "ssh", rec)
+    win.install_service("win-desk")
+    create = rec.commands_matching("/create")[0]
+    assert "/sc onstart" in create
+
+  def test_no_password_on_the_command_line(
+    self, monkeypatch
+  ):
+    """Hence SYSTEM rather than a named user.
+
+    schtasks needs /rp <password> to run as a named user on
+    a non-interactive trigger, and a password must never
+    appear in a command line.
+    """
+    from lib import provision_windows as win
+    rec = Recorder({"query": FakeProc("Status: Ready\n")})
+    monkeypatch.setattr(provision, "ssh", rec)
+    win.install_service("win-desk")
+    create = rec.commands_matching("/create")[0]
+    assert "/ru SYSTEM" in create
+    assert "/rp" not in create
+
+  def test_a_task_that_is_not_ready_is_an_error(
+    self, monkeypatch
+  ):
+    from lib import provision_windows as win
+    rec = Recorder({
+      "query": FakeProc("Status: Could not start\n"),
+    })
+    monkeypatch.setattr(provision, "ssh", rec)
+    with pytest.raises(
+      provision.ProvisionError, match="not ready"
+    ):
+      win.install_service("win-desk")
