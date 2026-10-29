@@ -156,6 +156,14 @@ bin/push_to_github.py feature-auth --dry-run
 bin/push_to_github.py feature-auth --repos Combatant Conveyor
 ```
 
+## Running the bin/ scripts
+
+Every `bin/*.py` calls `lib.bootstrap.ensure_venv()` before importing any of takt's modules, and re-executes itself under `.venv/bin/python3` when one exists and the process is not already in it. So `bin/workspace.py list`, `./bin/takt.py ws list` and `python3 bin/takt.py ...` all work, and a worker with no venv (only PyYAML) is unaffected.
+
+Do **not** pin a shebang to an absolute venv path. It fixes one machine and breaks every other: `bin/takt.py` carried `#!/home/karl/dev/takt/.venv/bin/python3`, which is why the laptop needed `python3 bin/takt.py`. A test fails on any absolute venv shebang under `bin/`.
+
+The re-exec decision compares **`sys.prefix`** against the venv root, not interpreter paths. A venv's `bin/python3` is a symlink to the base interpreter, so comparing resolved paths makes system and venv python equal — the first version did that and silently never re-executed.
+
 # Key Concepts
 
 - **Root repos**: `~/dev/root/<repo>` — local mirrors of GitHub.

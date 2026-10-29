@@ -14,6 +14,13 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
+# Before any of takt's imports: re-execute under the
+# project venv if this interpreter is not it. Without this,
+# `bin/<script>.py` runs under system python and dies on a
+# dependency it cannot see.
+from lib.bootstrap import ensure_venv
+ensure_venv()
+
 from lib import db
 from lib.config import parse_pipeline_roles
 from lib.git_utils import GitError

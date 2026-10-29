@@ -1,4 +1,4 @@
-#!/home/karl/dev/takt/.venv/bin/python3
+#!/usr/bin/env python3
 """takt — the single CLI for takt.
 
 Usage:
@@ -26,6 +26,13 @@ from pathlib import Path
 # Add project root to path.
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
+
+# Before any of takt's imports: re-execute under the
+# project venv if this interpreter is not it. Without this,
+# `bin/<script>.py` runs under system python and dies on a
+# dependency it cannot see.
+from lib.bootstrap import ensure_venv
+ensure_venv()
 
 # lib.commands is NOT imported here. It reaches
 # lib.pipeline -> lib.agent_runner -> claude_agent_sdk, which

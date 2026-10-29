@@ -17,16 +17,27 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
+# Before any of takt's imports: re-execute under the
+# project venv if this interpreter is not it. Without this,
+# `bin/<script>.py` runs under system python and dies on a
+# dependency it cannot see.
+from lib.bootstrap import ensure_venv
+ensure_venv()
+
 from mcp.server.fastmcp import FastMCP
 
 WORKSPACES_DIR = PROJECT_DIR.parent / "workspaces"
 
 from lib.config import api_base_url, api_token
 
-# Resolved through lib.config so the token can live in
-# ~/.config/takt/env rather than every client's shell.
-TAKT_API = api_base_url()
-TAKT_TOKEN = api_token() or ""
+# NOT resolved at import. This server is a long-lived
+# process, one per Claude session, and the token it needs
+# can be created or rotated after it started -- which is
+# exactly what happened: a server begun before the token
+# existed held "" forever and every tool returned 401,
+# while the API answered 200 for anyone who sent the
+# current token. Resolving per request means rotating the
+# token does not require restarting every Claude session.
 
 mcp = FastMCP(
   "takt",
@@ -83,15 +94,17 @@ def _api(method, path, body=None):
   Returns:
     Parsed JSON response data.
   """
-  url = f"{TAKT_API}{path}"
+  url = f"{api_base_url()}{path}"
   data = None
   if body is not None:
     data = json.dumps(body).encode()
   headers = {"Content-Type": "application/json"}
-  # Set when talking to a scheduler that is not on this
-  # machine. A local loopback service needs no token.
-  if TAKT_TOKEN:
-    headers["Authorization"] = f"Bearer {TAKT_TOKEN}"
+  # Read fresh. Once a token is configured it applies to
+  # loopback too: a TLS proxy terminates there, so
+  # exempting it would be an unauthenticated way in.
+  token = api_token()
+  if token:
+    headers["Authorization"] = f"Bearer {token}"
   req = urllib.request.Request(
     url, data=data, method=method, headers=headers,
   )
