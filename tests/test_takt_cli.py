@@ -200,3 +200,71 @@ class TestShellCompletion:
       assert f"'{group}:" in text, (
         f"{group} missing from takt.zsh completions"
       )
+
+
+class TestWorkerNeedsNoSchedulerDeps:
+  """A worker machine needs only the `claude` CLI.
+
+  lib.commands pulls in claude_code_sdk through
+  lib.pipeline -> lib.agent_runner. That is a scheduler
+  dependency: a worker runs agent steps by invoking the
+  `claude` binary as a subprocess, never the Python SDK. If
+  bin/takt.py imports it at module scope, `takt worker`
+  dies on import on precisely the machines the command is
+  for — which is how this was found, on a laptop with the
+  CLI installed and no venv.
+  """
+
+  def test_takt_py_does_not_import_commands_at_module_scope(
+    self
+  ):
+    """The import must stay inside a function."""
+    import ast
+    source = (PROJECT_DIR / "bin" / "takt.py").read_text()
+    tree = ast.parse(source)
+    offenders = [
+      node.module
+      for node in tree.body
+      if isinstance(node, ast.ImportFrom)
+      and (node.module or "").startswith("lib.commands")
+    ]
+    assert not offenders, (
+      "bin/takt.py imports lib.commands at module scope; "
+      "that breaks `takt worker` on a worker machine"
+    )
+
+  def test_worker_runs_without_claude_code_sdk(self):
+    """`takt worker --help` works with the SDK absent.
+
+    Simulated by blocking the module in a subprocess, so
+    the test is meaningful on a machine that happens to
+    have it installed.
+    """
+    script = (
+      "import sys\n"
+      "class Blocker:\n"
+      "  def find_module(self, name, path=None):\n"
+      "    if name == 'claude_code_sdk':\n"
+      "      raise ImportError('blocked by test')\n"
+      "    return None\n"
+      "  def find_spec(self, name, path=None, target=None):\n"
+      "    if name == 'claude_code_sdk':\n"
+      "      raise ImportError('blocked by test')\n"
+      "    return None\n"
+      "sys.meta_path.insert(0, Blocker())\n"
+      f"sys.argv = ['takt', 'worker', '--help']\n"
+      "import runpy\n"
+      "try:\n"
+      f"  runpy.run_path({str(PROJECT_DIR / 'bin' / 'takt.py')!r},"
+      " run_name='__main__')\n"
+      "except SystemExit as e:\n"
+      "  sys.exit(e.code or 0)\n"
+    )
+    proc = subprocess.run(
+      [sys.executable, "-c", script],
+      capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, (
+      f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    assert "--scheduler" in proc.stdout

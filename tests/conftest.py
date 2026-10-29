@@ -37,8 +37,4 @@ def isolate_credentials(monkeypatch, tmp_path):
   monkeypatch.setenv(
     "TAKT_ENV_FILE", str(tmp_path / "absent-env")
   )
-  import lib.config as config
-  monkeypatch.setattr(
-    config, "ENV_FILE", tmp_path / "absent-env"
-  )
   yield

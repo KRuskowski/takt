@@ -39,6 +39,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
+from lib.config import load_env_file
 from lib.worker import (
   LeaseLost,
   SCHEDULER_ONLY_STEPS,
@@ -508,18 +509,34 @@ def add_worker_args(parser):
   Returns:
     The same parser.
   """
+  # Fall back to ~/.config/takt/env so a worker started by
+  # hand or by systemd does not need the token in its shell.
+  # Deliberately load_env_file() and not api_base_url():
+  # that defaults to loopback, and a worker silently
+  # dialling itself is worse than a usage error.
+  env_file = load_env_file()
   parser.add_argument(
     "--scheduler",
-    default=os.environ.get("TAKT_API_URL"),
+    default=(
+      os.environ.get("TAKT_API_URL")
+      or env_file.get("TAKT_API_URL")
+    ),
     help="Scheduler base URL, e.g. https://takt:7433.",
   )
   parser.add_argument(
     "--id", dest="worker_id",
-    default=os.environ.get("TAKT_WORKER_ID"),
+    default=(
+      os.environ.get("TAKT_WORKER_ID")
+      or env_file.get("TAKT_WORKER_ID")
+    ),
     help="Stable worker name, e.g. build-lan-01.",
   )
   parser.add_argument(
-    "--token", default=os.environ.get("TAKT_API_TOKEN"),
+    "--token",
+    default=(
+      os.environ.get("TAKT_API_TOKEN")
+      or env_file.get("TAKT_API_TOKEN")
+    ),
     help="Bearer token, if the scheduler requires one.",
   )
   parser.add_argument(

@@ -369,3 +369,84 @@ class TestBundleCreation:
     )
     worker.bundle_for(d, "wsbranch", base)
     assert not (d / ".takt-delivery.bundle").exists()
+
+
+class TestCredentialResolution:
+  """Where a worker finds its scheduler and token."""
+
+  def _parse(self, argv):
+    import argparse
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+      "takt_worker_mod",
+      PROJECT_DIR / "bin" / "takt_worker.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    parser = argparse.ArgumentParser()
+    mod.add_worker_args(parser)
+    return parser.parse_args(argv), mod
+
+  def test_reads_the_env_file(self, monkeypatch, tmp_path):
+    """A worker needs no token in its shell."""
+    env = tmp_path / "env"
+    env.write_text(
+      "TAKT_API_URL=http://sched:7433\n"
+      "TAKT_API_TOKEN=s3cret\n"
+      "TAKT_WORKER_ID=lap-01\n"
+    )
+    monkeypatch.setenv("TAKT_ENV_FILE", str(env))
+    args, _ = self._parse([])
+    assert args.scheduler == "http://sched:7433"
+    assert args.token == "s3cret"
+    assert args.worker_id == "lap-01"
+
+  def test_real_env_wins(self, monkeypatch, tmp_path):
+    """The environment overrides the file.
+
+    That is how a single machine runs a worker against a
+    different scheduler than its local service.
+    """
+    env = tmp_path / "env"
+    env.write_text("TAKT_API_URL=http://file:7433\n")
+    monkeypatch.setenv("TAKT_ENV_FILE", str(env))
+    monkeypatch.setenv("TAKT_API_URL", "http://real:7433")
+    args, _ = self._parse([])
+    assert args.scheduler == "http://real:7433"
+
+  def test_flag_wins_over_both(self, monkeypatch, tmp_path):
+    env = tmp_path / "env"
+    env.write_text("TAKT_API_URL=http://file:7433\n")
+    monkeypatch.setenv("TAKT_ENV_FILE", str(env))
+    monkeypatch.setenv("TAKT_API_URL", "http://real:7433")
+    args, _ = self._parse(
+      ["--scheduler", "http://flag:7433"]
+    )
+    assert args.scheduler == "http://flag:7433"
+
+  def test_never_defaults_to_loopback(
+    self, monkeypatch, tmp_path
+  ):
+    """An unconfigured worker must fail, not dial itself.
+
+    api_base_url() falls back to 127.0.0.1 for client
+    tools, which is right for them and wrong here: a worker
+    that silently registers with a scheduler on its own
+    machine looks like it is working while taking no work
+    from the real queue. run_worker() rejects an empty
+    --scheduler, so the default has to stay empty.
+    """
+    monkeypatch.setenv(
+      "TAKT_ENV_FILE", str(tmp_path / "absent")
+    )
+    args, mod = self._parse([])
+    assert args.scheduler is None
+
+    class Boom(Exception):
+      pass
+
+    def fail(message):
+      raise Boom(message)
+    parser = type("P", (), {"error": staticmethod(fail)})()
+    with pytest.raises(Boom, match="--scheduler"):
+      mod.run_worker(args, parser)

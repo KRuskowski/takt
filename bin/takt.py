@@ -27,7 +27,13 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from lib.commands import CommandResult, dispatch
+# lib.commands is NOT imported here. It reaches
+# lib.pipeline -> lib.agent_runner -> claude_code_sdk, which
+# only the scheduler needs. A worker machine is promised to
+# need nothing but the `claude` CLI, so importing it at
+# module scope would make `takt worker` die on exactly the
+# machines this command exists for. Imported inside main()
+# instead, after the worker and reclaim paths have exited.
 
 
 def _add_names_only(parser):
@@ -272,6 +278,9 @@ def main():
     sys.exit(
       _reclaim_module().run_reclaim(args, parser=parser)
     )
+
+  # Everything past here is a scheduler-side command.
+  from lib.commands import dispatch
 
   # -- push: special (no subcmd) --
   if group == "push":

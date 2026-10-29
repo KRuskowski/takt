@@ -66,23 +66,36 @@ STAGES_DIR.mkdir(exist_ok=True)
 # tracked in a public repo, so a token placed there would be
 # published. systemd loads this file into the service, and
 # load_env_file() lets client tools find it too.
-ENV_FILE = Path(
-  os.environ.get("TAKT_ENV_FILE")
-  or (Path.home() / ".config/takt/env")
-).expanduser()
+DEFAULT_ENV_FILE = Path.home() / ".config/takt/env"
+
+
+def env_file_path():
+  """Return the credentials file to read.
+
+  Resolved on every call rather than captured at import, so
+  TAKT_ENV_FILE works whenever it is set — including in a
+  test that points it somewhere harmless after lib.config
+  has already been imported by something else.
+
+  Returns:
+    Path to the credentials file. It need not exist.
+  """
+  return Path(
+    os.environ.get("TAKT_ENV_FILE") or DEFAULT_ENV_FILE
+  ).expanduser()
 
 
 def load_env_file(path=None):
   """Parse a KEY=value credentials file.
 
   Args:
-    path: File to read. Defaults to ENV_FILE.
+    path: File to read. Defaults to env_file_path().
 
   Returns:
     Dict of the keys found, empty if the file is absent or
     unreadable.
   """
-  target = Path(path) if path else ENV_FILE
+  target = Path(path) if path else env_file_path()
   try:
     text = target.read_text()
   except OSError:
