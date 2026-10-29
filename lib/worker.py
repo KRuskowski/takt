@@ -587,13 +587,30 @@ def materialise(work, mirror_dir, run_root, upstream_for):
       # One more fetch in case the scheduler is ahead of
       # the last sync, then give up rather than silently
       # building the wrong commit.
-      git(["fetch", "--prune", "origin",
-           "+refs/heads/*:refs/heads/*"],
-          cwd=mirror, timeout=7200)
+      #
+      # check=False so the *absence of the commit* is what
+      # gets reported, not the fetch failure. A push-seeded
+      # worker has no upstream it can reach, so raising here
+      # would answer "why can this run not proceed?" with
+      # "origin does not appear to be a git repository" --
+      # sending the reader to look at remotes when the real
+      # answer is that this mirror needs another push.
+      fetched = git(
+        ["fetch", "--prune", "origin",
+         "+refs/heads/*:refs/heads/*"],
+        cwd=mirror, timeout=7200, check=False,
+      )
       if not have_commit(mirror, sha):
+        detail = (
+          "" if fetched.returncode == 0 else
+          " (it could not be fetched either: "
+          f"{fetched.stderr.strip().splitlines()[0][:120]})"
+        )
         raise WorkerError(
           f"commit {sha} for {repo} is not reachable from "
-          f"this worker's mirror"
+          f"this worker's mirror{detail}. If this worker "
+          "was set up with `takt provision`, run it again "
+          "to push the newer commits across."
         )
     target = run_dir / repo
     if target.exists():

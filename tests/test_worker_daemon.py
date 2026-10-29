@@ -450,3 +450,130 @@ class TestCredentialResolution:
     parser = type("P", (), {"error": staticmethod(fail)})()
     with pytest.raises(Boom, match="--scheduler"):
       mod.run_worker(args, parser)
+
+
+class TestPushSeededMirrors:
+  """A worker stocked by `takt provision`.
+
+  Such a worker holds no git credentials: the scheduler
+  pushed the repos to it. Its mirrors therefore have no
+  reachable upstream, and that must not be mistaken for a
+  broken worker.
+  """
+
+  @pytest.fixture
+  def seeded(self, tmp_path):
+    """A bare mirror with a commit and no usable origin.
+
+    Built the way provisioning builds one: git init --bare
+    on the far side, then a push into it. So there is no
+    origin remote at all.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    g = ["git", "-C", str(src)]
+    subprocess.run(
+      ["git", "init", "-q", "-b", "main", str(src)],
+      check=True, timeout=60,
+    )
+    for key, val in (("user.email", "t@t"),
+                     ("user.name", "t")):
+      subprocess.run(
+        g + ["config", key, val], check=True, timeout=60
+      )
+    (src / "f.txt").write_text("seeded\n")
+    subprocess.run(g + ["add", "-A"], check=True, timeout=60)
+    subprocess.run(
+      g + ["commit", "-q", "-m", "c0", "--no-gpg-sign"],
+      check=True, timeout=60,
+    )
+    sha = subprocess.run(
+      g + ["rev-parse", "HEAD"], capture_output=True,
+      text=True, timeout=60,
+    ).stdout.strip()
+    mirrors = tmp_path / "mirrors"
+    mirrors.mkdir()
+    mirror = mirrors / "r.git"
+    subprocess.run(
+      ["git", "init", "-q", "--bare", str(mirror)],
+      check=True, timeout=60,
+    )
+    subprocess.run(
+      g + ["push", "-q", "--mirror", str(mirror)],
+      check=True, timeout=60,
+    )
+    return mirrors, mirror, sha
+
+  # An upstream that cannot be reached. A path that does not
+  # exist, rather than an unroutable address: git fails
+  # identically but instantly, where a TCP connect to a
+  # blackholed address costs a timeout per call and made
+  # this class take over two minutes.
+  UNREACHABLE = "/nonexistent/takt-test-upstream.git"
+
+  def test_failed_refresh_is_not_fatal(self, seeded):
+    """An existing mirror survives an unreachable upstream.
+
+    Raising here would refuse work the worker can do: it
+    already holds the commits.
+    """
+    mirrors, mirror, _ = seeded
+    got = worker.ensure_mirror("r", mirrors, self.UNREACHABLE)
+    assert got == mirror
+
+  def test_initial_clone_still_raises(self, tmp_path):
+    """With no mirror there is nothing to fall back on."""
+    with pytest.raises(worker.WorkerError):
+      worker.ensure_mirror(
+        "r", tmp_path / "mirrors", self.UNREACHABLE
+      )
+
+  def test_materialises_without_any_upstream(self, seeded):
+    """The whole point: a worktree with no credentials."""
+    mirrors, _, sha = seeded
+    work = {
+      "run_id": 7,
+      "workspace": "ws",
+      "repos": ["r"],
+      "refs": {"r:ws": sha},
+    }
+    trees = worker.materialise(
+      work, mirrors, seeded[0].parent / "runs",
+      lambda repo: self.UNREACHABLE,
+    )
+    head = subprocess.run(
+      ["git", "-C", str(trees["r"]), "rev-parse", "HEAD"],
+      capture_output=True, text=True, timeout=60,
+    ).stdout.strip()
+    assert head == sha
+    assert (trees["r"] / "f.txt").read_text() == "seeded\n"
+
+  def test_missing_commit_blames_the_commit(self, seeded):
+    """The error must name the real problem.
+
+    The tolerated fetch failure must not become the
+    message. On a push-seeded worker every missing commit
+    would otherwise report "origin does not appear to be a
+    git repository", pointing the reader at remotes when
+    the actual answer is that the mirror needs another
+    push.
+    """
+    mirrors, _, _ = seeded
+    missing = "deadbeef" * 5
+    work = {
+      "run_id": 8,
+      "workspace": "ws",
+      "repos": ["r"],
+      "refs": {"r:ws": missing},
+    }
+    with pytest.raises(worker.WorkerError) as excinfo:
+      worker.materialise(
+        work, mirrors, mirrors.parent / "runs",
+        lambda repo: self.UNREACHABLE,
+      )
+    message = str(excinfo.value)
+    assert missing in message
+    assert "not reachable" in message
+    assert "takt provision" in message, (
+      "the message should say how to fix it"
+    )
