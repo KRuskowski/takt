@@ -394,3 +394,66 @@ class TestSweep:
   ):
     """An empty sweep is not an error."""
     assert db.sweep_expired_leases(db_path=tmp_db) == []
+
+
+class TestSchedulerDoesNotRaceWorkers:
+  """The scheduler must not run what a worker holds.
+
+  lease_run() deliberately leaves status as 'queued' --
+  claiming is not a state transition. So anything selecting
+  queued runs by status alone picks up runs a worker is
+  already executing. get_next_queued_run() did exactly
+  that, and the service loop launches whatever it returns,
+  so a leased run was executed twice: once on the worker
+  and once on the scheduler. The generation-stamped lease
+  prevents a *second worker* taking it; nothing prevented
+  the scheduler.
+  """
+
+  def test_leased_run_is_invisible_to_the_scheduler(
+    self, tmp_db
+  ):
+    run_id = make_run(tmp_db)
+    db.register_worker("w1", db_path=tmp_db)
+    leased = db.lease_run("w1", db_path=tmp_db)
+    assert leased["id"] == run_id
+    # Still 'queued' -- that is the point.
+    assert leased["status"] == "queued"
+    assert db.get_next_queued_run(db_path=tmp_db) is None
+
+  def test_unclaimed_run_is_still_offered(self, tmp_db):
+    """The fix must not starve the scheduler."""
+    run_id = make_run(tmp_db)
+    nxt = db.get_next_queued_run(db_path=tmp_db)
+    assert nxt is not None and nxt["id"] == run_id
+
+  def test_expired_lease_returns_it_to_the_scheduler(
+    self, tmp_db
+  ):
+    """A worker that dies must not park a run forever.
+
+    sweep_expired_leases() clears worker_id, which is what
+    makes excluding claimed runs safe rather than a leak.
+    """
+    run_id = make_run(tmp_db)
+    db.register_worker("w1", db_path=tmp_db)
+    db.lease_run("w1", lease_secs=-1, db_path=tmp_db)
+    assert db.get_next_queued_run(db_path=tmp_db) is None
+    swept = db.sweep_expired_leases(db_path=tmp_db)
+    assert (run_id, "w1") in swept
+    nxt = db.get_next_queued_run(db_path=tmp_db)
+    assert nxt is not None and nxt["id"] == run_id
+
+  def test_released_run_returns_to_the_scheduler(
+    self, tmp_db
+  ):
+    run_id = make_run(tmp_db)
+    db.register_worker("w1", db_path=tmp_db)
+    leased = db.lease_run("w1", db_path=tmp_db)
+    db.release_run(
+      run_id, worker_id="w1",
+      generation=leased["lease_generation"],
+      db_path=tmp_db,
+    )
+    nxt = db.get_next_queued_run(db_path=tmp_db)
+    assert nxt is not None and nxt["id"] == run_id

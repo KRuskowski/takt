@@ -636,7 +636,21 @@ def advance_run(run_id, db_path=None):
 
 
 def get_next_queued_run(db_path=None):
-  """Get the oldest queued run.
+  """Get the oldest queued run no worker has claimed.
+
+  `AND worker_id IS NULL` is load-bearing, not tidiness.
+  lease_run() deliberately leaves status as 'queued' --
+  claiming is not a state transition -- so selecting on
+  status alone returns runs a worker is already executing,
+  and the scheduler launches them a second time. That is
+  precisely the double execution the generation-stamped
+  lease exists to prevent, and it defeated it from the
+  other side: measured, the scheduler picked up the same
+  run a worker had just leased.
+
+  Safe against a worker dying, because
+  sweep_expired_leases() clears worker_id on an expired
+  lease, which makes the run visible here again.
 
   Args:
     db_path: Override path for testing.
@@ -647,6 +661,7 @@ def get_next_queued_run(db_path=None):
   with _connect(db_path) as conn:
     row = conn.execute(
       "SELECT * FROM runs WHERE status = 'queued' "
+      "  AND worker_id IS NULL "
       "ORDER BY created_at ASC LIMIT 1",
     ).fetchone()
     return dict(row) if row else None
