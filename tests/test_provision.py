@@ -17,6 +17,35 @@ sys.path.insert(0, str(PROJECT_DIR))
 from lib import provision
 
 
+@pytest.fixture(autouse=True)
+def no_real_ssh(monkeypatch):
+  """Make a real SSH call impossible from any test here.
+
+  This is not belt-and-braces. These tests exercise the
+  guards in provision(), and a test for a guard works by
+  *removing* it -- which is exactly what mutation testing
+  does. With the loopback guard disabled,
+  test_loopback_scheduler_is_refused ran on past it into the
+  real ssh(), reconfigured a live worker with a localhost
+  scheduler URL, no token and the wrong worker id, and
+  started pushing repos to it. The only clue was the suite
+  taking 22 seconds instead of 0.03.
+
+  A test must not be able to reach another machine. Anything
+  that wants ssh() stubs it itself, after this.
+  """
+  def forbidden(*args, **kwargs):
+    raise AssertionError(
+      "a test tried to make a real SSH call; stub "
+      "provision.ssh in the test that needs it"
+    )
+  monkeypatch.setattr(provision, "ssh", forbidden)
+  monkeypatch.setattr(
+    provision.subprocess, "run", forbidden
+  )
+  yield
+
+
 class FakeProc:
   """Stand-in for subprocess.CompletedProcess."""
 
