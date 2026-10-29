@@ -39,6 +39,15 @@ def main():
     help="Run a single poll cycle and exit.",
   )
   parser.add_argument(
+    "--delegate-runs", action="store_true",
+    help=(
+      "Never execute runs locally; queue them for workers. "
+      "Without this the scheduler launches every queued "
+      "run itself and workers only ever get one by winning "
+      "a race they lose."
+    ),
+  )
+  parser.add_argument(
     "--reset", action="store_true",
     help="Clear stored branch refs and exit.",
   )
@@ -65,6 +74,7 @@ def main():
   service = TaktService(
     interval=args.interval,
     max_agents=args.max_agents,
+    delegate_runs=args.delegate_runs,
   )
 
   loop = asyncio.new_event_loop()

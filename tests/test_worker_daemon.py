@@ -732,3 +732,101 @@ class TestClaudeCredentials:
       base_env={}, env_file=tmp_path / "absent",
     )
     assert result == {}
+
+
+class TestNoUpstreamMode:
+  """`--upstream none`, for a bundle-seeded worker.
+
+  A Windows worker is always in this state: git cannot be
+  pushed to it through cmd.exe, so provisioning sends
+  bundles. Before this mode existed, provisioning pointed
+  such a worker at `--upstream scheduler` with no host, and
+  the worker leased a run and *then* exited on a usage
+  error -- observed on win-desk as "Leased run 10 ... with
+  1 steps" followed by "--upstream scheduler needs
+  --scheduler-host", leaving run 10 claimed by a dead
+  process.
+  """
+
+  @pytest.fixture
+  def seeded(self, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    g = ["git", "-C", str(src)]
+    subprocess.run(
+      ["git", "init", "-q", "-b", "main", str(src)],
+      check=True, timeout=60,
+    )
+    for k, v in (("user.email", "t@t"), ("user.name", "t")):
+      subprocess.run(
+        g + ["config", k, v], check=True, timeout=60
+      )
+    (src / "f.txt").write_text("x\n")
+    subprocess.run(g + ["add", "-A"], check=True, timeout=60)
+    subprocess.run(
+      g + ["commit", "-q", "-m", "c", "--no-gpg-sign"],
+      check=True, timeout=60,
+    )
+    sha = subprocess.run(
+      g + ["rev-parse", "HEAD"], capture_output=True,
+      text=True, timeout=60,
+    ).stdout.strip()
+    mirrors = tmp_path / "mirrors"
+    mirrors.mkdir()
+    mirror = mirrors / "r.git"
+    subprocess.run(
+      ["git", "init", "-q", "--bare", str(mirror)],
+      check=True, timeout=60,
+    )
+    subprocess.run(
+      g + ["push", "-q", "--mirror", str(mirror)],
+      check=True, timeout=60,
+    )
+    return mirrors, sha
+
+  def test_seeded_mirror_is_used_with_no_fetch(
+    self, seeded
+  ):
+    mirrors, _ = seeded
+    got = worker.ensure_mirror("r", mirrors, None)
+    assert got == mirrors / "r.git"
+
+  def test_absent_mirror_says_how_to_fix_it(
+    self, tmp_path
+  ):
+    """Not a git error -- an instruction."""
+    with pytest.raises(worker.WorkerError) as e:
+      worker.ensure_mirror(
+        "r", tmp_path / "mirrors", None
+      )
+    message = str(e.value)
+    assert "no upstream" in message
+    assert "takt provision" in message
+
+  def test_materialises_from_a_seeded_mirror(self, seeded):
+    mirrors, sha = seeded
+    work = {
+      "run_id": 1, "workspace": "ws", "repos": ["r"],
+      "refs": {"r:ws": sha},
+    }
+    trees = worker.materialise(
+      work, mirrors, mirrors.parent / "runs",
+      lambda repo: None,
+    )
+    assert (trees["r"] / "f.txt").read_text() == "x\n"
+
+  def test_missing_commit_says_to_reprovision(
+    self, seeded
+  ):
+    """No upstream means no retry is possible."""
+    mirrors, _ = seeded
+    work = {
+      "run_id": 2, "workspace": "ws", "repos": ["r"],
+      "refs": {"r:ws": "deadbeef" * 5},
+    }
+    with pytest.raises(worker.WorkerError) as e:
+      worker.materialise(
+        work, mirrors, mirrors.parent / "runs",
+        lambda repo: None,
+      )
+    assert "takt provision" in str(e.value)

@@ -508,7 +508,7 @@ def python_path(host):
 
 
 def install_service(host, scheduler_host=None,
-                    upstream="scheduler", user=None,
+                    upstream="none", user=None,
                     agent_steps=True, claude_home=None):
   """Run the worker as a scheduled task.
 
@@ -579,6 +579,14 @@ def install_service(host, scheduler_host=None,
   )
   launcher_win = f"{work_dir}\\takt-worker.cmd"
 
+  # Default 'none': git cannot be pushed to this host
+  # through cmd.exe, so provisioning sends bundles and the
+  # worker has no upstream it can reach. Pointing it at the
+  # scheduler would make every run log a failed fetch, and
+  # before this it was worse -- the worker leased a run and
+  # then exited on "--upstream scheduler needs
+  # --scheduler-host", leaving the run claimed by a dead
+  # process.
   flags = f"--upstream {upstream}"
   if upstream == "scheduler" and scheduler_host:
     flags += f" --scheduler-host {scheduler_host}"

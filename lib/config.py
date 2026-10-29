@@ -41,16 +41,58 @@ STATE_DIR = Path(
   or (PROJECT_DIR / ".state")
 ).expanduser()
 
+def _parse_env_file(path):
+  """Parse a KEY=value file. Used before load_env_file().
+
+  Import order: the settings below are module-level and
+  load_env_file() is defined further down, so the parse is
+  duplicated here rather than reordering the module.
+
+  Args:
+    path: File to read.
+
+  Returns:
+    Dict of the keys found, empty if unreadable.
+  """
+  try:
+    text = Path(path).expanduser().read_text()
+  except OSError:
+    return {}
+  values = {}
+  for line in text.splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+      continue
+    key, _, value = line.partition("=")
+    values[key.strip()] = value.strip()
+  return values
+
+
+_env_file = _parse_env_file(
+  os.environ.get("TAKT_ENV_FILE")
+  or (Path.home() / ".config/takt/env")
+)
+
 # Address the REST API binds to. Loopback by default — the
-# API is unauthenticated unless api_token is set, so it must
+# API is unauthenticated unless a token is set, so it must
 # not become reachable merely by upgrading.
+#
+# The credential file is consulted here, not only by
+# api_token(). Leaving it out made the service behave
+# differently depending on how it was started: systemd loads
+# the file via EnvironmentFile and bound 0.0.0.0, while the
+# same command by hand bound loopback and silently refused
+# every worker -- seen as "WinError 10061 ... actively
+# refused it" on win-desk, with nothing wrong at its end.
 API_HOST = (
   os.environ.get("TAKT_API_HOST")
+  or _env_file.get("TAKT_API_HOST")
   or _takt.get("api_host")
   or "127.0.0.1"
 )
 API_PORT = int(
   os.environ.get("TAKT_API_PORT")
+  or _env_file.get("TAKT_API_PORT")
   or _takt.get("api_port")
   or 7433
 )

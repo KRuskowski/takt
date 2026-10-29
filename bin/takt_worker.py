@@ -105,11 +105,20 @@ def upstream_resolver(mode, scheduler_host, repos_config,
   Raises:
     SystemExit: If the mode cannot be satisfied.
   """
+  if mode == "none":
+    # A worker whose mirrors are seeded from outside has no
+    # upstream it can reach. A Windows worker is always in
+    # this state: git cannot be pushed to it through
+    # cmd.exe, so provisioning sends bundles instead. Saying
+    # so is better than pointing it at an unreachable host
+    # and tolerating the failure once per repo per run.
+    return lambda repo: None
+
   if mode not in ("scheduler", "github"):
     if "{repo}" not in mode:
       raise SystemExit(
-        "--upstream must be 'scheduler', 'github', or a "
-        "template containing {repo}"
+        "--upstream must be 'scheduler', 'github', 'none', "
+        "or a template containing {repo}"
       )
     return lambda repo: mode.format(repo=repo)
 
@@ -123,7 +132,11 @@ def upstream_resolver(mode, scheduler_host, repos_config,
     return lambda repo: f"{scheduler_host}:{prefix}/{repo}"
 
   def resolve_github(repo):
-    entry = repos_config.get(repo) or {}
+    # Nested: load_repos_config() normalises a flat
+    # repos.yaml by adding a "repos" key, so the top level
+    # is not the registry.
+    registry = repos_config.get("repos", repos_config)
+    entry = registry.get(repo) or {}
     slug = entry.get("github")
     if not slug:
       raise WorkerError(
@@ -369,7 +382,7 @@ def _run_agent_step(step, work_dir):
   return (lines, True, summary[:2000])
 
 
-def run_once(scheduler, caps, args, repos_config):
+def run_once(scheduler, caps, args, upstream_for):
   """Lease and execute at most one run.
 
   Args:
@@ -416,11 +429,7 @@ def run_once(scheduler, caps, args, repos_config):
   trees = {}
   try:
     trees = materialise(
-      work, args.mirror_dir, work_dir,
-      upstream_resolver(
-        args.upstream, args.scheduler_host, repos_config,
-        root_path=args.root_path,
-      ),
+      work, args.mirror_dir, work_dir, upstream_for,
     )
     bases = {
       repo: _head(path) for repo, path in trees.items()
@@ -654,6 +663,18 @@ def run_worker(args, parser=None):
     # from GitHub, where the slug comes from it.
     repos_config = {}
 
+  # Resolved before registering, let alone leasing. This
+  # used to happen inside run_once() after the lease, so a
+  # worker with a bad --upstream took a run and then exited
+  # on a usage error, leaving the run claimed by a process
+  # that no longer existed until the lease swept. Observed
+  # on win-desk: "Leased run 10 ... with 1 steps" followed
+  # by "--upstream scheduler needs --scheduler-host".
+  upstream_for = upstream_resolver(
+    args.upstream, args.scheduler_host, repos_config,
+    args.root_path,
+  )
+
   caps = detect_capabilities(args.work_dir)
   if args.no_agent_steps:
     caps["capabilities"]["agent_steps"] = False
@@ -679,7 +700,7 @@ def run_worker(args, parser=None):
   while True:
     try:
       did_work = run_once(
-        scheduler, caps, args, repos_config
+        scheduler, caps, args, upstream_for,
       )
     except WorkerError as e:
       log.error("Scheduler problem: %s", e)

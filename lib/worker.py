@@ -600,6 +600,18 @@ def ensure_mirror(repo, mirror_dir, upstream):
     Path to the mirror.
   """
   mirror = Path(mirror_dir) / f"{repo}.git"
+  if upstream is None:
+    # `--upstream none`: mirrors are seeded from outside, so
+    # there is nothing to clone or refresh from. Saying so
+    # beats pointing the worker at an unreachable host and
+    # tolerating the failure once per repo per run.
+    if not mirror.exists():
+      raise WorkerError(
+        f"no mirror for {repo} at {mirror} and this worker "
+        "has no upstream to fetch from (--upstream none). "
+        "Run `takt provision` against it to seed the repo."
+      )
+    return mirror
   if not mirror.exists():
     mirror.parent.mkdir(parents=True, exist_ok=True)
     log.info("Cloning mirror %s from %s", repo, upstream)
@@ -686,6 +698,14 @@ def materialise(work, mirror_dir, run_root, upstream_for):
       # "origin does not appear to be a git repository" --
       # sending the reader to look at remotes when the real
       # answer is that this mirror needs another push.
+      if upstream_for(repo) is None:
+        # Nothing to retry against.
+        raise WorkerError(
+          f"commit {sha} for {repo} is not in this "
+          f"worker's mirror, and it has no upstream to "
+          f"fetch from (--upstream none). Run `takt "
+          f"provision` against it to send the newer commits."
+        )
       fetched = git(
         ["fetch", "--prune", "origin",
          "+refs/heads/*:refs/heads/*"],

@@ -268,3 +268,71 @@ class TestWorkerNeedsNoSchedulerDeps:
       f"stdout={proc.stdout}\nstderr={proc.stderr}"
     )
     assert "--scheduler" in proc.stdout
+
+
+class TestUpstreamResolvedBeforeLeasing:
+  """A worker must not take work it cannot execute.
+
+  upstream_resolver() used to be called inside run_once()
+  *after* the lease, so a worker with a bad --upstream
+  leased a run and then exited on a usage error, parking the
+  run on a process that no longer existed. The capability
+  gate already follows "refuse before leasing"; this did
+  not.
+  """
+
+  def _module(self):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+      "tw_mod", PROJECT_DIR / "bin" / "takt_worker.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+  def test_run_once_does_not_resolve_the_upstream(self):
+    """It receives an already-resolved resolver."""
+    import inspect
+    mod = self._module()
+    source = inspect.getsource(mod.run_once)
+    assert "upstream_resolver(" not in source
+    assert "upstream_for" in (
+      inspect.signature(mod.run_once).parameters
+    )
+
+  def test_bad_upstream_fails_before_registering(self):
+    """Exits on the usage error, having leased nothing."""
+    mod = self._module()
+    parser = __import__("argparse").ArgumentParser()
+    mod.add_worker_args(parser)
+    args = parser.parse_args([
+      "--scheduler", "http://sched:7433",
+      "--id", "w1",
+      "--upstream", "scheduler",   # no --scheduler-host
+    ])
+    registered = []
+    mod.Scheduler = lambda *a, **k: registered.append(1)
+    with pytest.raises(SystemExit, match="scheduler-host"):
+      mod.run_worker(args)
+    assert not registered, "registered despite bad config"
+
+  def test_none_upstream_is_accepted(self):
+    mod = self._module()
+    resolver = mod.upstream_resolver("none", None, {}, "")
+    assert resolver("any-repo") is None
+
+  def test_github_reads_the_nested_registry(self):
+    """load_repos_config() returns {"repos": {...}}.
+
+    Reading the top level returned no slug for any repo, so
+    a cloud worker could not fetch anything.
+    """
+    mod = self._module()
+    resolver = mod.upstream_resolver(
+      "github", None,
+      {"repos": {"OTC.SDK": {"github": "Optris/OTC.SDK"}}},
+      "",
+    )
+    assert resolver("OTC.SDK") == (
+      "git@github.com:Optris/OTC.SDK.git"
+    )

@@ -87,7 +87,8 @@ class TaktService:
                cmd_addr=None, pub_addr=None,
                max_agents=DEFAULT_MAX_AGENTS,
                zmq_ctx=None, db_path=None,
-               api_port=None):
+               api_port=None,
+               delegate_runs=False):
     """Initialize the service.
 
     Args:
@@ -116,6 +117,15 @@ class TaktService:
     self._cmd_task = None
     self._http_app = None
     self._http_runner = None
+    # When delegating, this scheduler never executes a run
+    # itself; it only queues them for workers. Without
+    # this there is no routing policy at all -- the poll
+    # loop launches every queued run it can see, so a
+    # worker only ever gets one by winning a race against a
+    # local process, which it loses. Measured: a run
+    # created with two workers online and idle was taken
+    # locally within 10 seconds.
+    self.delegate_runs = delegate_runs
     # Resolve API port.
     if api_port is not None:
       self._api_port = api_port
@@ -442,7 +452,14 @@ class TaktService:
     )
     if run_id is None:
       raise ValueError("Duplicate trigger")
-    # Launch executor.
+    if self.delegate_runs:
+      # Queued for a worker. Launching here would make
+      # --delegate-runs a half-measure: the watcher would
+      # respect it and a manual trigger would not.
+      log.info(
+        "Run %s queued for a worker (delegating)", run_id,
+      )
+      return {"run_id": run_id, "delegated": True}
     self._launch_run(run_id)
     return {"run_id": run_id}
 
@@ -1016,8 +1033,9 @@ class TaktService:
     events = await loop.run_in_executor(
       None, self._poll_sync
     )
-    # Launch any queued runs.
-    while True:
+    # Launch any queued runs, unless this scheduler
+    # delegates execution to workers.
+    while not self.delegate_runs:
       queued = db.get_next_queued_run(
         db_path=self._db_path,
       )
