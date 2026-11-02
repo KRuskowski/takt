@@ -26,6 +26,7 @@ import subprocess
 from pathlib import Path
 
 from lib.config import (
+  CONFIG_DIR,
   ROOT_DIR,
   api_base_url,
   api_token,
@@ -245,6 +246,64 @@ def write_env(host, scheduler_url, token, worker_id,
       "expected 600"
     )
   return mode
+
+
+def send_file(local, host, remote_path, timeout=600):
+  """Copy a file to the worker over SFTP.
+
+  SFTP rather than the shell, and the same call for both
+  platforms: it is shell-independent, so one implementation
+  serves a POSIX worker and a cmd.exe one.
+
+  Args:
+    local: Local file path.
+    host: user@host.
+    remote_path: Destination relative to the login
+      directory. Forward slashes work on both platforms.
+    timeout: Seconds before giving up.
+
+  Raises:
+    ProvisionError: If the copy failed.
+  """
+  proc = subprocess.run(
+    ["scp"] + SSH_OPTS + [str(local),
+                          f"{host}:{remote_path}"],
+    capture_output=True, text=True, timeout=timeout,
+  )
+  if proc.returncode != 0:
+    raise ProvisionError(
+      f"copying {local} to {host}:{remote_path} failed: "
+      f"{proc.stderr.strip()[:400]}"
+    )
+
+
+def send_repo_registry(host):
+  """Put config/repos.yaml on the worker.
+
+  It is gitignored, so a worker that clones takt from the
+  public repo never receives it -- and script steps load it
+  to resolve repo names, so every step died with
+  "No such file or directory: .../config/repos.yaml". Found
+  by running a real step on both workers.
+
+  Non-secret: repo names and their GitHub/GitLab slugs. The
+  API token is in the credential file, not here.
+
+  Args:
+    host: user@host.
+
+  Returns:
+    True if it was sent, False if there is none locally.
+  """
+  local = CONFIG_DIR / "repos.yaml"
+  if not local.exists():
+    log.warning(
+      "no %s to send; worker script steps that resolve "
+      "repo names will fail", local,
+    )
+    return False
+  send_file(local, host, f"{REMOTE_TAKT}/config/repos.yaml")
+  return True
 
 
 def claude_credentials():
@@ -659,6 +718,9 @@ def provision(host, worker_id=None, repos=None,
     progress("takt", f"{ref} on {hostname}")
     commit = ops.install_takt(host, takt_repo, ref=ref)
 
+  progress("config", "config/repos.yaml")
+  sent_registry = send_repo_registry(host)
+
   progress("credentials", "~/.config/takt/env")
   creds = claude_credentials()
   ops.write_env(
@@ -709,6 +771,7 @@ def provision(host, worker_id=None, repos=None,
     "scheduler_url": url,
     "authenticated": bool(resolved_token),
     "claude_creds": sorted(creds),
+    "repo_registry": sent_registry,
     "takt_commit": commit,
     "tools": tools,
     "repos": seeded,

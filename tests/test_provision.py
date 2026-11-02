@@ -432,6 +432,8 @@ class TestInstallService:
     monkeypatch.setattr(
       provision, "write_env", lambda *a, **k: "600")
     monkeypatch.setattr(
+      provision, "send_repo_registry", lambda h: True)
+    monkeypatch.setattr(
       provision, "remote_capabilities", lambda h: {})
     monkeypatch.setattr(
       provision, "install_service",
@@ -537,6 +539,8 @@ class TestWindowsDetection:
                  "remote_capabilities", "seed_mirror"):
       monkeypatch.setattr(provision, name, posix_forbidden)
 
+    monkeypatch.setattr(
+      provision, "send_repo_registry", lambda h: True)
     result = provision.provision(
       "win-desk", scheduler_url="http://sched:7433",
       skip_repos=True,
@@ -965,3 +969,63 @@ class TestWindowsService:
     assert rec.commands_matching(f'mkdir "{home}"')
     grant = rec.commands_matching("icacls")
     assert any('"SYSTEM"' in c for c in grant)
+
+
+class TestRepoRegistryIsSent:
+  """config/repos.yaml must reach the worker.
+
+  It is gitignored, so a worker that clones takt from the
+  public repo never receives it -- and script steps load it
+  to resolve repo names. Measured on both workers: every
+  step died with "No such file or directory:
+  .../config/repos.yaml", after the SDK import was fixed.
+  """
+
+  def test_sent_to_the_checkout(self, monkeypatch, tmp_path):
+    registry = tmp_path / "repos.yaml"
+    registry.write_text("OTC.SDK:\n  push_order: 1\n")
+    monkeypatch.setattr(provision, "CONFIG_DIR", tmp_path)
+    sent = []
+    monkeypatch.setattr(
+      provision, "send_file",
+      lambda local, host, remote, **k: sent.append(
+        (str(local), remote)
+      ),
+    )
+    assert provision.send_repo_registry("laptop") is True
+    assert sent == [
+      (str(registry), "dev/takt/config/repos.yaml")
+    ]
+
+  def test_absent_registry_warns_rather_than_failing(
+    self, monkeypatch, tmp_path
+  ):
+    """A machine with no registry is still provisionable.
+
+    Refusing would block setting up a worker that only ever
+    runs steps needing no registry.
+    """
+    monkeypatch.setattr(provision, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(
+      provision, "send_file",
+      lambda *a, **k: pytest.fail("should not send"),
+    )
+    assert provision.send_repo_registry("laptop") is False
+
+  def test_it_carries_no_secret(self, monkeypatch, tmp_path):
+    """Only the registry, never the credential file.
+
+    The API token lives in ~/.config/takt/env; repos.yaml is
+    repo names and forge slugs.
+    """
+    registry = tmp_path / "repos.yaml"
+    registry.write_text("OTC.SDK:\n  github: Optris/OTC.SDK\n")
+    monkeypatch.setattr(provision, "CONFIG_DIR", tmp_path)
+    sent = []
+    monkeypatch.setattr(
+      provision, "send_file",
+      lambda local, host, remote, **k: sent.append(remote),
+    )
+    provision.send_repo_registry("laptop")
+    assert sent == ["dev/takt/config/repos.yaml"]
+    assert "takt.yaml" not in sent
