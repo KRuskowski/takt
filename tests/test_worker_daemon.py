@@ -830,3 +830,81 @@ class TestNoUpstreamMode:
         lambda repo: None,
       )
     assert "takt provision" in str(e.value)
+
+
+class TestScriptStepsNeedNoSdk:
+  """A worker must run script steps without the SDK.
+
+  bin/takt_worker.py reaches SCRIPT_REGISTRY through
+  lib.pipeline, which imported lib.agent_runner (and
+  lib.protocol imported the SDK types) at module scope. So
+  a worker could not run a *script* step either, despite
+  script steps needing no Claude at all. Measured on
+  win-desk: check_secrets failed with "No module named
+  'claude_agent_sdk'" -- a step that only reads files.
+  """
+
+  def _blocked(self, script):
+    import subprocess
+    import sys as _sys
+    preamble = (
+      "import sys\n"
+      "class Block:\n"
+      "  def find_spec(self, name, path=None, target=None):\n"
+      "    if name == 'claude_agent_sdk':\n"
+      "      raise ImportError('blocked')\n"
+      "    return None\n"
+      "sys.meta_path.insert(0, Block())\n"
+      f"sys.path.insert(0, {str(PROJECT_DIR)!r})\n"
+    )
+    return subprocess.run(
+      [_sys.executable, "-c", preamble + script],
+      capture_output=True, text=True, timeout=120,
+    )
+
+  def test_script_registry_imports_without_the_sdk(self):
+    proc = self._blocked(
+      "from lib.pipeline import SCRIPT_REGISTRY\n"
+      "assert 'check_secrets' in SCRIPT_REGISTRY\n"
+      "print('ok')\n"
+    )
+    assert proc.returncode == 0, proc.stderr[-600:]
+    assert "ok" in proc.stdout
+
+  def test_protocol_imports_without_the_sdk(self):
+    """It is the leaf both pipeline and meta_runner use."""
+    proc = self._blocked(
+      "from lib.protocol import serialize_sdk_message\n"
+      "assert serialize_sdk_message(object(), 0) == []\n"
+      "print('ok')\n"
+    )
+    assert proc.returncode == 0, proc.stderr[-600:]
+    assert "ok" in proc.stdout
+
+  def test_pipeline_does_not_import_agent_runner_eagerly(
+    self
+  ):
+    import ast
+    source = (
+      PROJECT_DIR / "lib" / "pipeline.py"
+    ).read_text()
+    tree = ast.parse(source)
+    offenders = [
+      node.module for node in tree.body
+      if isinstance(node, ast.ImportFrom)
+      and (node.module or "").startswith("lib.agent_runner")
+    ]
+    assert not offenders
+
+  def test_protocol_has_no_module_scope_sdk_import(self):
+    import ast
+    source = (
+      PROJECT_DIR / "lib" / "protocol.py"
+    ).read_text()
+    tree = ast.parse(source)
+    offenders = [
+      node.module for node in tree.body
+      if isinstance(node, ast.ImportFrom)
+      and (node.module or "").startswith("claude_agent_sdk")
+    ]
+    assert not offenders

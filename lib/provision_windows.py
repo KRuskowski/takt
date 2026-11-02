@@ -612,7 +612,12 @@ def install_service(host, scheduler_host=None,
     f'set "TAKT_ENV_FILE={env_file}"\r\n'
     f'{path_line}'
     f'cd /d "{takt_dir}"\r\n'
-    f'"{python}" "{takt_dir}\\bin\\takt.py" worker '
+    # -u because the log is redirected to a file, so Python
+    # block-buffers it and the most recent lines never
+    # appear. That log is the only diagnostic on this
+    # platform, and it hid a lease from view while the run
+    # was already executing.
+    f'"{python}" -u "{takt_dir}\\bin\\takt.py" worker '
     f'--work-dir "{work_dir}" '
     f'--mirror-dir "{mirror_dir}" '
     f'{flags} >> "{log_path}" 2>&1\r\n'

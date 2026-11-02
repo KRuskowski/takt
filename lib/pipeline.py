@@ -12,7 +12,15 @@ import logging
 import subprocess
 from collections import defaultdict
 
-from lib.agent_runner import AgentInfo, AgentRunner, AgentState
+# lib.agent_runner is NOT imported here. It reaches
+# claude_agent_sdk, which only agent steps need -- but
+# SCRIPT_REGISTRY lives in this module, so importing it at
+# module scope means a worker cannot run a *script* step
+# either. Measured: check_secrets on win-desk failed with
+# "No module named 'claude_agent_sdk'" for a step that
+# needs no Claude at all, which contradicts the promise
+# that a worker needs only the CLI. Imported inside the
+# agent-step executor instead.
 from lib.config import (
   ROOT_DIR,
   get_repo_path,
@@ -814,6 +822,9 @@ class PipelineExecutor:
       cwd = str(get_run_dir(run["id"], workspace))
     # Create agent info.
     agent_id = f"run-{run['id']}/{role}"
+    from lib.agent_runner import (
+      AgentInfo, AgentRunner, AgentState,
+    )
     info = AgentInfo(
       agent_id=agent_id,
       workspace=workspace,

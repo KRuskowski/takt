@@ -10,15 +10,40 @@ Kinds: text, tool_use, tool_result, thinking, result,
   system, error.
 """
 
-from claude_agent_sdk import (
-  AssistantMessage,
-  ResultMessage,
-  SystemMessage,
-  TextBlock,
-  ThinkingBlock,
-  ToolResultBlock,
-  ToolUseBlock,
-)
+_SDK_TYPES = None
+
+
+def _types():
+  """Return the SDK message classes, importing on first use.
+
+  Imported lazily so this module can be imported without
+  claude_agent_sdk present. It is a leaf used by
+  lib/pipeline.py, which also holds SCRIPT_REGISTRY -- so a
+  module-scope import here meant a worker could not run a
+  *script* step either, despite script steps needing no
+  Claude at all. Measured on win-desk: check_secrets failed
+  with "No module named 'claude_agent_sdk'".
+
+  Returns:
+    Dict of class name -> class, or None if the SDK is not
+    installed. None means "serialize nothing", which is the
+    right answer on a machine that cannot produce SDK
+    messages in the first place.
+  """
+  global _SDK_TYPES
+  if _SDK_TYPES is None:
+    try:
+      import claude_agent_sdk as sdk
+      _SDK_TYPES = {
+        name: getattr(sdk, name) for name in (
+          "AssistantMessage", "ResultMessage",
+          "SystemMessage", "TextBlock", "ThinkingBlock",
+          "ToolResultBlock", "ToolUseBlock",
+        )
+      }
+    except ImportError:
+      _SDK_TYPES = {}
+  return _SDK_TYPES or None
 
 
 def serialize_sdk_message(msg, line_no):
@@ -37,11 +62,14 @@ def serialize_sdk_message(msg, line_no):
     List of dicts, each with keys: line_no, kind, content,
     meta. May be empty if the message type is unrecognized.
   """
-  if isinstance(msg, AssistantMessage):
+  types = _types()
+  if types is None:
+    return []
+  if isinstance(msg, types["AssistantMessage"]):
     return _serialize_assistant(msg, line_no)
-  if isinstance(msg, ResultMessage):
+  if isinstance(msg, types["ResultMessage"]):
     return [_serialize_result(msg, line_no)]
-  if isinstance(msg, SystemMessage):
+  if isinstance(msg, types["SystemMessage"]):
     return [_serialize_system(msg, line_no)]
   # Direct content blocks.
   line = _serialize_block(msg, line_no)
@@ -79,6 +107,13 @@ def _serialize_block(block, line_no):
   Returns:
     Output line dict, or None if unrecognized.
   """
+  types = _types()
+  if types is None:
+    return None
+  TextBlock = types["TextBlock"]
+  ToolUseBlock = types["ToolUseBlock"]
+  ToolResultBlock = types["ToolResultBlock"]
+  ThinkingBlock = types["ThinkingBlock"]
   if isinstance(block, TextBlock):
     return _line(line_no, "text", block.text)
   if isinstance(block, ToolUseBlock):
