@@ -124,6 +124,15 @@ def run_worker(base, work_dir, upstream_dir, extra=()):
     "--work-dir", str(work_dir),
     "--upstream", f"{str(upstream_dir).rstrip('/')}/{{repo}}",
     "--no-agent-steps",
+    # Pinned, not left at the default. The work dir lives
+    # under /tmp, so otherwise this asserts something about
+    # the host free space rather than the worker loop: here
+    # /tmp had 15.8 GB against the 20 GB default floor, the
+    # worker correctly declined the work, and the step stayed
+    # "pending" with the real reason only in captured stderr.
+    # test_disk_floor_stops_a_full_worker still covers the
+    # floor itself, with an explicit huge value.
+    "--disk-floor-mb", "0",
     "--once",
     *extra,
   ]

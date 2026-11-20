@@ -553,13 +553,38 @@ def install_service(host, scheduler_host=None,
     "systemctl --user restart takt-worker.service",
     timeout=180,
   )
-  # Needs no password for one's own user.
-  linger = ssh(
-    host,
-    "loginctl enable-linger $USER >/dev/null 2>&1; "
-    "loginctl show-user $USER -p Linger --value",
-    check=False,
-  ).stdout.strip()
+  # Enabling linger for one's own user is not always
+  # permitted: polkit refuses it without an interactive
+  # session, so over SSH it fails with "Could not enable
+  # linger: Access denied" -- measured on kwrk1, where the
+  # plain call failed and sudo -n succeeded. Retrying with
+  # sudo -n needs no password where the operator has
+  # passwordless sudo, and never prompts where they do not.
+  #
+  # Without this the worker stops the moment the operator
+  # logs out, defeating the point of provisioning a machine
+  # that is "on anyway" -- and provisioning merely reported
+  # it as a note instead of fixing it.
+  def _linger():
+    return ssh(
+      host,
+      "loginctl show-user $USER -p Linger --value",
+      check=False,
+    ).stdout.strip()
+
+  ssh(host, "loginctl enable-linger $USER", check=False)
+  linger = _linger()
+  if linger != "yes":
+    ssh(
+      host, "sudo -n loginctl enable-linger $USER",
+      check=False,
+    )
+    linger = _linger()
+  if linger != "yes":
+    log.warning(
+      "lingering could not be enabled on %s; the worker "
+      "will stop when the operator logs out", host,
+    )
   state = ssh(
     host,
     "systemctl --user is-active takt-worker.service",

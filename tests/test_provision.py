@@ -1029,3 +1029,74 @@ class TestRepoRegistryIsSent:
     provision.send_repo_registry("laptop")
     assert sent == ["dev/takt/config/repos.yaml"]
     assert "takt.yaml" not in sent
+
+
+class TestLingerNeedsSudoSometimes:
+  """Enabling linger for your own user can be refused.
+
+  polkit refuses `loginctl enable-linger` without an
+  interactive session, so over SSH it fails with "Could not
+  enable linger: Access denied" -- measured on kwrk1, where
+  the plain call failed and `sudo -n` succeeded. Without the
+  retry the worker stops when the operator logs out, which
+  is the whole thing provisioning a machine that is "on
+  anyway" is meant to avoid, and provisioning only reported
+  it as a note.
+  """
+
+  def _rec(self, linger_sequence):
+    """Answer Linger queries from a sequence of values."""
+    seq = list(linger_sequence)
+    calls = []
+
+    def fake(host, command, timeout=120, check=True):
+      calls.append(command)
+      if "-p Linger" in command:
+        return FakeProc((seq.pop(0) if seq else "no") + "\n")
+      if "is-active" in command:
+        return FakeProc("active\n")
+      return FakeProc()
+    fake.calls = calls
+    return fake
+
+  def test_plain_call_is_tried_first(self, monkeypatch):
+    fake = self._rec(["yes"])
+    monkeypatch.setattr(provision, "ssh", fake)
+    result = provision.install_service("h", "karl@s")
+    assert result["linger"] is True
+    plain = [c for c in fake.calls
+             if "enable-linger" in c and "sudo" not in c]
+    assert plain, "did not try without sudo first"
+    assert not [c for c in fake.calls
+                if "sudo -n loginctl enable-linger" in c], (
+      "escalated even though the plain call worked"
+    )
+
+  def test_falls_back_to_sudo(self, monkeypatch):
+    """First query says no, so it retries with sudo -n."""
+    fake = self._rec(["no", "yes"])
+    monkeypatch.setattr(provision, "ssh", fake)
+    result = provision.install_service("h", "karl@s")
+    assert result["linger"] is True
+    assert [c for c in fake.calls
+            if "sudo -n loginctl enable-linger" in c]
+
+  def test_reports_false_when_both_fail(self, monkeypatch):
+    """Still provisions, but the caller must be able to say."""
+    fake = self._rec(["no", "no"])
+    monkeypatch.setattr(provision, "ssh", fake)
+    result = provision.install_service("h", "karl@s")
+    assert result["linger"] is False
+
+  def test_sudo_never_prompts(self, monkeypatch):
+    """-n, so a machine without passwordless sudo fails fast.
+
+    A prompt would hang provisioning on a password nobody
+    can type.
+    """
+    fake = self._rec(["no", "no"])
+    monkeypatch.setattr(provision, "ssh", fake)
+    provision.install_service("h", "karl@s")
+    for c in fake.calls:
+      if "sudo" in c:
+        assert "sudo -n" in c
