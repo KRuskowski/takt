@@ -85,13 +85,14 @@ curl http://localhost:7433/api/events?topics=step.update
 
 ### CLI
 
-One executable covers everything — workspaces, targets, pipelines, pushes, the service, workers, and reclamation:
+One executable covers everything — workspaces, targets, pipelines, pushes, the service, workers, provisioning and reclamation:
 
 ```bash
 takt ws list
 takt target claim deb-02 feature-auth
 takt pipeline show feature-auth
 takt worker --scheduler https://takt:7433 --id build-01
+takt provision laptop --scheduler http://10.0.1.33:7433 --service
 takt reclaim --older-than 30
 ```
 
@@ -103,11 +104,10 @@ Source `config/takt.zsh` from `~/.zshrc` for the `takt` shell function with comp
 
 | Tool | Purpose |
 |------|---------|
-| `bin/takt.py` | **The CLI** — `ws`, `target`, `pipeline`, `push`, `service`, `worker`, `reclaim` |
+| `bin/takt.py` | **The CLI** — `ws`, `target`, `pipeline`, `push`, `service`, `worker`, `provision`, `reclaim` |
 | `bin/takt_service.py` | Background service: REST API, branch watching, pipeline execution |
 | `bin/takt_worker.py` | Worker daemon (also `takt worker`) |
 | `bin/takt_mcp.py` | MCP server for Claude sessions |
-| `bin/takt_agent.py` | Conversational REPL for managing takt |
 | `bin/reclaim.py` | Report/reclaim build output (also `takt reclaim`) |
 | `bin/workspace.py` | Create/delete workspaces, define pipelines (also `takt ws`) |
 | `bin/target.py` | Claim/release targets, VM lifecycle, SSH (also `takt target`) |
@@ -220,11 +220,11 @@ Claims live in the database rather than in lock files, so they are visible to ev
 
 Runs can execute on other machines. One **scheduler** owns the SQLite state, the queue and the root repos; **workers** dial out, lease runs, execute them locally and report back over HTTP. Outbound only, so a NAT'd cloud VM needs no inbound access.
 
-```bash
-# On the scheduler: ~/.config/takt/env, mode 0600
-#   TAKT_API_HOST=0.0.0.0
-#   TAKT_API_TOKEN=<secret>
+> **Workers only get runs if the scheduler is told to delegate.** By default `takt-service` executes every queued run itself the instant it is created, so a worker never wins one. Start it with `--delegate-runs` and it queues runs for workers and runs none locally. That switch is all-or-nothing today: there is no way to route a particular run to a particular machine, so delegating sends *everything* off-box.
 
+### Running a worker
+
+```bash
 # LAN worker — root repos fetched from the scheduler over SSH
 takt worker --id build-01 --scheduler https://takt:7433 \
   --token <secret> --upstream scheduler --scheduler-host karl@takt
@@ -232,53 +232,57 @@ takt worker --id build-01 --scheduler https://takt:7433 \
 # Cloud worker — no route back, so it fetches from GitHub
 takt worker --id cloud-01 --scheduler https://takt.example.com \
   --token <secret> --upstream github
+
+# Mirrors seeded from outside, nothing to fetch from (every Windows worker)
+takt worker --id win-01 ... --upstream none
+
+# Build-only — never offered a run containing an agent step
+takt worker --id build-02 ... --no-agent-steps
 ```
 
-The service refuses to bind a non-loopback address unless a token is set: the API creates workspaces and triggers runs, so unauthenticated and reachable must never both be true.
+Each worker keeps its own git mirrors — a worktree's `.git` points into its parent repo, so it cannot live on another machine — and materialises worktrees at the exact commit the run recorded, not the branch tip. Commits produced on a worker come back as a **git bundle**; workers only ever *fetch*, so the operator still gates what reaches GitHub, and `push_to_github`/`create_pr` are refused on a worker.
 
-**Credentials live outside the checkout.** `config/takt.yaml` is tracked in a public repo, so a token written there would be published. takt reads `~/.config/takt/env` (`KEY=value`, mode 0600) instead — systemd loads it into the service via `EnvironmentFile`, and the client tools (MCP, CLI, `reclaim`) read the same file, so turning authentication on does not mean exporting a token in every shell. `TAKT_API_TOKEN`, `TAKT_API_URL` and `TAKT_API_HOST` in the real environment still win, which is how a worker on another machine is configured.
+Claims are leases carrying a generation, so a worker that goes dark long enough to lose its lease is refused when it returns rather than reporting over whoever took the run. `--disk-floor-mb` stops a worker accepting work when nearly full, and worktrees are removed at run completion.
 
-Note that once a token is set, **loopback is authenticated too**. That is deliberate: a TLS reverse proxy terminating in front of takt connects from loopback, and exempting it would hand every proxied request an unauthenticated path in.
+**Agent steps run on workers too**, by invoking the `claude` CLI as a subprocess with the prompt the *scheduler* rendered — so role templates stay authoritative in one place and a worker needs only the CLI. A worker declares `agent_steps` from whether `claude` is on PATH, and is never handed an agent run if it isn't.
 
 ### Provisioning a worker
 
 ```bash
-takt provision laptop --scheduler http://10.0.1.33:7433   # all managed repos
-takt provision laptop --repos OTC.SDK OTC.Relay           # a subset
-takt provision laptop --check                             # checks only, changes nothing
+takt provision laptop --check                            # checks only, changes nothing
+takt provision laptop --scheduler http://10.0.1.33:7433  # all managed repos
+takt provision laptop --repos OTC.SDK OTC.Relay          # a subset
 
-# Install it as a service so the machine takes work unattended
+# Install it as a service, so the machine takes work unattended
 takt provision laptop --scheduler http://10.0.1.33:7433 \
   --service --scheduler-host karl@10.0.1.33
+
+takt provision laptop --creds-only --service             # just re-push credentials
 ```
 
-Run from the scheduler. It installs takt on the machine (HTTPS clone, so no git credentials needed), writes `~/.config/takt/env` at mode 0600, creates the work and mirror directories, then **pushes** the root repos over as bare mirrors and prints what the machine reports about itself.
+Run from the scheduler. It installs takt on the machine (HTTPS clone, so no git credentials needed), writes `~/.config/takt/env` at mode 0600, sends `config/repos.yaml` (gitignored, so a clone never has it), creates the work and mirror directories, then **pushes** the root repos over as bare mirrors and prints what the machine reports about itself.
 
-The push direction is deliberate. `--upstream scheduler` has the worker *fetch*, which needs an unlocked key on the worker — the usual blocker on a laptop whose key is passphrase-protected. Provisioning instead uses the SSH connection the scheduler already has, so a worker can be fully stocked while holding no git credentials of its own. Re-running it is the refresh path: git sends only what the far side lacks. Accordingly, a worker that cannot refresh an *existing* mirror logs a warning and carries on — whether the run can proceed is decided by the commit check in `materialise()`, which fails precisely if the needed commit really is missing.
+The push direction is the point. `--upstream scheduler` has the worker *fetch*, which needs an unlocked key on the worker — the usual blocker on a laptop whose key is passphrase-protected. Provisioning instead uses the SSH connection the scheduler already has, so a worker can be fully stocked holding no git credentials of its own. Re-running it is the refresh path: git sends only what the far side lacks.
 
-`--service` installs a systemd user unit and enables lingering, so the worker keeps taking work with nobody logged in. The unit sets `PATH` to include `~/.local/bin` — a unit inherits almost none, and a worker that cannot find `claude` starts anyway, declares itself build-only, and is never handed an agent step.
+`--service` installs a systemd user unit and enables lingering, so the worker keeps working with nobody logged in. `--check` runs only the cheap checks: a clean SSH channel and the required tools. **Windows workers are supported** — `provision` detects the platform itself and switches to SFTP transfer, git bundles and a scheduled task running as SYSTEM. The reasoning behind each of those, and the traps they exist for, is in [CLAUDE.md](CLAUDE.md#provisioning-a-worker-libprovisionpy).
 
-**Windows workers** are supported, and `provision` detects the platform itself (cmd's `ver`) before changing anything, because the POSIX steps share none of the relevant plumbing. Files travel over SFTP rather than through the shell, and repos arrive as **git bundles** rather than pushes — git sends `git-receive-pack 'path'` and cmd.exe does not strip the quotes, so a push reports `''repo.git'' does not appear to be a git repository`. The alternative fix, repointing the host's SSH `DefaultShell`, is a machine-wide change affecting every other tool that connects.
+### Worker Claude credentials
 
-On Windows the task runs as **SYSTEM at startup**, so a workstation that is simply switched on contributes with nobody logged in — the only other option Windows offers would need a stored password on a command line. SYSTEM can still run agent steps: it resolves and executes the `claude` CLI fine, and only lacks credentials, which `--claude-home <dir>` supplies (provisioning creates the directory and grants SYSTEM full control). Sign it in over SSH with `claude setup-token`, or set `ANTHROPIC_API_KEY` in the worker's env file; until then pass `--no-agent-steps`, since the CLI being installed is not the same as being usable. The worker logs to `~/takt-worker/worker.log`, as a scheduled task discards stdout and would otherwise leave only `Last Result: 1`.
+Put a long-lived token from `claude setup-token` in the scheduler's `~/.config/takt/env` as `CLAUDE_CODE_OAUTH_TOKEN` (or use `ANTHROPIC_API_KEY`), and provisioning copies it into each worker's env file. `--creds-only` re-pushes just that and restarts the worker, for when the login rotates.
 
-**Worker Claude credentials.** Do not copy `~/.claude/.credentials.json` — its access token lasts about an hour and its refresh token rotates on use, so machines sharing a copy invalidate each other. Use `claude setup-token`, put the result in the scheduler's `~/.config/takt/env` as `CLAUDE_CODE_OAUTH_TOKEN`, and provisioning distributes it. `--creds-only` rewrites just the credential file and restarts the worker, for when the login rotates. Only an allowlist of auth variables is passed on; `TAKT_API_TOKEN` is never given to an agent subprocess.
+Prefer that over copying `~/.claude/.credentials.json`: its access token lasts about an hour, and it carries a refresh token, so several machines sharing one copy risk invalidating each other. Only an allowlist of auth variables is passed on — `TAKT_API_TOKEN` is never handed to an agent subprocess, since it can create workspaces and trigger runs.
 
-`--check` runs the cheap checks alone: a clean SSH channel and the required tools. The channel check exists because that failure is so badly disguised — anything written to stdout on login (an sshd `Banner`, a `~/.ssh/rc` that echoes, a shell rc greeting, and for zsh `~/.zshenv`, which non-interactive shells also read) gets spliced in front of every command's output, and git and rsync then fail with "protocol incompatibility" or "is your shell clean?", naming neither the file nor the machine at fault.
+### Before adding machines
 
-Each worker keeps its own git mirrors — a worktree's `.git` points into its parent repo, so it cannot live on a different machine — and materialises worktrees at the exact commit the run recorded, not the branch tip. Commits produced on a worker return as a **git bundle** over the same outbound connection; workers only ever *fetch*, so the operator still gates what reaches GitHub, and `push_to_github`/`create_pr` are refused on a worker.
+- **Claude capacity is per account, not per machine.** Rate and usage limits attach to the account, so more machines do not by themselves raise how much model work can happen at once — give each worker its own account via `--claude-home` if that is the goal. Extra machines help CPU-bound work — compiles, test suites, VM verification — unconditionally.
+- **State stays on the scheduler.** `.state/takt.db` is WAL-mode SQLite and does not lock correctly over NFS/SMB, so a worker never touches it; everything goes through the worker endpoints. Target claims live in the database for the same reason — a lock file is invisible to other machines.
+- **Build output is the storage cost, not git.** Workspace clones are hardlinked against the root repos and cost almost nothing; the build trees inside them dominate. See [`takt reclaim`](#reclaiming-build-output).
 
-Claims are leases carrying a generation, so a worker that goes dark long enough to lose its lease is refused when it returns instead of reporting over whoever took the run over. A worker without Claude Code declares itself build-only and is never offered a run containing an agent step. `--disk-floor-mb` stops it accepting work when nearly full, and worktrees are removed at run completion.
+Design notes and the remaining stage (elastic cloud provisioning): [`context/distributed-execution.md`](context/distributed-execution.md)
 
-**Agent steps run on workers too**, by invoking the `claude` CLI as a subprocess with the prompt the scheduler rendered — so role templates stay authoritative in one place and a worker needs only the CLI installed. A worker declares `agent_steps` from whether `claude` is on PATH and is never handed an agent run if it isn't. `--claude-home` sets `CLAUDE_CONFIG_DIR`, which is what actually multiplies agent throughput: limits attach to the **account**, not the machine, so workers sharing one account share one quota.
+`bin/takt_mcp.py` honours `TAKT_API_URL` and `TAKT_API_TOKEN`, so a Claude session on any machine can drive a remote scheduler — which decouples *where you work* from *where takt runs*.
 
-Design notes and the remaining stage (elastic cloud provisioning): `context/distributed-execution.md`
-
-Three things worth knowing before adding machines:
-
-- **Claude capacity is per account, not per machine.** Rate and usage limits attach to the account, so running agents on more machines does not by itself raise how much model work can happen at once — give each worker its own account via `--claude-home` if that is the goal. Extra machines help CPU-bound work — compiles, test suites, VM-based verification — unconditionally.
-- **State stays on the scheduler.** `.state/takt.db` is WAL-mode SQLite and does not lock correctly over NFS/SMB, so a worker never touches it — everything goes through the worker endpoints. Target claims moved out of `.locks/*.lock` into the database for the same reason: a lock file is invisible to the other machines, and the check-then-write it replaced let two claimants both think they had won the same VM.
-- **Build output is the storage cost, not git.** Workspace clones are hardlinked against the root repos and so cost almost nothing; the build trees agents create inside them dominate, and nothing reclaimed them before `takt reclaim`. Workspaces are deliberately durable, so reclamation has to tell the clone apart from the build output within it — and a worker reclaims its own, since nobody is logged in to notice it filling up.
+## Reclaiming build output
 
 ```bash
 takt reclaim                        # survey; deletes nothing
@@ -286,9 +290,7 @@ takt reclaim --older-than 30        # only workspaces idle 30+ days
 takt reclaim --older-than 30 --apply
 ```
 
-Dry run by default. A directory is a candidate only if it carries a marker that nothing but generated output has — `CMakeCache.txt`, `CACHEDIR.TAG`, or the name `node_modules` — so a directory merely *called* `build` is left alone and nothing under `.git` is considered. `--apply` additionally requires `--older-than` or `--workspace`, re-checks each marker at deletion time, and spares any workspace with a run in flight.
-
-`bin/takt_mcp.py` honours `TAKT_API_URL` and `TAKT_API_TOKEN`, so a Claude session on any machine can drive a remote scheduler — which decouples *where you work* from *where takt runs*.
+Dry run by default. A directory is a candidate only if it carries a marker nothing but generated output has — `CMakeCache.txt`, `CACHEDIR.TAG`, or the name `node_modules` — so a directory merely *called* `build` is left alone and nothing under `.git` is considered. `--apply` additionally requires `--older-than` or `--workspace`, re-checks each marker at deletion time, and spares any workspace with a run in flight.
 
 ## Project layout
 
@@ -320,13 +322,14 @@ lib/                  Shared Python library
 config/
   repos.yaml          Managed repo registry (gitignored)
   targets.yaml        Target inventory (gitignored)
-  takt.yaml           Service config (bind address, token, state dir,
-                      agent accounts)
+  takt.yaml           Non-secret service config (base dir, api_port,
+                      state dir, agent accounts). Credentials live in
+                      ~/.config/takt/env, NOT here — this file is tracked.
   takt.zsh            Shell function + completions
 templates/            CLAUDE.md templates, pipeline roles
 context/              Architecture and decision docs
 graphics/             Logos and icons
-tests/                594 tests
+tests/                Test suite
 ```
 
 ## Requirements
@@ -340,7 +343,7 @@ tests/                594 tests
 
 **Worker** (anything beyond this is per-workload):
 
-- Python 3.11+ and Git
+- Python 3.11+ with **PyYAML** (the only third-party module a worker needs; provisioning refuses to continue without it) and Git
 - The `claude` CLI, only if it should run agent steps — otherwise start it with `--no-agent-steps` and it will only be offered build and test work
 - Whatever toolchains the steps need (cmake, ninja, compilers, …). A worker reports what it has on registration.
 

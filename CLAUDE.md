@@ -197,6 +197,8 @@ TAKT_API_TOKEN=<secret>
 state_dir: /var/lib/takt # optional; default is .state/ in the checkout
 ```
 
+**Workers only receive runs if the scheduler delegates.** By default the service executes every queued run itself the instant it is created — both the watcher's poll loop and a manual trigger — so a worker only ever gets one by winning a race it loses. Start it with `--delegate-runs` and it queues runs for workers and executes none locally. It is all-or-nothing: there is no per-run or per-OS routing, so delegating sends everything off-box, and a run no worker will accept is then executed by nobody.
+
 The service refuses to bind a non-loopback address without a token set — the API creates workspaces and triggers runs, so unauthenticated and reachable must never both be true.
 
 Clients resolve the scheduler through `lib.config.api_base_url()` and `api_token()`, which read the real environment first, then the env file, then `takt.yaml`. Once a token is set it applies to loopback too: a TLS reverse proxy terminates on loopback, so exempting it would be an unauthenticated way in. `tests/conftest.py` points `TAKT_ENV_FILE` at a non-existent path for every test, so the suite never picks up the operator's live token.
